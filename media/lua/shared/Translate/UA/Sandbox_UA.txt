@@ -1,0 +1,156 @@
+Sandbox_UA = {
+
+    /***** �������� *****/
+    Sandbox_FactionsConfrontation_General = "FC: Core Experience"
+
+	Sandbox_FactionsConfrontation.KillCounter = "˳������� ������ �������",
+	Sandbox_FactionsConfrontation.StunlockHitSpeed = "�������� �������� ����� ������ (����� �������� ������ ������ ������)"
+	Sandbox_FactionsConfrontation.DensityScore = "������� ����� ������� ���� � ����� � ����� � ����������� �������",
+	Sandbox_FactionsConfrontation.Surrender = "�������� ������� ������ �������",
+	Sandbox_FactionsConfrontation.BleedOut = "�������� ������� ������ ����������� � ��������",
+	Sandbox_FactionsConfrontation.Infection = "������� ������ ���������� � ����� ����",
+	Sandbox_FactionsConfrontation.LimitedEndurance = "������� ����� �������� �����������",
+	Sandbox_FactionsConfrontation.RunAway = "�������� ������� ������ ������",
+	Sandbox_FactionsConfrontation.DestroyDoor = "������� ������ ��������� ����",
+	Sandbox_FactionsConfrontation.SmashWindow = "������� ������ ��������� ����",
+	Sandbox_FactionsConfrontation.RemoveBarricade = "������� ������ ������� ����� ��� ������� �������� � ���� � ������",
+	Sandbox_FactionsConfrontation.DestroyThumpable = "������� ������ ��������� �����������, ���������� �������",
+	Sandbox_FactionsConfrontation.SabotageVehicles = "������� ������ ����������� ����������� ������ ������ [���� ��������� � ���������]",
+	Sandbox_FactionsConfrontation.EnterVehicles = "������ NPC ������ �������� � ��������� ������ [���� ��������� � ���������]",
+	Sandbox_FactionsConfrontation.GeneratorCutoff = "������� ������ ��������� ����������",
+	Sandbox_FactionsConfrontation.BuildBridge = "������� ������ �������� ����� ����� ����",
+	Sandbox_FactionsConfrontation.Speak = "������� ��������",
+	Sandbox_FactionsConfrontation.Captions = "������� ������ �� ������ �������",
+	Sandbox_FactionsConfrontation.SneakAtNight = "������� ��������� �����",
+	Sandbox_FactionsConfrontation.CarryTorches = "������� ������ �������� �����",
+	Sandbox_FactionsConfrontation.ArrivalSoundLevel = "�������� ����� ����� ��������� �������",
+	Sandbox_FactionsConfrontation.ArrivalIcon = "������, �� ����� ���� ����� �������",
+	Sandbox_FactionsConfrontation.ArrivalWakeUp = "�������� ������� ������ ��������� ������",
+	Sandbox_FactionsConfrontation.ArrivaPanic = "�������� ������� ���������� ��������� ������",
+	Sandbox_FactionsConfrontation.GunReflexMin = "̳��������� ��� ������������ [����]",
+	Sandbox_FactionsConfrontation.GunReflexRand = "������������ ���������� ��� ������������ [����]",
+	Sandbox_FactionsConfrontation.PistolRange = "����������� ��������� ������� � �������� [�������]",
+	Sandbox_FactionsConfrontation.RifleRange = "����������� ��������� ������� � �������� [�������]",
+
+	Sandbox_FactionsConfrontation.HitModel = "������ �������� ����� �������",
+	Sandbox_FactionsConfrontation.HitModel_tooltip = "����� ���������� ������� �����",
+	Sandbox_FactionsConfrontation.HitModel_option1 = "Vanilla (����� ���������)",
+	Sandbox_FactionsConfrontation.HitModel_option2 = "�������",
+
+	Sandbox_FactionsConfrontation.OverallAccuracy = "�������� �������� �������",
+	Sandbox_FactionsConfrontation.OverallAccuracy_tooltip = "�������� �������� ���� �������",
+	Sandbox_FactionsConfrontation.OverallAccuracy_option1 = "����� ����������",
+	Sandbox_FactionsConfrontation.OverallAccuracy_option2 = "�� ������ ������� ����� � �����",
+	Sandbox_FactionsConfrontation.OverallAccuracy_option3 = "��� �� ���� �������",
+	Sandbox_FactionsConfrontation.OverallAccuracy_option4 = "�������� �� ������ ����",
+	Sandbox_FactionsConfrontation.OverallAccuracy_option5 = "�������� ������",
+
+	Sandbox_FactionsConfrontation.DefenderSpawnHourlyChance = "���� ��������� ����� ��������� [%]",
+	Sandbox_FactionsConfrontation.BaseSpawnHourlyChance = "���� ��������� ����� ����/������ [%]",
+	Sandbox_FactionsConfrontation.DefenderLootAmount = "ʳ������ ������� � �����/���������",
+
+	/***** ���˲ *****/
+	Sandbox_FactionsConfrontation = "FactionsConfrontation"
+    Sandbox_FactionsConfrontation_Clan_1 = "FactionsConfrontation Clan 1"
+    Sandbox_FactionsConfrontation_Clan_2 = "FactionsConfrontation Clan 2"
+    Sandbox_FactionsConfrontation_Clan_3 = "FactionsConfrontation Clan 3"
+    Sandbox_FactionsConfrontation_Clan_4 = "FactionsConfrontation Clan 4"
+    Sandbox_FactionsConfrontation_Clan_5 = "FactionsConfrontation Clan 5"
+    Sandbox_FactionsConfrontation_Clan_6 = "FactionsConfrontation Clan 6"
+    Sandbox_FactionsConfrontation_Clan_7 = "FactionsConfrontation Clan 7"
+    Sandbox_FactionsConfrontation_Clan_8 = "FactionsConfrontation Clan 8"
+    Sandbox_FactionsConfrontation_Clan_9 = "FactionsConfrontation Clan 9"
+    Sandbox_FactionsConfrontation_Clan_10 = "FactionsConfrontation Clan 10"
+    Sandbox_FactionsConfrontation_Clan_11 = "FactionsConfrontation Clan 11"
+    Sandbox_FactionsConfrontation_Clan_12 = "FactionsConfrontation Clan 12"
+    Sandbox_FactionsConfrontation_Clan_13 = "FactionsConfrontation Clan 13"
+    Sandbox_FactionsConfrontation_Clan_14 = "FactionsConfrontation Clan 14"
+    Sandbox_FactionsConfrontation_Clan_15 = "FactionsConfrontation Clan 15"
+    Sandbox_FactionsConfrontation_Clan_16 = "FactionsConfrontation Clan 16"
+
+	Sandbox_FactionsConfrontation.WaveEnabled = "�������� ����� ������"
+	Sandbox_FactionsConfrontation.WaveEnabledTooltip = "�������� ����� ������"
+
+	Sandbox_FactionsConfrontation.FriendlyChance = "���� �������� [%]",
+	Sandbox_FactionsConfrontation.FriendlyChance_tooltip = "����������, �� ����� ������� ���� �������� �� �������",
+
+	Sandbox_FactionsConfrontation.EnemyBehaviour = "������ �������� ������",
+	Sandbox_FactionsConfrontation.EnemyBehaviour_tooltip = "������ �������� ��������� ������",
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option1 = "BANDIT: RANDOM"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option2 = "BANDIT: RAIDER"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option3 = "BANDIT: WANDERER"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option4 = "BANDIT: GUARD"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option5 = "BANDIT: THIEF"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option6 = "BANDIT: RANDOM (NO-RAIDER)"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option7 = "FRIENDLY: INDIFFERENT"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option8 = "FRIENDLY: COMPANION"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option9 = "FRIENDLY: RANDOM"
+    Sandbox_FactionsConfrontation.EnemyBehaviour_option10 = "RANDOM (BANDIT/FRIENDLY)"
+
+	Sandbox_FactionsConfrontation.FirstDay = "���� �������",
+	Sandbox_FactionsConfrontation.FirstDay_tooltip = "ʳ������ ���� ���� ������� ���, ����� ��� �'��������� �������",
+
+	Sandbox_FactionsConfrontation.LastDay = "���� ����������",
+	Sandbox_FactionsConfrontation.LastDay_tooltip = "ʳ������ ���� ���� ������� ���, ����� ��� �'������� ������� ������������",
+
+	Sandbox_FactionsConfrontation.SpawnDistance = "��������� �����",
+	Sandbox_FactionsConfrontation.SpawnDistance_tooltip = "�� ��� ������� �� ������ �'��������� ������� [�������]",
+
+	Sandbox_FactionsConfrontation.SpawnHourlyChance = "���� ����� �� ������ [%]",
+	Sandbox_FactionsConfrontation.SpawnHourlyChance_tooltip = "���������� ����� ����� �������� ������ ������",
+
+	Sandbox_FactionsConfrontation.GroupSize = "����� �����",
+	Sandbox_FactionsConfrontation.GroupSize_tooltip = "ʳ������ ������� � ����",
+
+	Sandbox_FactionsConfrontation.GroupName = "��� �����",
+	Sandbox_FactionsConfrontation.GroupName_tooltip = "�������������� �����",
+	Sandbox_FactionsConfrontation.GroupName_option1 = "³��������� ���������",
+	Sandbox_FactionsConfrontation.GroupName_option2 = "���������",
+	Sandbox_FactionsConfrontation.GroupName_option3 = "��������",
+	Sandbox_FactionsConfrontation.GroupName_option4 = "��������",
+	Sandbox_FactionsConfrontation.GroupName_option5 = "��'������",
+	Sandbox_FactionsConfrontation.GroupName_option6 = "���������",
+	Sandbox_FactionsConfrontation.GroupName_option7 = "ϳ����������",
+	Sandbox_FactionsConfrontation.GroupName_option8 = "��������",
+	Sandbox_FactionsConfrontation.GroupName_option9 = "������� �'�����",
+	Sandbox_FactionsConfrontation.GroupName_option10 = "��������",
+	Sandbox_FactionsConfrontation.GroupName_option11 = "���� ³����������",
+	Sandbox_FactionsConfrontation.GroupName_option12 = "�������� �����",
+	Sandbox_FactionsConfrontation.GroupName_option13 = "���� �������� �����",
+	Sandbox_FactionsConfrontation.GroupName_option14 = "�������� �����",
+	Sandbox_FactionsConfrontation.GroupName_option15 = "����� �����",
+	Sandbox_FactionsConfrontation.GroupName_option16 = "����� ���� ��䳿",
+
+    Sandbox_FactionsConfrontation.HasPistolChance = "���� �������� [%]"
+	Sandbox_FactionsConfrontation.HasPistolChance_tooltip = "����, �� ������� ������ ������ ���������� �������"
+
+	Sandbox_FactionsConfrontation.PistolMagCount = "ʳ������ ��������� ��� ��������"
+	Sandbox_FactionsConfrontation.PistolMagCount_tooltip = "ʳ������ ���������� ��������� ��� ��������, �� ���� ������ ������"
+
+	Sandbox_FactionsConfrontation.HasRifleChance = "���� �������� [%]"
+	Sandbox_FactionsConfrontation.HasRifleChance_tooltip = "����, �� ������� ������ ������ ��������� ��������"
+
+	Sandbox_FactionsConfrontation.RifleMagCount = "ʳ������ ��������� ��� ��������"
+	Sandbox_FactionsConfrontation.RifleMagCount_tooltip = "ʳ������ ���������� ��������� ��� ��������, �� ���� ������ ������"
+
+    /***** FACTIONS CONFRONTATION UI IDENTITY PASS *****/
+    Sandbox_FC_Basic = "FC: Основний досвід"
+    Sandbox_FC_WorldMap = "FC: Глобальне протистояння"
+    Sandbox_FC_Territories = "FC: Бази"
+    Sandbox_FC_Forces = "FC: Фракції"
+    Sandbox_FC_Tactics = "FC: ШІ"
+    Sandbox_FC_CombatSurvival = "FC: Бій"
+    Sandbox_FC_Progression = "FC: Прогрес"
+    Sandbox_FC_MapIntel = "FC: Карта"
+    Sandbox_FC_Performance = "FC: Оптимізація"
+    Sandbox_FC_NetworkSync = "FC: Мережа"
+    Sandbox_FactionsConfrontationExt_World = "FC: Глобальне протистояння"
+    Sandbox_FactionsConfrontationExt_Base = "FC: Бази"
+    Sandbox_FactionsConfrontationExt_Faction = "FC: Фракції"
+    Sandbox_FactionsConfrontationExt_AI = "FC: ШІ"
+    Sandbox_FactionsConfrontationExt_Survival = "FC: Бій"
+    Sandbox_FactionsConfrontationExt_Progression = "FC: Прогрес"
+    Sandbox_FactionsConfrontationExt_Debug = "FC: Карта"
+    Sandbox_FactionsConfrontationExt_Performance = "FC: Оптимізація"
+    Sandbox_FactionsConfrontationExt_Network = "FC: Мережа"
+}

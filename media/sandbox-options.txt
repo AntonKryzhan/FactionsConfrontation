@@ -1,0 +1,2317 @@
+VERSION = 1,
+
+option FactionsConfrontation.General_KillCounter
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.KillCounter,
+}
+
+option FactionsConfrontation.General_DensityScore
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.DensityScore,
+}
+
+option FactionsConfrontation.General_Speak
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.Speak,
+}
+
+option FactionsConfrontation.General_Captions
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.Captions,
+}
+
+option FactionsConfrontation.General_SneakAtNight
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.SneakAtNight,
+}
+
+option FactionsConfrontation.General_CarryTorches
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.CarryTorches,
+}
+
+option FactionsConfrontation.General_LimitedEndurance
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.LimitedEndurance,
+}
+
+option FactionsConfrontation.General_Surrender
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.Surrender,
+}
+
+option FactionsConfrontation.General_RunAway
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.RunAway,
+}
+
+option FactionsConfrontation.General_BleedOut
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.BleedOut,
+}
+
+option FactionsConfrontation.General_Infection
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.Infection,
+}
+
+option FactionsConfrontation.General_DestroyDoor
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.DestroyDoor,
+}
+
+option FactionsConfrontation.General_SmashWindow
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.SmashWindow,
+}
+
+option FactionsConfrontation.General_RemoveBarricade
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.RemoveBarricade,
+}
+
+option FactionsConfrontation.General_DestroyThumpable
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.DestroyThumpable,
+}
+
+option FactionsConfrontation.General_GeneratorCutoff
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.GeneratorCutoff,
+}
+
+option FactionsConfrontation.General_BuildBridge
+{
+    type = boolean, default = false,
+    page = FC_Basic, translation = FactionsConfrontation.BuildBridge,
+}
+
+option FactionsConfrontation.General_BuildRoadblock
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.BuildRoadblock,
+}
+
+option FactionsConfrontation.General_ArrivalIcon
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.ArrivalIcon,
+}
+
+option FactionsConfrontation.General_ArrivalWakeUp
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.ArrivalWakeUp,
+}
+
+option FactionsConfrontation.General_ArrivaPanic
+{
+    type = boolean, default = true,
+    page = FC_Basic, translation = FactionsConfrontation.ArrivaPanic,
+}
+
+option FactionsConfrontation.General_ArrivalSoundLevel
+{
+    type = double, min = 0.0, max = 1.0, default = 0.4,
+    page = FC_Basic, translation = FactionsConfrontation.ArrivalSoundLevel,
+}
+
+option FactionsConfrontation.General_StunlockHitSpeed
+{
+    type = double, min = 1.0, max = 5.0, default = 2.4,
+    page = FC_Basic, translation = FactionsConfrontation.StunlockHitSpeed,
+}
+
+option FactionsConfrontation.General_GunReflexMin
+{
+    type = integer, min = 0, max = 200, default = 18,
+    page = FC_Basic, translation = FactionsConfrontation.GunReflexMin,
+}
+
+option FactionsConfrontation.General_PistolRange
+{
+    type = integer, min = 8, max = 24, default = 10,
+    page = FC_Basic, translation = FactionsConfrontation.PistolRange,
+}
+
+option FactionsConfrontation.General_RifleRange
+{
+    type = integer, min = 8, max = 32, default = 24,
+    page = FC_Basic, translation = FactionsConfrontation.RifleRange,
+}
+
+option FactionsConfrontation.General_OverallAccuracy
+{
+    type = enum, numValues = 5, default = 3,
+    page = FC_Basic, translation = FactionsConfrontation.OverallAccuracy,
+    valueTranslation = FactionsConfrontation.OverallAccuracy,
+}
+
+option FactionsConfrontation.General_HitModel
+{
+    type = enum, numValues = 2, default = 1,
+    page = FC_Basic, translation = FactionsConfrontation.HitModel,
+    valueTranslation = FactionsConfrontation.HitModel,
+}
+
+option FactionsConfrontation.General_DefenderSpawnHourlyChanced
+{
+    type = double, min = 0.0, max = 100.0, default = 2.4,
+    page = FC_Basic, translation = FactionsConfrontation.DefenderSpawnHourlyChance,
+}
+
+option FactionsConfrontation.General_DefenderMaxOccupants
+{
+    type = integer, min = 1, max = 60, default = 16,
+    page = FC_Basic, translation = FactionsConfrontation.DefenderMaxOccupants,
+}
+
+option FactionsConfrontation.General_DefenderLootAmount
+{
+    type = enum, numValues = 6, default = 5,
+    page = FC_Basic, translation = FactionsConfrontation.DefenderLootAmount,
+    valueTranslation = Rarity,
+}
+
+/*** FACTIONS CONFRONTATION EXTENSIONS ***/
+
+/***** FACTIONS CONFRONTATION: 01 WORLD AND SPAWN *****/
+
+option FactionsConfrontationExt.World_Enabled
+{
+    type = boolean, default = true,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_Enabled,
+}
+
+option FactionsConfrontationExt.World_InitialGroups
+{
+    type = integer, min = 0, max = 160, default = 42,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_InitialGroups,
+}
+
+option FactionsConfrontationExt.World_MaxVirtualGroups
+{
+    type = integer, min = 0, max = 500, default = 110,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_MaxVirtualGroups,
+}
+
+option FactionsConfrontationExt.World_MaxPhysicalGroups
+{
+    type = integer, min = 1, max = 80, default = 20,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_MaxPhysicalGroups,
+}
+
+option FactionsConfrontationExt.World_InitialRoadPatrolsGreen
+{
+    type = integer, min = 0, max = 80, default = 12,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_InitialRoadPatrolsGreen,
+}
+
+option FactionsConfrontationExt.World_InitialRoadPatrolsRed
+{
+    type = integer, min = 0, max = 80, default = 12,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_InitialRoadPatrolsRed,
+}
+
+option FactionsConfrontationExt.World_MaxRoadPatrols
+{
+    type = integer, min = 0, max = 160, default = 40,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_MaxRoadPatrols,
+}
+
+option FactionsConfrontationExt.World_SpawnChancePerTenMin
+{
+    type = integer, min = 0, max = 100, default = 34,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_SpawnChancePerTenMin,
+}
+
+option FactionsConfrontationExt.World_PatrolEncounterPairs
+{
+    type = integer, min = 0, max = 80, default = 14,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_PatrolEncounterPairs,
+}
+
+option FactionsConfrontationExt.World_UrbanSpawnRadius
+{
+    type = integer, min = 80, max = 1000, default = 220,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_UrbanSpawnRadius,
+}
+
+option FactionsConfrontationExt.World_RoadPatrolUrbanRadius
+{
+    type = integer, min = 80, max = 1000, default = 260,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_RoadPatrolUrbanRadius,
+}
+
+option FactionsConfrontationExt.World_PatrolTargetRadius
+{
+    type = integer, min = 80, max = 900, default = 240,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_PatrolTargetRadius,
+}
+
+option FactionsConfrontationExt.World_RelocateRuralGroups
+{
+    type = boolean, default = true,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_RelocateRuralGroups,
+}
+
+option FactionsConfrontationExt.World_OffscreenSpawnMinDistance
+{
+    type = integer, min = 20, max = 200, default = 48,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_OffscreenSpawnMinDistance,
+}
+
+option FactionsConfrontationExt.World_OffscreenSpawnMaxDistance
+{
+    type = integer, min = 40, max = 350, default = 78,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_OffscreenSpawnMaxDistance,
+}
+
+option FactionsConfrontationExt.World_OffscreenSpawnSafePlayerRadius
+{
+    type = integer, min = 10, max = 160, default = 38,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_OffscreenSpawnSafePlayerRadius,
+}
+
+option FactionsConfrontationExt.World_OffscreenSpawnSearchRadius
+{
+    type = integer, min = 2, max = 40, default = 9,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_OffscreenSpawnSearchRadius,
+}
+
+option FactionsConfrontationExt.World_NoNewGroupNearPlayerRadius
+{
+    type = integer, min = 100, max = 2500, default = 700,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_NoNewGroupNearPlayerRadius,
+}
+
+option FactionsConfrontationExt.World_VirtualMoveSpeedTilesPerHour
+{
+    type = integer, min = 10, max = 500, default = 120,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_VirtualMoveSpeedTilesPerHour,
+}
+
+option FactionsConfrontationExt.World_VirtualTargetRadius
+{
+    type = integer, min = 40, max = 1200, default = 300,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_VirtualTargetRadius,
+}
+
+option FactionsConfrontationExt.World_RoadPatrolStepRadius
+{
+    type = integer, min = 20, max = 300, default = 90,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_RoadPatrolStepRadius,
+}
+
+option FactionsConfrontationExt.World_RoadPatrolBattleRadius
+{
+    type = integer, min = 20, max = 400, default = 125,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_RoadPatrolBattleRadius,
+}
+
+option FactionsConfrontationExt.World_RoadPatrolBattleKeepRadius
+{
+    type = integer, min = 40, max = 600, default = 190,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_RoadPatrolBattleKeepRadius,
+}
+
+option FactionsConfrontationExt.World_RoadPatrolBattleTickMinutes
+{
+    type = double, min = 1.0, max = 60.0, default = 6.0,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_RoadPatrolBattleTickMinutes,
+}
+
+option FactionsConfrontationExt.World_PreferredPointAttempts
+{
+    type = integer, min = 100, max = 5000, default = 1900,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_PreferredPointAttempts,
+}
+
+option FactionsConfrontationExt.World_FallbackPointAttempts
+{
+    type = integer, min = 50, max = 2000, default = 360,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_FallbackPointAttempts,
+}
+
+option FactionsConfrontationExt.World_VirtualTargetAttempts
+{
+    type = integer, min = 30, max = 1000, default = 240,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.World_VirtualTargetAttempts,
+}
+
+option FactionsConfrontationExt.Director_Enabled
+{
+    type = boolean, default = true,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_Enabled,
+}
+
+option FactionsConfrontationExt.Director_DryRun
+{
+    type = boolean, default = true,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_DryRun,
+}
+
+option FactionsConfrontationExt.Director_DebugLog
+{
+    type = boolean, default = false,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_DebugLog,
+}
+
+option FactionsConfrontationExt.Director_MaxEvents
+{
+    type = integer, min = 20, max = 1000, default = 120,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_MaxEvents,
+}
+
+option FactionsConfrontationExt.Director_WorldMemoryCellSize
+{
+    type = integer, min = 50, max = 1000, default = 150,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_WorldMemoryCellSize,
+}
+
+option FactionsConfrontationExt.Director_MaxMemoryCells
+{
+    type = integer, min = 50, max = 10000, default = 900,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_MaxMemoryCells,
+}
+
+option FactionsConfrontationExt.Director_PressureDecay
+{
+    type = double, min = 0.10, max = 1.00, default = 0.90,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_PressureDecay,
+}
+
+option FactionsConfrontationExt.Director_PlayerTravelHeatDistance
+{
+    type = integer, min = 20, max = 1000, default = 120,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Director_PlayerTravelHeatDistance,
+}
+
+option FactionsConfrontationExt.LOD_PhysicalSpawnRadius
+{
+    type = integer, min = 60, max = 600, default = 260,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.LOD_PhysicalSpawnRadius,
+}
+
+option FactionsConfrontationExt.LOD_PhysicalDespawnRadius
+{
+    type = integer, min = 120, max = 1200, default = 650,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.LOD_PhysicalDespawnRadius,
+}
+
+option FactionsConfrontationExt.LOD_MaxPhysicalNPCPerPlayer
+{
+    type = integer, min = 10, max = 300, default = 70,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.LOD_MaxPhysicalNPCPerPlayer,
+}
+
+option FactionsConfrontationExt.LOD_MaxPhysicalNPCGlobal
+{
+    type = integer, min = 20, max = 800, default = 140,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.LOD_MaxPhysicalNPCGlobal,
+}
+
+/***** FACTIONS CONFRONTATION: 02 BASES AND CAMPS *****/
+
+option FactionsConfrontationExt.Base_ZoneStockMax
+{
+    type = integer, min = 25, max = 10000, default = 999,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_ZoneStockMax,
+}
+
+option FactionsConfrontationExt.Base_ZoneProductionRate
+{
+    type = double, min = 0.0, max = 10.0, default = 1.0,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_ZoneProductionRate,
+}
+
+option FactionsConfrontationExt.Base_ZoneConsumptionRate
+{
+    type = double, min = 0.0, max = 10.0, default = 1.0,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_ZoneConsumptionRate,
+}
+
+option FactionsConfrontationExt.Base_ZoneMarkersEnabled
+{
+    type = boolean, default = true,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_ZoneMarkersEnabled,
+}
+
+option FactionsConfrontationExt.Base_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_Enabled,
+}
+
+option FactionsConfrontationExt.Base_MaxBases
+{
+    type = integer, min = 0, max = 100, default = 24,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_MaxBases,
+}
+
+option FactionsConfrontationExt.Base_Radius
+{
+    type = integer, min = 20, max = 250, default = 82,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_Radius,
+}
+
+option FactionsConfrontationExt.Base_MinDistance
+{
+    type = integer, min = 100, max = 2500, default = 640,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_MinDistance,
+}
+
+option FactionsConfrontationExt.Base_SearchAttempts
+{
+    type = integer, min = 20, max = 2000, default = 180,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_SearchAttempts,
+}
+
+option FactionsConfrontationExt.Base_CaptureHours
+{
+    type = double, min = 0.05, max = 24.0, default = 0.75,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_CaptureHours,
+}
+
+option FactionsConfrontationExt.Base_StatusWindowTimeoutSeconds
+{
+    type = integer, min = 1, max = 120, default = 8,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_StatusWindowTimeoutSeconds,
+}
+
+option FactionsConfrontationExt.Base_GroupTargetRadius
+{
+    type = integer, min = 200, max = 6000, default = 2200,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_GroupTargetRadius,
+}
+
+option FactionsConfrontationExt.Base_HomeAssignRadius
+{
+    type = integer, min = 50, max = 2000, default = 420,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_HomeAssignRadius,
+}
+
+option FactionsConfrontationExt.Base_ZoneRebalanceMinutes
+{
+    type = integer, min = 1, max = 240, default = 15,
+    page = FC_Territories, translation = FactionsConfrontationExt.Base_ZoneRebalanceMinutes,
+}
+
+/***** FACTIONS CONFRONTATION: 03 FACTIONS AND MERCENARIES *****/
+
+option FactionsConfrontationExt.Faction_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_Enabled,
+}
+
+option FactionsConfrontationExt.Faction_PlayerMenuEnabled
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_PlayerMenuEnabled,
+}
+
+option FactionsConfrontationExt.Faction_DefaultPlayerSide
+{
+    type = enum, numValues = 4, default = 3,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_DefaultPlayerSide,
+    valueTranslation = FactionsConfrontationExt.FactionSide,
+}
+
+option FactionsConfrontationExt.Faction_BlackDurationMinutes
+{
+    type = integer, min = 1, max = 1440, default = 30,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_BlackDurationMinutes,
+}
+
+option FactionsConfrontationExt.Faction_PlayerAutoSideOnHit
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_PlayerAutoSideOnHit,
+}
+
+option FactionsConfrontationExt.Faction_NPCPanicRogueEnabled
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_NPCPanicRogueEnabled,
+}
+
+option FactionsConfrontationExt.Faction_NPCPanicFearThreshold
+{
+    type = double, min = 0.0, max = 1.0, default = 0.92,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_NPCPanicFearThreshold,
+}
+
+option FactionsConfrontationExt.Faction_NPCPanicMoraleMax
+{
+    type = double, min = 0.0, max = 1.0, default = 0.22,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_NPCPanicMoraleMax,
+}
+
+option FactionsConfrontationExt.Faction_NPCPanicRogueChancePerMinute
+{
+    type = double, min = 0.0, max = 100.0, default = 35.0,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_NPCPanicRogueChancePerMinute,
+}
+
+option FactionsConfrontationExt.Faction_RedGoodMoodHoldFire
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_RedGoodMoodHoldFire,
+}
+
+option FactionsConfrontationExt.Faction_GoodMoodMoraleThreshold
+{
+    type = double, min = 0.0, max = 1.0, default = 0.86,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_GoodMoodMoraleThreshold,
+}
+
+option FactionsConfrontationExt.Faction_GoodMoodFearMax
+{
+    type = double, min = 0.0, max = 1.0, default = 0.22,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_GoodMoodFearMax,
+}
+
+option FactionsConfrontationExt.Faction_GoodMoodNeutralMinutes
+{
+    type = integer, min = 1, max = 1440, default = 20,
+    page = FC_Forces, translation = FactionsConfrontationExt.Faction_GoodMoodNeutralMinutes,
+}
+
+option FactionsConfrontationExt.Mercenary_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_Enabled,
+}
+
+option FactionsConfrontationExt.Mercenary_HireEnabled
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_HireEnabled,
+}
+
+option FactionsConfrontationExt.Mercenary_BlueRoadPatrolChance
+{
+    type = double, min = 0.0, max = 100.0, default = 25.0,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_BlueRoadPatrolChance,
+}
+
+option FactionsConfrontationExt.Mercenary_BlueGroupChance
+{
+    type = double, min = 0.0, max = 100.0, default = 10.0,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_BlueGroupChance,
+}
+
+option FactionsConfrontationExt.Mercenary_EliteOnBlue
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_EliteOnBlue,
+}
+
+option FactionsConfrontationExt.Mercenary_EliteHealth
+{
+    type = double, min = 1.0, max = 10.0, default = 4.0,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_EliteHealth,
+}
+
+option FactionsConfrontationExt.Mercenary_AccuracyBoost
+{
+    type = double, min = 1.0, max = 5.0, default = 1.75,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_AccuracyBoost,
+}
+
+option FactionsConfrontationExt.Mercenary_PrimaryMagCount
+{
+    type = integer, min = 0, max = 50, default = 8,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_PrimaryMagCount,
+}
+
+option FactionsConfrontationExt.Mercenary_SecondaryMagCount
+{
+    type = integer, min = 0, max = 50, default = 4,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_SecondaryMagCount,
+}
+
+option FactionsConfrontationExt.Mercenary_GoldJewelryCost
+{
+    type = integer, min = 0, max = 100, default = 2,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_GoldJewelryCost,
+}
+
+option FactionsConfrontationExt.Mercenary_AllowSilverPayment
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_AllowSilverPayment,
+}
+
+option FactionsConfrontationExt.Mercenary_SilverJewelryCost
+{
+    type = integer, min = 0, max = 300, default = 6,
+    page = FC_Forces, translation = FactionsConfrontationExt.Mercenary_SilverJewelryCost,
+}
+
+/***** FACTIONS CONFRONTATION: 04 AI, ORDERS AND TACTICS *****/
+
+option FactionsConfrontationExt.Sense_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Sense_Enabled,
+}
+
+option FactionsConfrontationExt.Sense_ViewDistance
+{
+    type = integer, min = 5, max = 90, default = 36,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Sense_ViewDistance,
+}
+
+option FactionsConfrontationExt.Sense_ZombieViewDistance
+{
+    type = integer, min = 5, max = 90, default = 26,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Sense_ZombieViewDistance,
+}
+
+option FactionsConfrontationExt.Sense_HearingRadius
+{
+    type = integer, min = 2, max = 120, default = 12,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Sense_HearingRadius,
+}
+
+option FactionsConfrontationExt.Sense_MemorySeconds
+{
+    type = double, min = 1.0, max = 300.0, default = 5.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Sense_MemorySeconds,
+}
+
+option FactionsConfrontationExt.Radio_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_Enabled,
+}
+
+option FactionsConfrontationExt.Radio_Radius
+{
+    type = integer, min = 10, max = 300, default = 72,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_Radius,
+}
+
+option FactionsConfrontationExt.Radio_MemorySeconds
+{
+    type = integer, min = 5, max = 600, default = 38,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_MemorySeconds,
+}
+
+option FactionsConfrontationExt.Radio_FlankEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_FlankEnabled,
+}
+
+option FactionsConfrontationExt.Radio_FlankDistance
+{
+    type = double, min = 2.0, max = 40.0, default = 8.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_FlankDistance,
+}
+
+option FactionsConfrontationExt.Radio_CoverDistance
+{
+    type = double, min = 2.0, max = 30.0, default = 5.5,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_CoverDistance,
+}
+
+option FactionsConfrontationExt.Radio_OverwatchDistance
+{
+    type = double, min = 4.0, max = 60.0, default = 13.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_OverwatchDistance,
+}
+
+option FactionsConfrontationExt.Radio_FriendlyFireCheck
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Radio_FriendlyFireCheck,
+}
+
+option FactionsConfrontationExt.RadioIntercept_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_Enabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_RequireRadio
+{
+    type = boolean, default = false,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_RequireRadio,
+}
+
+option FactionsConfrontationExt.RadioIntercept_RequirePoweredRadio
+{
+    type = boolean, default = false,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_RequirePoweredRadio,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CooldownMinutes
+{
+    type = integer, min = 1, max = 1440, default = 1,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CooldownMinutes,
+}
+
+option FactionsConfrontationExt.RadioIntercept_ChatLanguage
+{
+    type = enum, numValues = 4, default = 1,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_ChatLanguage,
+    valueTranslation = FactionsConfrontationExt.RadioIntercept_ChatLanguage,
+}
+
+option FactionsConfrontationExt.RadioIntercept_RedFrequency
+{
+    type = double, min = 80.0, max = 200.0, default = 143.7,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_RedFrequency,
+}
+
+option FactionsConfrontationExt.RadioIntercept_GreenFrequency
+{
+    type = double, min = 80.0, max = 200.0, default = 152.3,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_GreenFrequency,
+}
+
+option FactionsConfrontationExt.RadioIntercept_BlueFrequency
+{
+    type = double, min = 80.0, max = 200.0, default = 161.5,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_BlueFrequency,
+}
+
+option FactionsConfrontationExt.RadioIntercept_BlackFrequency
+{
+    type = double, min = 80.0, max = 200.0, default = 171.9,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_BlackFrequency,
+}
+
+option FactionsConfrontationExt.RadioIntercept_SignalRange
+{
+    type = integer, min = 80, max = 8000, default = 1800,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_SignalRange,
+}
+
+option FactionsConfrontationExt.RadioIntercept_FrequencyTolerance
+{
+    type = double, min = 0.02, max = 5.0, default = 0.35,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_FrequencyTolerance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_LockThreshold
+{
+    type = integer, min = 1, max = 100, default = 62,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_LockThreshold,
+}
+
+option FactionsConfrontationExt.RadioIntercept_MarkerEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_MarkerEnabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_MarkerHours
+{
+    type = double, min = 0.1, max = 168.0, default = 6.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_MarkerHours,
+}
+
+option FactionsConfrontationExt.RadioIntercept_MarkerNoiseTiles
+{
+    type = integer, min = 0, max = 600, default = 45,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_MarkerNoiseTiles,
+}
+
+option FactionsConfrontationExt.RadioIntercept_MinMarkerLock
+{
+    type = integer, min = 1, max = 100, default = 70,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_MinMarkerLock,
+}
+
+option FactionsConfrontationExt.RadioIntercept_SupplyCacheEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_SupplyCacheEnabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_SupplyCacheSignalChance
+{
+    type = integer, min = 0, max = 100, default = 18,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_SupplyCacheSignalChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_SupplyCacheFillChance
+{
+    type = integer, min = 0, max = 100, default = 80,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_SupplyCacheFillChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_SupplyCacheSearchRadius
+{
+    type = integer, min = 10, max = 400, default = 80,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_SupplyCacheSearchRadius,
+}
+
+option FactionsConfrontationExt.RadioIntercept_SupplyCacheMaxItems
+{
+    type = integer, min = 4, max = 80, default = 24,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_SupplyCacheMaxItems,
+}
+
+option FactionsConfrontationExt.RadioIntercept_MonitorEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_MonitorEnabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_MonitorTickMinutes
+{
+    type = integer, min = 1, max = 240, default = 10,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_MonitorTickMinutes,
+}
+
+option FactionsConfrontationExt.RadioIntercept_MonitorMinLock
+{
+    type = integer, min = 1, max = 100, default = 58,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_MonitorMinLock,
+}
+
+option FactionsConfrontationExt.RadioIntercept_EncryptionEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_EncryptionEnabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_RedEncryptedChance
+{
+    type = integer, min = 0, max = 100, default = 35,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_RedEncryptedChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_GreenEncryptedChance
+{
+    type = integer, min = 0, max = 100, default = 35,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_GreenEncryptedChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_BlueEncryptedChance
+{
+    type = integer, min = 0, max = 100, default = 15,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_BlueEncryptedChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_BlackEncryptedChance
+{
+    type = integer, min = 0, max = 100, default = 55,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_BlackEncryptedChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_DecodeProgressPerLock
+{
+    type = integer, min = 1, max = 100, default = 18,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_DecodeProgressPerLock,
+}
+
+option FactionsConfrontationExt.RadioIntercept_DecodeThreshold
+{
+    type = integer, min = 10, max = 500, default = 100,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_DecodeThreshold,
+}
+
+option FactionsConfrontationExt.RadioIntercept_WorldEventsEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_WorldEventsEnabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_EventMemoryHours
+{
+    type = double, min = 0.5, max = 168.0, default = 12.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_EventMemoryHours,
+}
+
+option FactionsConfrontationExt.RadioIntercept_EventRefreshMinutes
+{
+    type = integer, min = 1, max = 240, default = 10,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_EventRefreshMinutes,
+}
+
+option FactionsConfrontationExt.RadioIntercept_EventMaxCount
+{
+    type = integer, min = 5, max = 500, default = 80,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_EventMaxCount,
+}
+
+option FactionsConfrontationExt.RadioIntercept_EventWeightBonus
+{
+    type = double, min = 1.0, max = 20.0, default = 4.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_EventWeightBonus,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelEnabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelBaseChance
+{
+    type = double, min = 0.0, max = 100.0, default = 4.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelBaseChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelMonitorChance
+{
+    type = double, min = 0.0, max = 100.0, default = 2.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelMonitorChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelBlackBonus
+{
+    type = double, min = 0.0, max = 100.0, default = 8.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelBlackBonus,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelHeatPerScan
+{
+    type = double, min = 0.0, max = 50.0, default = 2.5,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelHeatPerScan,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelHeatDecayHours
+{
+    type = double, min = 0.1, max = 168.0, default = 12.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelHeatDecayHours,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelMaxHeat
+{
+    type = double, min = 0.0, max = 200.0, default = 60.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelMaxHeat,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelBurnHours
+{
+    type = double, min = 0.1, max = 72.0, default = 4.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelBurnHours,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelFalseSignalChance
+{
+    type = double, min = 0.0, max = 100.0, default = 45.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelFalseSignalChance,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelMarkerEnabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelMarkerEnabled,
+}
+
+option FactionsConfrontationExt.RadioIntercept_CounterIntelMarkerHours
+{
+    type = double, min = 0.1, max = 72.0, default = 3.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_CounterIntelMarkerHours,
+}
+
+option FactionsConfrontationExt.RadioIntercept_HistoryMaxAgeHours
+{
+    type = double, min = 1.0, max = 720.0, default = 48.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_HistoryMaxAgeHours,
+}
+
+option FactionsConfrontationExt.RadioIntercept_RadioSilenceHours
+{
+    type = double, min = 0.1, max = 72.0, default = 2.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_RadioSilenceHours,
+}
+
+option FactionsConfrontationExt.RadioIntercept_RadioSilenceHeatReduction
+{
+    type = double, min = 0.0, max = 100.0, default = 12.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.RadioIntercept_RadioSilenceHeatReduction,
+}
+
+option FactionsConfrontationExt.Orders_FollowDistance
+{
+    type = double, min = 1.0, max = 15.0, default = 4.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_FollowDistance,
+}
+
+option FactionsConfrontationExt.Orders_GuardPlayerDistance
+{
+    type = double, min = 2.0, max = 25.0, default = 5.5,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_GuardPlayerDistance,
+}
+
+option FactionsConfrontationExt.Orders_HoldRadius
+{
+    type = double, min = 0.5, max = 20.0, default = 2.5,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_HoldRadius,
+}
+
+option FactionsConfrontationExt.Orders_GuardRadius
+{
+    type = double, min = 3.0, max = 100.0, default = 10.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_GuardRadius,
+}
+
+option FactionsConfrontationExt.Orders_PatrolRadius
+{
+    type = double, min = 5.0, max = 160.0, default = 18.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_PatrolRadius,
+}
+
+option FactionsConfrontationExt.Orders_DefendRadius
+{
+    type = double, min = 3.0, max = 140.0, default = 14.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_DefendRadius,
+}
+
+option FactionsConfrontationExt.Orders_LootScanRadius
+{
+    type = integer, min = 3, max = 120, default = 12,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_LootScanRadius,
+}
+
+option FactionsConfrontationExt.Orders_FleeDistance
+{
+    type = double, min = 3.0, max = 80.0, default = 9.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_FleeDistance,
+}
+
+option FactionsConfrontationExt.Orders_KeepDistance
+{
+    type = double, min = 1.0, max = 40.0, default = 4.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_KeepDistance,
+}
+
+option FactionsConfrontationExt.Orders_SearchRadius
+{
+    type = double, min = 3.0, max = 120.0, default = 12.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_SearchRadius,
+}
+
+option FactionsConfrontationExt.Orders_TacticalRadioSearchRadius
+{
+    type = double, min = 10.0, max = 220.0, default = 46.0,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_TacticalRadioSearchRadius,
+}
+
+option FactionsConfrontationExt.Orders_HumanizedSearchPauseTicks
+{
+    type = integer, min = 5, max = 900, default = 65,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_HumanizedSearchPauseTicks,
+}
+
+option FactionsConfrontationExt.Orders_DefensiveShootDistance
+{
+    type = integer, min = 2, max = 60, default = 8,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Orders_DefensiveShootDistance,
+}
+
+option FactionsConfrontationExt.Utility_MemorySeconds
+{
+    type = integer, min = 10, max = 1200, default = 120,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Utility_MemorySeconds,
+}
+
+option FactionsConfrontationExt.Utility_AutonomyDelayMinutes
+{
+    type = double, min = 0.0, max = 180.0, default = 2.1,
+    page = FC_Tactics, translation = FactionsConfrontationExt.Utility_AutonomyDelayMinutes,
+}
+
+/***** FACTIONS CONFRONTATION: 05 COMBAT, HEALTH AND NEEDS *****/
+
+option FactionsConfrontationExt.Combat_MinimumGunDistance
+{
+    type = double, min = 1.0, max = 50.0, default = 5.5,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Combat_MinimumGunDistance,
+}
+
+option FactionsConfrontationExt.Combat_IdealGunDistance
+{
+    type = double, min = 2.0, max = 80.0, default = 11.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Combat_IdealGunDistance,
+}
+
+option FactionsConfrontationExt.Combat_HoldFireCooldownSeconds
+{
+    type = double, min = 0.0, max = 60.0, default = 2.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Combat_HoldFireCooldownSeconds,
+}
+
+option FactionsConfrontationExt.Combat_ReturnFireSeconds
+{
+    type = double, min = 0.0, max = 120.0, default = 8.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Combat_ReturnFireSeconds,
+}
+
+option FactionsConfrontationExt.Combat_DangerCloseDistance
+{
+    type = double, min = 1.0, max = 60.0, default = 7.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Combat_DangerCloseDistance,
+}
+
+option FactionsConfrontationExt.Combat_DefensiveDistance
+{
+    type = double, min = 1.0, max = 80.0, default = 9.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Combat_DefensiveDistance,
+}
+
+option FactionsConfrontationExt.Combat_SuppressDistance
+{
+    type = double, min = 5.0, max = 160.0, default = 32.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Combat_SuppressDistance,
+}
+
+option FactionsConfrontationExt.Health_MaxHealth
+{
+    type = double, min = 1.0, max = 10.0, default = 1.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Health_MaxHealth,
+}
+
+option FactionsConfrontationExt.Health_HardMaxHealth
+{
+    type = double, min = 1.0, max = 12.0, default = 1.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Health_HardMaxHealth,
+}
+
+option FactionsConfrontationExt.Health_AutoRegenEnabled
+{
+    type = boolean, default = true,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Health_AutoRegenEnabled,
+}
+
+option FactionsConfrontationExt.Health_RegenDelaySeconds
+{
+    type = double, min = 0.0, max = 120.0, default = 5.5,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Health_RegenDelaySeconds,
+}
+
+option FactionsConfrontationExt.Health_RegenPerSecond
+{
+    type = double, min = 0.0, max = 5.0, default = 0.35,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Health_RegenPerSecond,
+}
+
+option FactionsConfrontationExt.Health_ZombieDamageToNPC
+{
+    type = boolean, default = true,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Health_ZombieDamageToNPC,
+}
+
+option FactionsConfrontationExt.Morale_LowHealthThreshold
+{
+    type = double, min = 0.05, max = 0.95, default = 0.36,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Morale_LowHealthThreshold,
+}
+
+option FactionsConfrontationExt.Morale_CriticalHealthThreshold
+{
+    type = double, min = 0.01, max = 0.80, default = 0.22,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Morale_CriticalHealthThreshold,
+}
+
+option FactionsConfrontationExt.Morale_FleeFearThreshold
+{
+    type = double, min = 0.0, max = 1.0, default = 0.78,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Morale_FleeFearThreshold,
+}
+
+option FactionsConfrontationExt.Morale_HoldMoraleThreshold
+{
+    type = double, min = 0.0, max = 1.0, default = 0.42,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Morale_HoldMoraleThreshold,
+}
+
+option FactionsConfrontationExt.Morale_ThreatFearMultiplier
+{
+    type = double, min = 0.0, max = 5.0, default = 1.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Morale_ThreatFearMultiplier,
+}
+
+option FactionsConfrontationExt.Morale_ThreatMoraleLossMultiplier
+{
+    type = double, min = 0.0, max = 5.0, default = 1.0,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Morale_ThreatMoraleLossMultiplier,
+}
+
+option FactionsConfrontationExt.Needs_Enabled
+{
+    type = boolean, default = true,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_Enabled,
+}
+
+option FactionsConfrontationExt.Needs_TickMinutes
+{
+    type = double, min = 0.1, max = 30.0, default = 1.08,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_TickMinutes,
+}
+
+option FactionsConfrontationExt.Needs_HungerLimit
+{
+    type = double, min = 0.0, max = 1.0, default = 0.74,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_HungerLimit,
+}
+
+option FactionsConfrontationExt.Needs_WaterLimit
+{
+    type = double, min = 0.0, max = 1.0, default = 0.78,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_WaterLimit,
+}
+
+option FactionsConfrontationExt.Needs_RestLimit
+{
+    type = double, min = 0.0, max = 1.0, default = 0.82,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_RestLimit,
+}
+
+option FactionsConfrontationExt.Needs_BoredomLimit
+{
+    type = double, min = 0.0, max = 1.0, default = 0.65,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_BoredomLimit,
+}
+
+option FactionsConfrontationExt.Needs_FoodRatePerHour
+{
+    type = double, min = 0.0, max = 1.0, default = 0.030,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_FoodRatePerHour,
+}
+
+option FactionsConfrontationExt.Needs_WaterRatePerHour
+{
+    type = double, min = 0.0, max = 1.0, default = 0.040,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_WaterRatePerHour,
+}
+
+option FactionsConfrontationExt.Needs_RestRatePerHour
+{
+    type = double, min = 0.0, max = 1.0, default = 0.028,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_RestRatePerHour,
+}
+
+option FactionsConfrontationExt.Needs_BoredomRatePerHour
+{
+    type = double, min = -1.0, max = 1.0, default = 0.025,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_BoredomRatePerHour,
+}
+
+option FactionsConfrontationExt.Needs_CombatNeedMultiplier
+{
+    type = double, min = 0.1, max = 5.0, default = 1.8,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_CombatNeedMultiplier,
+}
+
+option FactionsConfrontationExt.Needs_CombatRestMultiplier
+{
+    type = double, min = 0.1, max = 5.0, default = 2.1,
+    page = FC_CombatSurvival, translation = FactionsConfrontationExt.Needs_CombatRestMultiplier,
+}
+
+/***** FACTIONS CONFRONTATION: 06 PROGRESSION, LOOT AND PERSISTENCE *****/
+
+option FactionsConfrontationExt.Persistent_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Progression, translation = FactionsConfrontationExt.Persistent_Enabled,
+}
+
+option FactionsConfrontationExt.Persistent_MaxProfiles
+{
+    type = integer, min = 50, max = 5000, default = 500,
+    page = FC_Progression, translation = FactionsConfrontationExt.Persistent_MaxProfiles,
+}
+
+option FactionsConfrontationExt.Persistent_MaxInventoryLite
+{
+    type = integer, min = 0, max = 120, default = 36,
+    page = FC_Progression, translation = FactionsConfrontationExt.Persistent_MaxInventoryLite,
+}
+
+option FactionsConfrontationExt.Progression_MaxLevel
+{
+    type = integer, min = 1, max = 100, default = 30,
+    page = FC_Progression, translation = FactionsConfrontationExt.Progression_MaxLevel,
+}
+
+option FactionsConfrontationExt.Progression_MaxSkill
+{
+    type = integer, min = 1, max = 20, default = 10,
+    page = FC_Progression, translation = FactionsConfrontationExt.Progression_MaxSkill,
+}
+
+option FactionsConfrontationExt.Progression_XPMultiplier
+{
+    type = double, min = 0.0, max = 10.0, default = 1.0,
+    page = FC_Progression, translation = FactionsConfrontationExt.Progression_XPMultiplier,
+}
+
+option FactionsConfrontationExt.Loot_GlobalChanceMultiplier
+{
+    type = double, min = 0.0, max = 5.0, default = 1.0,
+    page = FC_Progression, translation = FactionsConfrontationExt.Loot_GlobalChanceMultiplier,
+}
+
+/***** FACTIONS CONFRONTATION: 07 DEBUG AND MAP *****/
+
+option FactionsConfrontationExt.Debug_MapMarkersEnabled
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_MapMarkersEnabled,
+}
+
+option FactionsConfrontationExt.Debug_WorldMapMarkersEnabled
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_WorldMapMarkersEnabled,
+}
+
+option FactionsConfrontationExt.Debug_MiniMapMarkersEnabled
+{
+    type = boolean, default = false,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_MiniMapMarkersEnabled,
+}
+
+option FactionsConfrontationExt.Debug_NPCMarkersEnabled
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_NPCMarkersEnabled,
+}
+
+option FactionsConfrontationExt.Debug_ShowBattleIcon
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_ShowBattleIcon,
+}
+
+option FactionsConfrontationExt.Debug_ShowPatrolLetterP
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_ShowPatrolLetterP,
+}
+
+option FactionsConfrontationExt.Debug_ShowStateOverHead
+{
+    type = boolean, default = false,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_ShowStateOverHead,
+}
+
+option FactionsConfrontationExt.Debug_DiagnosticsLog
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_DiagnosticsLog,
+}
+
+option FactionsConfrontationExt.Debug_DiagnosticsVerbose
+{
+    type = boolean, default = false,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_DiagnosticsVerbose,
+}
+
+option FactionsConfrontationExt.Debug_DiagnosticsRateMs
+{
+    type = integer, min = 0, max = 60000, default = 5000,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_DiagnosticsRateMs,
+}
+
+option FactionsConfrontationExt.Debug_RequestSyncOnMapOpen
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_RequestSyncOnMapOpen,
+}
+
+option FactionsConfrontationExt.Debug_MaxWorldMapMarkers
+{
+    type = integer, min = 0, max = 5000, default = 900,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_MaxWorldMapMarkers,
+}
+
+option FactionsConfrontationExt.Debug_MaxMiniMapMarkers
+{
+    type = integer, min = 0, max = 2000, default = 90,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_MaxMiniMapMarkers,
+}
+
+option FactionsConfrontationExt.Debug_StaleMarkerMinutes
+{
+    type = integer, min = 0, max = 10080, default = 180,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_StaleMarkerMinutes,
+}
+
+option FactionsConfrontationExt.Debug_MapMarkerAutoMaterialize
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_MapMarkerAutoMaterialize,
+}
+
+option FactionsConfrontationExt.Debug_MapMarkerMaterializeCooldownMs
+{
+    type = integer, min = 500, max = 30000, default = 2500,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_MapMarkerMaterializeCooldownMs,
+}
+
+option FactionsConfrontationExt.Debug_VirtualMarkerActivationRadius
+{
+    type = integer, min = 12, max = 220, default = 70,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_VirtualMarkerActivationRadius,
+}
+
+option FactionsConfrontationExt.Debug_SortMarkersByImportance
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Debug_SortMarkersByImportance,
+}
+
+/***** FACTIONS CONFRONTATION: 08 PERFORMANCE AND QUEUES *****/
+
+option FactionsConfrontationExt.SpawnQueue_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.SpawnQueue_Enabled,
+}
+
+option FactionsConfrontationExt.SpawnQueue_MaxPerTick
+{
+    type = integer, min = 1, max = 20, default = 4,
+    page = FC_Performance, translation = FactionsConfrontationExt.SpawnQueue_MaxPerTick,
+}
+
+option FactionsConfrontationExt.SpawnQueue_MaxEventsPerTick
+{
+    type = integer, min = 1, max = 10, default = 1,
+    page = FC_Performance, translation = FactionsConfrontationExt.SpawnQueue_MaxEventsPerTick,
+}
+
+option FactionsConfrontationExt.SpawnQueue_MaxPending
+{
+    type = integer, min = 20, max = 1000, default = 180,
+    page = FC_Performance, translation = FactionsConfrontationExt.SpawnQueue_MaxPending,
+}
+
+option FactionsConfrontationExt.AIWork_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_Enabled,
+}
+
+option FactionsConfrontationExt.AIWork_MaxHeavyOpsPerTick
+{
+    type = integer, min = 1, max = 120, default = 18,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_MaxHeavyOpsPerTick,
+}
+
+option FactionsConfrontationExt.AIWork_CombatOpsPerTick
+{
+    type = integer, min = 1, max = 160, default = 24,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_CombatOpsPerTick,
+}
+
+option FactionsConfrontationExt.AIWork_UtilityOpsPerTick
+{
+    type = integer, min = 1, max = 120, default = 18,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_UtilityOpsPerTick,
+}
+
+option FactionsConfrontationExt.AIWork_ZombieOpsPerTick
+{
+    type = integer, min = 1, max = 180, default = 28,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_ZombieOpsPerTick,
+}
+
+option FactionsConfrontationExt.AIWork_MarkerOpsPerTick
+{
+    type = integer, min = 1, max = 240, default = 48,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_MarkerOpsPerTick,
+}
+
+option FactionsConfrontationExt.AIWork_CombatThinkInterval
+{
+    type = integer, min = 1, max = 20, default = 2,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_CombatThinkInterval,
+}
+
+option FactionsConfrontationExt.AIWork_IdleThinkInterval
+{
+    type = integer, min = 1, max = 60, default = 8,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_IdleThinkInterval,
+}
+
+option FactionsConfrontationExt.AIWork_FarThinkInterval
+{
+    type = integer, min = 4, max = 180, default = 32,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_FarThinkInterval,
+}
+
+option FactionsConfrontationExt.AIWork_ZombieCheckInterval
+{
+    type = integer, min = 1, max = 60, default = 4,
+    page = FC_Performance, translation = FactionsConfrontationExt.AIWork_ZombieCheckInterval,
+}
+
+
+
+option FactionsConfrontationExt.Spy_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_Enabled,
+}
+
+option FactionsConfrontationExt.Spy_GoldJewelryCost
+{
+    type = integer, min = 0, max = 100, default = 1,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_GoldJewelryCost,
+}
+
+option FactionsConfrontationExt.Spy_AllowSilverPayment
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_AllowSilverPayment,
+}
+
+option FactionsConfrontationExt.Spy_SilverJewelryCost
+{
+    type = integer, min = 0, max = 300, default = 3,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_SilverJewelryCost,
+}
+
+option FactionsConfrontationExt.Spy_ShowMarkers
+{
+    type = boolean, default = true,
+    page = FC_MapIntel, translation = FactionsConfrontationExt.Spy_ShowMarkers,
+}
+
+option FactionsConfrontationExt.Spy_AllSpiesAutoAlly
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_AllSpiesAutoAlly,
+}
+
+option FactionsConfrontationExt.Spy_SabotageEnabled
+{
+    type = boolean, default = true,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_SabotageEnabled,
+}
+
+option FactionsConfrontationExt.Spy_SabotageTickMinutes
+{
+    type = integer, min = 1, max = 1440, default = 30,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_SabotageTickMinutes,
+}
+
+option FactionsConfrontationExt.Spy_BaseTheftRate
+{
+    type = double, min = 0.0, max = 1.0, default = 0.12,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_BaseTheftRate,
+}
+
+option FactionsConfrontationExt.Spy_FalseRadioChance
+{
+    type = double, min = 0.0, max = 100.0, default = 35.0,
+    page = FC_Forces, translation = FactionsConfrontationExt.Spy_FalseRadioChance,
+}
+
+option FactionsConfrontationExt.Runtime_TaskQueueEnabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.Runtime_TaskQueueEnabled,
+}
+
+option FactionsConfrontationExt.Runtime_TaskQueueHighBudget
+{
+    type = integer, min = 0, max = 200, default = 6,
+    page = FC_Performance, translation = FactionsConfrontationExt.Runtime_TaskQueueHighBudget,
+}
+
+option FactionsConfrontationExt.Runtime_TaskQueueNormalBudget
+{
+    type = integer, min = 0, max = 300, default = 12,
+    page = FC_Performance, translation = FactionsConfrontationExt.Runtime_TaskQueueNormalBudget,
+}
+
+option FactionsConfrontationExt.Runtime_TaskQueueLowBudget
+{
+    type = integer, min = 0, max = 500, default = 18,
+    page = FC_Performance, translation = FactionsConfrontationExt.Runtime_TaskQueueLowBudget,
+}
+
+option FactionsConfrontationExt.Runtime_SettingsCacheSeconds
+{
+    type = integer, min = 0, max = 120, default = 5,
+    page = FC_Performance, translation = FactionsConfrontationExt.Runtime_SettingsCacheSeconds,
+}
+
+option FactionsConfrontationExt.Runtime_TablePoolMax
+{
+    type = integer, min = 0, max = 512, default = 64,
+    page = FC_Performance, translation = FactionsConfrontationExt.Runtime_TablePoolMax,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_Enabled,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_Debug
+{
+    type = boolean, default = false,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_Debug,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_SampleTicks
+{
+    type = integer, min = 5, max = 300, default = 30,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_SampleTicks,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_FastVehicleSpeed
+{
+    type = double, min = 1.0, max = 80.0, default = 8.0,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_FastVehicleSpeed,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_TravelCooldownSeconds
+{
+    type = integer, min = 0, max = 120, default = 12,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_TravelCooldownSeconds,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_DeferMaterialization
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_DeferMaterialization,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_DeferRetrySeconds
+{
+    type = integer, min = 1, max = 120, default = 10,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_DeferRetrySeconds,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_CriticalRetrySeconds
+{
+    type = integer, min = 1, max = 180, default = 18,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_CriticalRetrySeconds,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_NPCHigh
+{
+    type = integer, min = 0, max = 500, default = 32,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_NPCHigh,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_NPCCritical
+{
+    type = integer, min = 0, max = 1000, default = 56,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_NPCCritical,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_PendingSpawnHigh
+{
+    type = integer, min = 0, max = 1000, default = 10,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_PendingSpawnHigh,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_PendingSpawnCritical
+{
+    type = integer, min = 0, max = 5000, default = 24,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_PendingSpawnCritical,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_PendingMarkerHigh
+{
+    type = integer, min = 0, max = 5000, default = 160,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_PendingMarkerHigh,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_PendingMarkerCritical
+{
+    type = integer, min = 0, max = 20000, default = 420,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_PendingMarkerCritical,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_PendingTaskHigh
+{
+    type = integer, min = 0, max = 5000, default = 80,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_PendingTaskHigh,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_PendingTaskCritical
+{
+    type = integer, min = 0, max = 20000, default = 180,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_PendingTaskCritical,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_MediumThreshold
+{
+    type = integer, min = 1, max = 1000, default = 38,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_MediumThreshold,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_HighThreshold
+{
+    type = integer, min = 1, max = 1200, default = 68,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_HighThreshold,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_CriticalThreshold
+{
+    type = integer, min = 1, max = 1600, default = 102,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_CriticalThreshold,
+}
+
+option FactionsConfrontationExt.StreamingRuntime_HeatDecay
+{
+    type = integer, min = 0, max = 200, default = 11,
+    page = FC_Performance, translation = FactionsConfrontationExt.StreamingRuntime_HeatDecay,
+}
+
+
+option FactionsConfrontationExt.CrowdBudget_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_Enabled,
+}
+
+option FactionsConfrontationExt.CrowdBudget_Debug
+{
+    type = boolean, default = false,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_Debug,
+}
+
+option FactionsConfrontationExt.CrowdBudget_SampleTicks
+{
+    type = integer, min = 5, max = 300, default = 45,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_SampleTicks,
+}
+
+option FactionsConfrontationExt.CrowdBudget_NearRadius
+{
+    type = integer, min = 40, max = 800, default = 180,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_NearRadius,
+}
+
+option FactionsConfrontationExt.CrowdBudget_ZombieRadius
+{
+    type = integer, min = 40, max = 800, default = 140,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_ZombieRadius,
+}
+
+option FactionsConfrontationExt.CrowdBudget_MaxNPCNearPlayer
+{
+    type = integer, min = 1, max = 500, default = 42,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_MaxNPCNearPlayer,
+}
+
+option FactionsConfrontationExt.CrowdBudget_CriticalNPCNearPlayer
+{
+    type = integer, min = 1, max = 1000, default = 64,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_CriticalNPCNearPlayer,
+}
+
+option FactionsConfrontationExt.CrowdBudget_MaxZombiesNearPlayer
+{
+    type = integer, min = 0, max = 2000, default = 220,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_MaxZombiesNearPlayer,
+}
+
+option FactionsConfrontationExt.CrowdBudget_CriticalZombiesNearPlayer
+{
+    type = integer, min = 0, max = 4000, default = 360,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_CriticalZombiesNearPlayer,
+}
+
+option FactionsConfrontationExt.CrowdBudget_RetrySeconds
+{
+    type = integer, min = 1, max = 300, default = 12,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_RetrySeconds,
+}
+
+option FactionsConfrontationExt.CrowdBudget_CriticalRetrySeconds
+{
+    type = integer, min = 1, max = 600, default = 24,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_CriticalRetrySeconds,
+}
+
+option FactionsConfrontationExt.CrowdBudget_DripFeedMaxBatch
+{
+    type = integer, min = 1, max = 50, default = 4,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_DripFeedMaxBatch,
+}
+
+option FactionsConfrontationExt.CrowdBudget_CriticalDripFeedMaxBatch
+{
+    type = integer, min = 1, max = 50, default = 2,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_CriticalDripFeedMaxBatch,
+}
+
+option FactionsConfrontationExt.CrowdBudget_UrbanTightenPercent
+{
+    type = integer, min = 0, max = 90, default = 20,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_UrbanTightenPercent,
+}
+
+option FactionsConfrontationExt.CrowdBudget_FastTravelTightenPercent
+{
+    type = integer, min = 0, max = 90, default = 35,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_FastTravelTightenPercent,
+}
+
+option FactionsConfrontationExt.CrowdBudget_PreserveCombat
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.CrowdBudget_PreserveCombat,
+}
+
+
+
+/***** FACTIONS CONFRONTATION: 08B INFLUENCE FIELD *****/
+
+option FactionsConfrontationExt.Influence_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_Enabled,
+}
+
+option FactionsConfrontationExt.Influence_BucketSize
+{
+    type = integer, min = 10, max = 200, default = 50,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_BucketSize,
+}
+
+option FactionsConfrontationExt.Influence_MaxCells
+{
+    type = integer, min = 128, max = 20000, default = 2200,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_MaxCells,
+}
+
+option FactionsConfrontationExt.Influence_UpdateBucketsPerTick
+{
+    type = integer, min = 0, max = 500, default = 18,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_UpdateBucketsPerTick,
+}
+
+option FactionsConfrontationExt.Influence_DecayPerUpdate
+{
+    type = double, min = 0.0, max = 1.0, default = 0.035,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_DecayPerUpdate,
+}
+
+option FactionsConfrontationExt.Influence_DiffusionRate
+{
+    type = double, min = 0.0, max = 1.0, default = 0.08,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_DiffusionRate,
+}
+
+option FactionsConfrontationExt.Influence_SourceRadius
+{
+    type = integer, min = 0, max = 600, default = 140,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_SourceRadius,
+}
+
+option FactionsConfrontationExt.Influence_UseForVirtualGroups
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_UseForVirtualGroups,
+}
+
+option FactionsConfrontationExt.Influence_UseForBaseZones
+{
+    type = boolean, default = true,
+    page = FC_Territories, translation = FactionsConfrontationExt.Influence_UseForBaseZones,
+}
+
+option FactionsConfrontationExt.Influence_UseForNPCUtility
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_UseForNPCUtility,
+}
+
+option FactionsConfrontationExt.Influence_DebugLog
+{
+    type = boolean, default = false,
+    page = FC_Performance, translation = FactionsConfrontationExt.Influence_DebugLog,
+}
+
+/***** FACTIONS CONFRONTATION: 09 NETWORK AND SYNC *****/
+
+option FactionsConfrontationExt.Net_DeltaSyncEnabled
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_DeltaSyncEnabled,
+}
+
+option FactionsConfrontationExt.Net_MaxMarkerEventsPerTick
+{
+    type = integer, min = 1, max = 120, default = 18,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxMarkerEventsPerTick,
+}
+
+option FactionsConfrontationExt.Net_SnapshotChunkSize
+{
+    type = integer, min = 8, max = 128, default = 32,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_SnapshotChunkSize,
+}
+
+option FactionsConfrontationExt.Net_GlobalMarkerUpdateSeconds
+{
+    type = double, min = 0.5, max = 60.0, default = 21.6,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_GlobalMarkerUpdateSeconds,
+}
+
+option FactionsConfrontationExt.Net_NearMarkerUpdateSeconds
+{
+    type = double, min = 0.1, max = 30.0, default = 5.4,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_NearMarkerUpdateSeconds,
+}
+
+option FactionsConfrontationExt.Net_DebugMapEnabled
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_DebugMapEnabled,
+}
+
+option FactionsConfrontationExt.Net_MaxMarkerRemovesPerTick
+{
+    type = integer, min = 1, max = 120, default = 24,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxMarkerRemovesPerTick,
+}
+
+option FactionsConfrontationExt.Net_MaxPendingMarkerUpdates
+{
+    type = integer, min = 64, max = 10000, default = 1200,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxPendingMarkerUpdates,
+}
+
+option FactionsConfrontationExt.Net_MaxPendingMarkerRemoves
+{
+    type = integer, min = 32, max = 5000, default = 400,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxPendingMarkerRemoves,
+}
+
+option FactionsConfrontationExt.Net_MaxSnapshotChunksPerTick
+{
+    type = integer, min = 1, max = 64, default = 2,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxSnapshotChunksPerTick,
+}
+
+option FactionsConfrontationExt.Net_MaxSnapshotMarkers
+{
+    type = integer, min = 100, max = 20000, default = 5000,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxSnapshotMarkers,
+}
+
+option FactionsConfrontationExt.Net_QueuedSnapshotSync
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_QueuedSnapshotSync,
+}
+
+option FactionsConfrontationExt.Net_SyncCooldownSeconds
+{
+    type = double, min = 0.0, max = 120.0, default = 5.0,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_SyncCooldownSeconds,
+}
+
+option FactionsConfrontationExt.Net_PayloadSanitizer
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_PayloadSanitizer,
+}
+
+option FactionsConfrontationExt.Net_MaxMarkerStringBytes
+{
+    type = integer, min = 16, max = 512, default = 96,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxMarkerStringBytes,
+}
+
+option FactionsConfrontationExt.Net_MaxMarkerTableEntries
+{
+    type = integer, min = 4, max = 128, default = 24,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxMarkerTableEntries,
+}
+
+option FactionsConfrontationExt.Net_ClientCommandRateLimit
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_ClientCommandRateLimit,
+}
+
+option FactionsConfrontationExt.Net_ClientCommandMinIntervalMs
+{
+    type = integer, min = 0, max = 5000, default = 40,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_ClientCommandMinIntervalMs,
+}
+
+option FactionsConfrontationExt.Net_PlayerUpdateMinIntervalMs
+{
+    type = integer, min = 0, max = 10000, default = 500,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_PlayerUpdateMinIntervalMs,
+}
+
+option FactionsConfrontationExt.Net_StateUpdateMinIntervalMs
+{
+    type = integer, min = 0, max = 5000, default = 180,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_StateUpdateMinIntervalMs,
+}
+
+option FactionsConfrontationExt.Net_DebugMapRequestCooldownSeconds
+{
+    type = double, min = 0.0, max = 120.0, default = 6.0,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_DebugMapRequestCooldownSeconds,
+}
+
+option FactionsConfrontationExt.Net_DebugMapMaterializeCooldownMs
+{
+    type = integer, min = 250, max = 30000, default = 1200,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_DebugMapMaterializeCooldownMs,
+}
+
+option FactionsConfrontationExt.Net_OrderCommandMinIntervalMs
+{
+    type = integer, min = 0, max = 10000, default = 250,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_OrderCommandMinIntervalMs,
+}
+
+option FactionsConfrontationExt.Net_SpawnCommandCooldownSeconds
+{
+    type = double, min = 0.0, max = 120.0, default = 2.0,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_SpawnCommandCooldownSeconds,
+}
+
+option FactionsConfrontationExt.Net_MaxClientCommandFields
+{
+    type = integer, min = 16, max = 1000, default = 120,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxClientCommandFields,
+}
+
+option FactionsConfrontationExt.Net_MaxClientStringBytes
+{
+    type = integer, min = 32, max = 1000, default = 160,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxClientStringBytes,
+}
+
+option FactionsConfrontationExt.Net_MaxClientPayloadDepth
+{
+    type = integer, min = 1, max = 8, default = 4,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_MaxClientPayloadDepth,
+}
+
+option FactionsConfrontationExt.Net_LogDroppedCommands
+{
+    type = boolean, default = false,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_LogDroppedCommands,
+}
+
+option FactionsConfrontationExt.Net_SnapshotSortByImportance
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Net_SnapshotSortByImportance,
+}
+
+
+/***** FACTIONS CONFRONTATION SAFE OPTIMIZATION LAYERS *****/
+
+option FactionsConfrontationExt.AILOD_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.AILOD_Enabled,
+}
+
+option FactionsConfrontationExt.AILOD_NPCFullRadius
+{
+    type = integer, min = 5, max = 1000, default = 42,
+    page = FC_Performance, translation = FactionsConfrontationExt.AILOD_NPCFullRadius,
+}
+
+option FactionsConfrontationExt.AILOD_NPCHighRadius
+{
+    type = integer, min = 10, max = 1500, default = 90,
+    page = FC_Performance, translation = FactionsConfrontationExt.AILOD_NPCHighRadius,
+}
+
+option FactionsConfrontationExt.AILOD_NPCMediumRadius
+{
+    type = integer, min = 20, max = 2500, default = 180,
+    page = FC_Performance, translation = FactionsConfrontationExt.AILOD_NPCMediumRadius,
+}
+
+option FactionsConfrontationExt.AILOD_NPCLowRadius
+{
+    type = integer, min = 40, max = 5000, default = 320,
+    page = FC_Performance, translation = FactionsConfrontationExt.AILOD_NPCLowRadius,
+}
+
+option FactionsConfrontationExt.AILOD_ProxyUpdateSeconds
+{
+    type = integer, min = 1, max = 600, default = 14,
+    page = FC_Performance, translation = FactionsConfrontationExt.AILOD_ProxyUpdateSeconds,
+}
+
+option FactionsConfrontationExt.AILOD_UseCriticality
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.AILOD_UseCriticality,
+}
+
+option FactionsConfrontationExt.BrainScheduler_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.BrainScheduler_Enabled,
+}
+
+option FactionsConfrontationExt.BrainScheduler_MinThinkMs
+{
+    type = integer, min = 0, max = 10000, default = 120,
+    page = FC_Performance, translation = FactionsConfrontationExt.BrainScheduler_MinThinkMs,
+}
+
+option FactionsConfrontationExt.BrainScheduler_LowThinkMs
+{
+    type = integer, min = 0, max = 60000, default = 900,
+    page = FC_Performance, translation = FactionsConfrontationExt.BrainScheduler_LowThinkMs,
+}
+
+option FactionsConfrontationExt.BrainScheduler_ProxyThinkMs
+{
+    type = integer, min = 0, max = 120000, default = 2400,
+    page = FC_Performance, translation = FactionsConfrontationExt.BrainScheduler_ProxyThinkMs,
+}
+
+option FactionsConfrontationExt.Interest_Enabled
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Interest_Enabled,
+}
+
+option FactionsConfrontationExt.Interest_WorldMapRadius
+{
+    type = integer, min = 0, max = 5000, default = 700,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Interest_WorldMapRadius,
+}
+
+option FactionsConfrontationExt.Interest_MinimapRadius
+{
+    type = integer, min = 0, max = 2000, default = 180,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Interest_MinimapRadius,
+}
+
+option FactionsConfrontationExt.Interest_SyncRadius
+{
+    type = integer, min = 0, max = 6000, default = 900,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Interest_SyncRadius,
+}
+
+option FactionsConfrontationExt.Interest_AlwaysSendCombat
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Interest_AlwaysSendCombat,
+}
+
+option FactionsConfrontationExt.Interest_AlwaysSendSpies
+{
+    type = boolean, default = true,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Interest_AlwaysSendSpies,
+}
+
+option FactionsConfrontationExt.Interest_ImportantRadiusMultiplier
+{
+    type = double, min = 1.0, max = 8.0, default = 1.75,
+    page = FC_NetworkSync, translation = FactionsConfrontationExt.Interest_ImportantRadiusMultiplier,
+}
+
+option FactionsConfrontationExt.Flow_Enabled
+{
+    type = boolean, default = true,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Flow_Enabled,
+}
+
+option FactionsConfrontationExt.Flow_StepRadiusBuckets
+{
+    type = integer, min = 1, max = 8, default = 2,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Flow_StepRadiusBuckets,
+}
+
+option FactionsConfrontationExt.Flow_MinScore
+{
+    type = double, min = -100.0, max = 100.0, default = 1.4,
+    page = FC_WorldMap, translation = FactionsConfrontationExt.Flow_MinScore,
+}
+
+option FactionsConfrontationExt.TacticalCost_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.TacticalCost_Enabled,
+}
+
+option FactionsConfrontationExt.TacticalCost_SampleRadius
+{
+    type = integer, min = 2, max = 40, default = 7,
+    page = FC_Tactics, translation = FactionsConfrontationExt.TacticalCost_SampleRadius,
+}
+
+option FactionsConfrontationExt.TacticalCost_Samples
+{
+    type = integer, min = 4, max = 64, default = 12,
+    page = FC_Tactics, translation = FactionsConfrontationExt.TacticalCost_Samples,
+}
+
+option FactionsConfrontationExt.GOAPLite_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.GOAPLite_Enabled,
+}
+
+option FactionsConfrontationExt.GOAPLite_MaxPlansPerTick
+{
+    type = integer, min = 1, max = 100, default = 6,
+    page = FC_Tactics, translation = FactionsConfrontationExt.GOAPLite_MaxPlansPerTick,
+}
+
+option FactionsConfrontationExt.FormationSlots_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Tactics, translation = FactionsConfrontationExt.FormationSlots_Enabled,
+}
+
+option FactionsConfrontationExt.FormationSlots_SlotSpacing
+{
+    type = double, min = 0.5, max = 5.0, default = 1.55,
+    page = FC_Tactics, translation = FactionsConfrontationExt.FormationSlots_SlotSpacing,
+}
+
+option FactionsConfrontationExt.ProxyLOD_Enabled
+{
+    type = boolean, default = true,
+    page = FC_Performance, translation = FactionsConfrontationExt.ProxyLOD_Enabled,
+}
+
+option FactionsConfrontationExt.ProxyLOD_BattleMultiplier
+{
+    type = double, min = 0.0, max = 10.0, default = 1.0,
+    page = FC_Performance, translation = FactionsConfrontationExt.ProxyLOD_BattleMultiplier,
+}
+
+option FactionsConfrontationExt.ProxyLOD_MaxLossPerTick
+{
+    type = integer, min = 0, max = 20, default = 2,
+    page = FC_Performance, translation = FactionsConfrontationExt.ProxyLOD_MaxLossPerTick,
+}
+

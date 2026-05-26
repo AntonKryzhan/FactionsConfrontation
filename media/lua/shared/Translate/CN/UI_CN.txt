@@ -1,0 +1,5 @@
+UI_CN = {
+    /***** Localized by @Oversights2006_ *****/
+    UI_optionscreen_binding_FactionsConfrontation = "FactionsConfrontation(后末日暴徒)",
+    UI_optionscreen_binding_POSTS = "变更FactionsConfrontation模组NPC的警戒位置",
+}

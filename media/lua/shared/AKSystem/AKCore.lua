@@ -1,0 +1,5 @@
+--
+-- AKSystem runtime isolation placeholder.
+-- This file is intentionally inert: it must not create globals, hooks, ModData,
+-- commands, timers or gameplay state while the replacement layer is being designed.
+--

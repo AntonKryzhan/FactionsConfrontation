@@ -1,0 +1,13 @@
+require "NPCClient/NPCCheckpointsClientBridge"
+require "NPCCore/NPCLegacyGlobalsBridge"
+
+NPCCheckpointsClient = NPCLegacyGlobalsBridge.InstallAlias("CheckpointsClient", NPCCheckpointsClient, "NPCCheckpointsClient")
+
+NPCCheckpointsClient._syncRequested = NPCCheckpointsClientBridge._syncRequested
+
+NPCCheckpointsClient.Interact = NPCCheckpointsClientBridge.Interact
+NPCCheckpointsClient.OnFillWorldObjectContextMenu = NPCCheckpointsClientBridge.OnFillWorldObjectContextMenu
+NPCCheckpointsClient.OnServerCommand = NPCCheckpointsClientBridge.OnServerCommand
+NPCCheckpointsClient.Install = NPCCheckpointsClientBridge.Install
+
+NPCCheckpointsClient.Install()

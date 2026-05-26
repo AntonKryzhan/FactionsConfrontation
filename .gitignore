@@ -1,0 +1,17 @@
+# Windows
+Thumbs.db
+Desktop.ini
+
+# Logs
+*.log
+
+# Project Zomboid runtime/user data
+console.txt
+coop-console.txt
+logs/
+saves/
+
+# Temp
+*.tmp
+*.bak
+*.old

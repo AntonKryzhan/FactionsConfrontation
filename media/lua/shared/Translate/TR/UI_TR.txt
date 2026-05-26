@@ -1,0 +1,4 @@
+UI_TR = {
+    UI_optionscreen_binding_FactionsConfrontation = "Haydutlar/FactionsConfrontation",
+    UI_optionscreen_binding_POSTS = "Nöbetçi Karakollarýný Yönet",
+}

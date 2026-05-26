@@ -1,0 +1,11 @@
+require "NPCClient/NPCWorldRulesClientBridge"
+require "NPCCore/NPCLegacyGlobalsBridge"
+
+NPCWorldRulesClient = NPCLegacyGlobalsBridge.InstallAlias("WorldRulesClient", NPCWorldRulesClient, "NPCWorldRulesClient")
+
+NPCWorldRulesClient.RequestSummary = NPCWorldRulesClientBridge.RequestSummary
+NPCWorldRulesClient.OnFillWorldObjectContextMenu = NPCWorldRulesClientBridge.OnFillWorldObjectContextMenu
+NPCWorldRulesClient.OnServerCommand = NPCWorldRulesClientBridge.OnServerCommand
+NPCWorldRulesClient.Install = NPCWorldRulesClientBridge.Install
+
+NPCWorldRulesClient.Install()
