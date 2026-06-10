@@ -1,10 +1,16 @@
-﻿# Factions Confrontation вЂ” Mod Wiki
+# Factions Confrontation - Mod Wiki
 
 > User-facing and developer-facing wiki page for the **Factions Confrontation** Project Zomboid mod.
 
 <p align="center">
-  <img src="../../ENGINE_STAT/ead07461-e8f6-4018-bdfc-7983be54e8a7.png" alt="Factions Confrontation architecture map" width="960">
+  <img src="../ENGINE_STAT/ead07461-e8f6-4018-bdfc-7983be54e8a7.png" alt="Factions Confrontation architecture map" width="960">
 </p>
+
+---
+
+## Languages
+
+- [Russian version](WIKI_RU.md)
 
 ---
 
@@ -50,10 +56,10 @@ Expected structure:
 
 ```text
 FactionsConfrontation/
-в”њв”Ђв”Ђ media/
-в”њв”Ђв”Ђ mod.info
-в”њв”Ђв”Ђ poster.png
-в””в”Ђв”Ђ README.md
+├── media/
+├── mod.info
+├── poster.png
+└── README.md
 ```
 
 Then enable **Factions Confrontation** in the Project Zomboid mod list.
@@ -74,11 +80,11 @@ After enabling the mod, start a new world or COOP session and verify:
 
 The mod is centered on a few connected gameplay loops:
 
-1. **Explore the world** and encounter NPC factions, bases, patrols, enemies, contracts, or black market activity.
-2. **Interact with faction systems** through orders, contracts, loot, markers, bases, and events.
-3. **Fight, avoid, recruit, or command NPCs** depending on faction state and available systems.
-4. **Loot and rearm** NPCs or mercenaries so they can continue operating.
-5. **Persist important state** so the world can continue across saves and COOP/server restarts.
+1. Explore the world and encounter NPC factions, bases, patrols, enemies, contracts, or black market activity.
+2. Interact with faction systems through orders, contracts, loot, markers, bases, and events.
+3. Fight, avoid, recruit, or command NPCs depending on faction state and available systems.
+4. Loot and rearm NPCs or mercenaries so they can continue operating.
+5. Persist important state so the world can continue across saves and COOP/server restarts.
 
 The player acts locally through UI and orders, while the server remains authoritative for command validation, NPC ownership, world state, persistence, and synchronization.
 
@@ -104,7 +110,7 @@ Faction systems are handled across shared, client, and server Lua layers. The se
 
 The current architecture includes a dedicated **Mercenary Direct Pipeline**.
 
-This pipeline is used to keep hired mercenaries separate from the generic NPC order channel and to avoid accidental command conflicts between normal NPC systems and player-controlled hired groups.
+This pipeline keeps hired mercenaries separate from the generic NPC order channel and helps avoid command conflicts between normal NPC systems and player-controlled hired groups.
 
 ### Supported Order Concepts
 
@@ -168,11 +174,11 @@ The server strategic layer manages high-level world activity.
 
 Main concepts:
 
-- **Bases and camps** вЂ” faction-controlled areas with garrisons, supplies, and activity.
-- **Checkpoints** вЂ” strategic points that can support patrol or faction presence.
-- **Patrols and raids** вЂ” moving faction groups that create conflict and pressure.
-- **Virtual groups / global squads** вЂ” lightweight global-map groups that can later materialize near the player.
-- **Materialization / dematerialization** вЂ” NPCs near the player become active entities, while distant groups can be represented more cheaply.
+- **Bases and camps** - faction-controlled areas with garrisons, supplies, and activity.
+- **Checkpoints** - strategic points that can support patrol or faction presence.
+- **Patrols and raids** - moving faction groups that create conflict and pressure.
+- **Virtual groups / global squads** - lightweight global-map groups that can later materialize near the player.
+- **Materialization / dematerialization** - NPCs near the player become active entities, while distant groups can be represented more cheaply.
 
 This split is important for performance. The mod should not keep every global group fully active all the time.
 
@@ -207,13 +213,13 @@ Factions Confrontation uses several optimization-oriented systems to reduce CPU 
 
 Key systems include:
 
-- **AI LOD** вЂ” less important or distant NPCs can use reduced thinking depth.
-- **Spatial indexing** вЂ” nearby NPC, zombie, and world queries should use indexed lookup where possible.
-- **Work scheduling** вЂ” heavy work should be budgeted across ticks instead of running in one large spike.
-- **Runtime caches** вЂ” repeated expensive queries should be cached when safe.
-- **Influence fields** вЂ” world threat/control/noise-style data can be reused by strategic logic.
-- **Telemetry and regression guards** вЂ” development systems help identify performance and stability issues.
-- **Java class overrides** вЂ” selected `media/ProjectZomboid` class patches are bundled for pathfinding, rendering, and runtime support.
+- **AI LOD** - less important or distant NPCs can use reduced thinking depth.
+- **Spatial indexing** - nearby NPC, zombie, and world queries should use indexed lookup where possible.
+- **Work scheduling** - heavy work should be budgeted across ticks instead of running in one large spike.
+- **Runtime caches** - repeated expensive queries should be cached when safe.
+- **Influence fields** - world threat/control/noise-style data can be reused by strategic logic.
+- **Telemetry and regression guards** - development systems help identify performance and stability issues.
+- **Java class overrides** - selected `media/ProjectZomboid` class patches are bundled for pathfinding, rendering, and runtime support.
 
 Development rule: avoid adding heavy unthrottled `OnTick` or `OnUpdate` logic. Expensive systems should use scheduling, caching, throttling, spatial queries, or LOD gates.
 
@@ -244,9 +250,9 @@ Check the folder structure:
 
 ```text
 FactionsConfrontation/
-в”њв”Ђв”Ђ media/
-в”њв”Ђв”Ђ mod.info
-в””в”Ђв”Ђ poster.png
+├── media/
+├── mod.info
+└── poster.png
 ```
 
 The `mod.info` file must be inside the root mod folder, not one directory too deep.
@@ -375,13 +381,3 @@ Built for the Project Zomboid modding community.
 ## Disclaimer
 
 This is an unofficial Project Zomboid mod. It is not affiliated with, endorsed by, or sponsored by The Indie Stone.
-
-
-
-
----
-
-## Languages
-
-- [усская версия](WIKI_RU.md)
-
