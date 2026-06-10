@@ -1,4 +1,4 @@
-<p align="center">
+﻿<p align="center">
   <img src="poster.png" alt="Factions Confrontation poster" width="720">
 </p>
 
@@ -219,7 +219,8 @@ Built for the Project Zomboid modding community.
 
 This is an unofficial Project Zomboid mod. It is not affiliated with, endorsed by, or sponsored by The Indie Stone.
 
-## Documentation
+## Documentation / Wiki
 
-- [Mod Wiki](media/docs/WIKI.md)
+- [English Wiki](media/docs/WIKI.md)
+- [усская Wiki](media/docs/WIKI_RU.md)
 
