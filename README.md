@@ -222,5 +222,5 @@ This is an unofficial Project Zomboid mod. It is not affiliated with, endorsed b
 ## Documentation / Wiki
 
 - [English Wiki](media/docs/WIKI.md)
-- [усская Wiki](media/docs/WIKI_RU.md)
+- [Русская Wiki](media/docs/WIKI_RU.md)
 
