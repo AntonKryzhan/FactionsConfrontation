@@ -218,3 +218,8 @@ Built for the Project Zomboid modding community.
 ## Disclaimer
 
 This is an unofficial Project Zomboid mod. It is not affiliated with, endorsed by, or sponsored by The Indie Stone.
+
+## Documentation
+
+- [Mod Wiki](media/docs/WIKI.md)
+
