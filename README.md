@@ -171,7 +171,7 @@ Expect frequent internal changes while the mod continues moving toward a more st
 
 ## Credits
 
-Created and maintained by **Anton Kryzhan**.
+Created and maintained by **CARL REAPER SHEPPARDS** **Error 404|Skill not found**.
 
 Built for the Project Zomboid modding community.
 
