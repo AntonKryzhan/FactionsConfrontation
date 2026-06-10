@@ -59,13 +59,13 @@ local function bz_getNumber(name, defaultValue, minValue, maxValue)
 end
 
 local function bz_getCacheSkip(zombieListSize)
-    local skip = bz_getNumber("AIWork_ZombieCacheBaseInterval", 4, 1, 120)
-    local highSkip = bz_getNumber("AIWork_ZombieCacheHighInterval", 8, skip, 240)
-    local criticalSkip = bz_getNumber("AIWork_ZombieCacheCriticalInterval", 12, highSkip, 480)
-    local highZombies = bz_getNumber("AIWork_HighZombies", 220, 1, 3000)
-    local criticalZombies = bz_getNumber("AIWork_CriticalZombies", 380, 1, 5000)
-    local lowFPS = bz_getNumber("AIWork_LowFPS", 42, 5, 240)
-    local criticalFPS = bz_getNumber("AIWork_CriticalFPS", 28, 5, 240)
+    local skip = bz_getNumber("AIWork_ZombieCacheBaseInterval", 6, 1, 120)
+    local highSkip = bz_getNumber("AIWork_ZombieCacheHighInterval", 10, skip, 240)
+    local criticalSkip = bz_getNumber("AIWork_ZombieCacheCriticalInterval", 16, highSkip, 480)
+    local highZombies = bz_getNumber("AIWork_HighZombies", 70, 1, 3000)
+    local criticalZombies = bz_getNumber("AIWork_CriticalZombies", 130, 1, 5000)
+    local lowFPS = bz_getNumber("AIWork_LowFPS", 55, 5, 240)
+    local criticalFPS = bz_getNumber("AIWork_CriticalFPS", 45, 5, 240)
     local fps = bz_getAverageFPS()
 
     if zombieListSize >= criticalZombies or fps <= criticalFPS then
@@ -75,6 +75,12 @@ local function bz_getCacheSkip(zombieListSize)
         return math.max(1, math.floor(highSkip))
     end
     return math.max(1, math.floor(skip))
+end
+
+local function bz_clearTable(tbl)
+    if type(tbl) ~= "table" then return {} end
+    for k in pairs(tbl) do tbl[k] = nil end
+    return tbl
 end
 
 -- rebuids cache
@@ -108,11 +114,11 @@ local UpdateZombieCache = function(numberTicks)
     local px = player:getX()
     local py = player:getY()
 
-    -- prepare local cache vars
-    local cache = {}
-    local cacheLight = {}
-    local cacheLightB = {}
-    local cacheLightZ = {}
+    -- prepare local cache vars; reuse tables to avoid allocator spikes every few ticks
+    local cache = bz_clearTable(NPCZombieCacheBridge.Cache)
+    local cacheLight = bz_clearTable(NPCZombieCacheBridge.CacheLight)
+    local cacheLightB = bz_clearTable(NPCZombieCacheBridge.CacheLightB)
+    local cacheLightZ = bz_clearTable(NPCZombieCacheBridge.CacheLightZ)
 
     for i = 0, zombieListSize - 1 do
 

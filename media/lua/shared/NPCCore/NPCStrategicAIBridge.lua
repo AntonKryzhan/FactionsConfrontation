@@ -242,6 +242,55 @@ local function bsai_memberWeaponScore(member)
     return score, ammo, parts
 end
 
+
+local BSAI_STOCK_FIELD_BY_KEY = {
+    food = "stockFood", water = "stockWater", medical = "stockMedical", ammo = "stockAmmo",
+    weapons = "stockWeapons", armor = "stockArmor", magazines = "stockMagazines",
+    weaponParts = "stockWeaponParts", maintenance = "stockMaintenance"
+}
+
+local function bsai_baseStock(base, key)
+    if type(base) ~= "table" then return 0 end
+    local amount = 0
+    if type(base.stock) == "table" then amount = amount + (tonumber(base.stock[key]) or 0) end
+    if type(base.zoneStock) == "table" then amount = amount + (tonumber(base.zoneStock[key]) or 0) end
+    local field = BSAI_STOCK_FIELD_BY_KEY[key]
+    if amount <= 0 and field then amount = tonumber(base[field]) or 0 end
+    return math.max(0, amount)
+end
+
+local function bsai_consumeStock(base, key, amount)
+    if type(base) ~= "table" or not key then return 0 end
+    amount = math.max(0, tonumber(amount) or 0)
+    if amount <= 0 then return 0 end
+    base.stock = base.stock or {}
+    local taken = 0
+    local have = tonumber(base.stock[key]) or 0
+    if have > 0 then
+        local take = math.min(have, amount)
+        base.stock[key] = have - take
+        amount = amount - take
+        taken = taken + take
+    end
+    if amount > 0 and type(base.zones) == "table" then
+        for _, zone in pairs(base.zones) do
+            if amount <= 0 then break end
+            if type(zone) == "table" and type(zone.stock) == "table" then
+                local zh = tonumber(zone.stock[key]) or 0
+                if zh > 0 then
+                    local take = math.min(zh, amount)
+                    zone.stock[key] = zh - take
+                    amount = amount - take
+                    taken = taken + take
+                end
+            end
+        end
+    end
+    local field = BSAI_STOCK_FIELD_BY_KEY[key]
+    if field then base[field] = math.max(0, (tonumber(base[field]) or 0) - taken) end
+    return taken
+end
+
 local function bsai_memberArmorScore(member)
     local score = 0
     if type(member.baseGearWear) == "table" then score = score + math.min(16, bsai_len(member.baseGearWear) * 4) end
@@ -317,13 +366,12 @@ function NPCStrategicAIBridge.EvaluateMember(member)
 end
 
 function NPCStrategicAIBridge.GetBaseReadiness(base, fighterCount)
-    local stock = base and base.stock or {}
     fighterCount = math.max(1, tonumber(fighterCount) or 1)
 
-    local foodWater = ((tonumber(stock.food) or 0) + (tonumber(stock.water) or 0)) / fighterCount
-    local ammo = ((tonumber(stock.ammo) or 0) + (tonumber(stock.magazines) or 0) * 2) / fighterCount
-    local armory = ((tonumber(stock.weapons) or 0) * 5 + (tonumber(stock.armor) or 0) * 3 + (tonumber(stock.weaponParts) or 0) * 2 + (tonumber(stock.maintenance) or 0)) / fighterCount
-    local medical = (tonumber(stock.medical) or 0) / fighterCount
+    local foodWater = (bsai_baseStock(base, "food") + bsai_baseStock(base, "water")) / fighterCount
+    local ammo = (bsai_baseStock(base, "ammo") + bsai_baseStock(base, "magazines") * 2) / fighterCount
+    local armory = (bsai_baseStock(base, "weapons") * 5 + bsai_baseStock(base, "armor") * 3 + bsai_baseStock(base, "weaponParts") * 2 + bsai_baseStock(base, "maintenance")) / fighterCount
+    local medical = bsai_baseStock(base, "medical") / fighterCount
 
     local supplyFactor = bsai_clamp(0.72 + math.min(0.28, foodWater / 30), 0.58, 1.12)
     local ammoFactor = bsai_clamp(0.62 + math.min(0.42, ammo / 18), 0.45, 1.28)
@@ -422,14 +470,19 @@ end
 function NPCStrategicAIBridge.ApplyBaseBattleConsumption(gmd, group, fighterCount, casualties)
     if not gmd or type(group) ~= "table" then return false end
     local base = NPCStrategicAIBridge.GetBaseById(gmd, group.homeBaseId or group.missionOriginBaseId or group.originBaseId)
-    if not base or type(base.stock) ~= "table" then return false end
+    if not base then return false end
+    base.stock = base.stock or {}
     fighterCount = math.max(1, tonumber(fighterCount) or tonumber(group.count) or 1)
     casualties = math.max(0, tonumber(casualties) or 0)
 
-    base.stock.ammo = math.max(0, (tonumber(base.stock.ammo) or 0) - fighterCount * NPCStrategicAIBridge.BATTLE_SUPPLY_AMMO_PER_FIGHTER)
-    base.stock.medical = math.max(0, (tonumber(base.stock.medical) or 0) - casualties * NPCStrategicAIBridge.BATTLE_SUPPLY_MEDICAL_PER_LOSS)
-    base.stock.food = math.max(0, (tonumber(base.stock.food) or 0) - fighterCount * 0.05)
-    base.stock.water = math.max(0, (tonumber(base.stock.water) or 0) - fighterCount * 0.06)
+    bsai_consumeStock(base, "ammo", fighterCount * NPCStrategicAIBridge.BATTLE_SUPPLY_AMMO_PER_FIGHTER)
+    bsai_consumeStock(base, "medical", casualties * NPCStrategicAIBridge.BATTLE_SUPPLY_MEDICAL_PER_LOSS)
+    bsai_consumeStock(base, "food", fighterCount * 0.05)
+    bsai_consumeStock(base, "water", fighterCount * 0.06)
+    if type(base.economy) == "table" and casualties > 0 then
+        base.economy.losses = math.max(0, (tonumber(base.economy.losses) or 0) + casualties)
+        base.economy.wounded = math.max(0, (tonumber(base.economy.wounded) or 0) + math.max(0, casualties - 1))
+    end
 
     local factionEconomy = bsai_factionEconomyProvider()
     if factionEconomy and factionEconomy.SyncBaseStockFields then

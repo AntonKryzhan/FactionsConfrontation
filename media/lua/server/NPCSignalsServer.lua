@@ -1,7 +1,7 @@
 -- Legacy compatibility facade for the neutral NPC backend.
 -- Compatibility facade for the neutral server field signal backend.
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 require "NPCCore/NPCLegacyGlobalsBridge"
 require "NPCServer/NPCSignalsServerBridge"

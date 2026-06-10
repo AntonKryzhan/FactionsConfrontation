@@ -4,6 +4,7 @@
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCLegacyGlobalsBridge"
+require "NPCCore/NPCMarkerReconciliationBridge"
 NPCDebugMapNPCMarkersBridge = NPCDebugMapNPCMarkersBridge or {}
 
 local BLNPC_LEGACY_TEXT_PREFIX = NPCLegacyContractBridge.Text.prefix
@@ -32,6 +33,10 @@ NPCDebugMapNPCMarkersBridge._pendingSync = NPCDebugMapNPCMarkersBridge._pendingS
 NPCDebugMapNPCMarkersBridge._lastMapOpenSync = NPCDebugMapNPCMarkersBridge._lastMapOpenSync or 0
 NPCDebugMapNPCMarkersBridge._lastMaterializeProbe = NPCDebugMapNPCMarkersBridge._lastMaterializeProbe or 0
 NPCDebugMapNPCMarkersBridge._lastMaterializeMarker = NPCDebugMapNPCMarkersBridge._lastMaterializeMarker or nil
+NPCDebugMapNPCMarkersBridge._lastLocalReconcile = NPCDebugMapNPCMarkersBridge._lastLocalReconcile or 0
+NPCDebugMapNPCMarkersBridge._lastSyncReceived = NPCDebugMapNPCMarkersBridge._lastSyncReceived or 0
+NPCDebugMapNPCMarkersBridge._lastSyncCount = NPCDebugMapNPCMarkersBridge._lastSyncCount or 0
+NPCDebugMapNPCMarkersBridge._screenStable = NPCDebugMapNPCMarkersBridge._screenStable or {}
 
 local function blnpc_asNumber(value, fallback)
     local n = tonumber(value)
@@ -39,8 +44,171 @@ local function blnpc_asNumber(value, fallback)
     return n
 end
 
+local function blnpc_worldAgeHours()
+    local gt = getGameTime and getGameTime() or nil
+    if gt and gt.getWorldAgeHours then
+        local ok, value = pcall(function() return gt:getWorldAgeHours() end)
+        if ok and value then return tonumber(value) or 0 end
+    end
+    return 0
+end
+
+local function blnpc_isSinglePlayerRuntime()
+    return (not (isClient and isClient())) and (not (isServer and isServer()))
+end
+
+local function blnpc_mapMotionAlmostSame(a, b)
+    a = tonumber(a) or 0
+    b = tonumber(b) or 0
+    return math.abs(a - b) <= 0.05
+end
+
+local function blnpc_mapMotionDistance(ax, ay, bx, by)
+    ax = tonumber(ax)
+    ay = tonumber(ay)
+    bx = tonumber(bx)
+    by = tonumber(by)
+    if not (ax and ay and bx and by) then return nil end
+    local dx = bx - ax
+    local dy = by - ay
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+local function blnpc_mapPathKey(marker)
+    if not marker then return nil end
+    if marker.mapPathKey ~= nil then return tostring(marker.mapPathKey) end
+    local count = tonumber(marker.mapPathCount) or 0
+    if count <= 0 then return nil end
+    local parts = {}
+    for i=1, math.min(6, count) do
+        parts[#parts + 1] = tostring(math.floor((tonumber(marker["mapPathX" .. tostring(i)]) or 0) + 0.5))
+        parts[#parts + 1] = tostring(math.floor((tonumber(marker["mapPathY" .. tostring(i)]) or 0) + 0.5))
+    end
+    return table.concat(parts, ":")
+end
+
+local function blnpc_prepareGroupMapMotion(marker, previous)
+    if not marker or marker.markerType ~= "group" then return marker end
+
+    local sx = blnpc_asNumber(marker.preciseX or marker.mapSourceX or marker.x, nil)
+    local sy = blnpc_asNumber(marker.preciseY or marker.mapSourceY or marker.y, nil)
+    local tx = blnpc_asNumber(marker.mapTargetX or marker.targetX, nil)
+    local ty = blnpc_asNumber(marker.mapTargetY or marker.targetY, nil)
+    local speed = blnpc_asNumber(marker.mapMoveSpeed, nil)
+    local moving = marker.mapMotion == true and marker.virtual ~= false and marker.active ~= true and marker.inBattle ~= true and sx ~= nil and sy ~= nil and tx ~= nil and ty ~= nil and speed ~= nil and speed > 0
+    local pathKey = blnpc_mapPathKey(marker)
+
+    if not moving then
+        marker._mapMotionStartX = nil
+        marker._mapMotionStartY = nil
+        marker._mapMotionStartAge = nil
+        marker._mapMotionSourceX = nil
+        marker._mapMotionSourceY = nil
+        marker._mapMotionTargetX = nil
+        marker._mapMotionTargetY = nil
+        marker._mapMotionPathKey = nil
+        marker._mapProjectedX = nil
+        marker._mapProjectedY = nil
+        return marker
+    end
+
+    local samePath = previous and tostring(previous._mapMotionPathKey or "") == tostring(pathKey or "")
+    local preserve = previous and previous._mapMotionStartX and previous._mapMotionStartY and previous._mapMotionStartAge
+        and samePath
+        and blnpc_mapMotionAlmostSame(previous._mapMotionSourceX, sx)
+        and blnpc_mapMotionAlmostSame(previous._mapMotionSourceY, sy)
+        and blnpc_mapMotionAlmostSame(previous._mapMotionTargetX, tx)
+        and blnpc_mapMotionAlmostSame(previous._mapMotionTargetY, ty)
+
+    local sameTarget = previous
+        and blnpc_mapMotionAlmostSame(previous._mapMotionTargetX, tx)
+        and blnpc_mapMotionAlmostSame(previous._mapMotionTargetY, ty)
+    local projectedX = previous and tonumber(previous._mapProjectedX or previous._mapMotionStartX or previous.preciseX or previous.x) or nil
+    local projectedY = previous and tonumber(previous._mapProjectedY or previous._mapMotionStartY or previous.preciseY or previous.y) or nil
+    local projectedGap = blnpc_mapMotionDistance(projectedX, projectedY, sx, sy)
+    local smoothAuthoritativeStep = sameTarget and projectedX and projectedY and projectedGap and projectedGap <= 260
+
+    marker._mapMotionSourceX = sx
+    marker._mapMotionSourceY = sy
+    marker._mapMotionTargetX = tx
+    marker._mapMotionTargetY = ty
+    marker._mapMotionPathKey = pathKey
+
+    if preserve then
+        marker._mapMotionStartX = previous._mapMotionStartX
+        marker._mapMotionStartY = previous._mapMotionStartY
+        marker._mapMotionStartAge = previous._mapMotionStartAge
+        marker._mapProjectedX = previous._mapProjectedX
+        marker._mapProjectedY = previous._mapProjectedY
+    elseif smoothAuthoritativeStep then
+        marker._mapMotionStartX = projectedX
+        marker._mapMotionStartY = projectedY
+        marker._mapMotionStartAge = blnpc_worldAgeHours()
+        marker._mapProjectedX = projectedX
+        marker._mapProjectedY = projectedY
+    else
+        marker._mapMotionStartX = sx
+        marker._mapMotionStartY = sy
+        marker._mapMotionStartAge = blnpc_worldAgeHours()
+        marker._mapProjectedX = sx
+        marker._mapProjectedY = sy
+    end
+
+    return marker
+end
+
+local function blnpc_projectAlongSegment(cx, cy, tx, ty, step)
+    local dx = tx - cx
+    local dy = ty - cy
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist <= 0.05 then return tx, ty, step, true end
+    if step >= dist then return tx, ty, step - dist, true end
+    return cx + (dx / dist) * step, cy + (dy / dist) * step, 0, false
+end
+
+local function blnpc_projectGroupMapPosition(marker)
+    if not marker or marker.markerType ~= "group" then
+        return marker and marker.x or nil, marker and marker.y or nil
+    end
+    if not (marker._mapMotionStartX and marker._mapMotionStartY and marker._mapMotionStartAge and marker._mapMotionTargetX and marker._mapMotionTargetY) then
+        return blnpc_asNumber(marker.preciseX or marker.x, marker.x), blnpc_asNumber(marker.preciseY or marker.y, marker.y)
+    end
+
+    local cx = tonumber(marker._mapMotionStartX) or tonumber(marker.x) or 0
+    local cy = tonumber(marker._mapMotionStartY) or tonumber(marker.y) or 0
+    local dt = blnpc_worldAgeHours() - (tonumber(marker._mapMotionStartAge) or blnpc_worldAgeHours())
+    if dt < 0 then dt = 0 end
+    if dt > 0.50 then dt = 0.50 end
+    local step = (tonumber(marker.mapMoveSpeed) or 120) * dt
+
+    local count = math.min(6, math.max(0, tonumber(marker.mapPathCount) or 0))
+    for i=1, count do
+        local nx = tonumber(marker["mapPathX" .. tostring(i)])
+        local ny = tonumber(marker["mapPathY" .. tostring(i)])
+        if nx and ny then
+            local px, py, left, done = blnpc_projectAlongSegment(cx, cy, nx, ny, step)
+            if not done then
+                marker._mapProjectedX = px
+                marker._mapProjectedY = py
+                return px, py
+            end
+            cx = px
+            cy = py
+            step = left
+        end
+    end
+
+    local tx = tonumber(marker._mapMotionTargetX) or cx
+    local ty = tonumber(marker._mapMotionTargetY) or cy
+    local px, py = blnpc_projectAlongSegment(cx, cy, tx, ty, step)
+    marker._mapProjectedX = px
+    marker._mapProjectedY = py
+    return px, py
+end
+
 local blnpc_nowMs
 local blnpc_settingNumber
+local blnpc_reconcileLocalMarkers
 
 local function blnpc_markerId(marker)
     if not marker then return nil end
@@ -67,12 +235,122 @@ local function blnpc_copyMarker(marker)
     return copied
 end
 
+local function blnpc_cleanGroupDisplayName(value)
+    if value == nil then return nil end
+    local text = tostring(value or "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" or text == "nil" or text == "false" then return nil end
+
+    local lower = string.lower(text)
+    if string.match(text, "^P%d+%s+[%w_%-]+$") or string.match(text, "^BBC%d+$") or string.match(text, "^WG[%w_%-]*$") or string.match(text, "^CP[%w_%-]*$") or string.match(text, "^SG[%w_%-]*$") then return nil end
+    text = string.gsub(text, "%s+P%d+%s+[%w_%-]+$", "")
+    text = string.gsub(text, "%s+BBC%d+$", "")
+    text = string.gsub(text, "%s+WG[%w_%-]*$", "")
+    text = string.gsub(text, "%s+CP[%w_%-]*$", "")
+    text = string.gsub(text, "%s+SG[%w_%-]*$", "")
+    text = string.gsub(text, "%s+[%w_%-]*%d+$", "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    lower = string.lower(text)
+
+    if text == "" then return nil end
+    if string.match(lower, "^npc group%s*") or lower == "patrol" or lower == "road patrol" or lower == "checkpoint patrol" then return nil end
+    return text
+end
+
+local function blnpc_groupSideLabel(marker)
+    local side = marker and (marker.factionSide or marker.faction or marker.side or marker.patrolColor or marker.owner or marker.captureTeam) or nil
+    if NPCFactionBridge and NPCFactionBridge.NormalizeSide then
+        side = NPCFactionBridge.NormalizeSide(side)
+    end
+    side = tostring(side or "")
+    if side == "red" then return "Red" end
+    if side == "green" then return "Green" end
+    if side == "blue" then return "Blue" end
+    if side == "black_market" then return "Blue" end
+    if side == "black" then return "Black" end
+    if marker and marker.hostile then return "Red" end
+    return "Green"
+end
+
+local function blnpc_groupDisplayName(marker)
+    if not marker then return nil end
+    local cleaned = blnpc_cleanGroupDisplayName(marker.displayName) or blnpc_cleanGroupDisplayName(marker.name) or blnpc_cleanGroupDisplayName(marker.groupName) or blnpc_cleanGroupDisplayName(marker.title)
+    if cleaned then return cleaned end
+
+    local sideLabel = blnpc_groupSideLabel(marker)
+    if marker.mercenaryHired or marker.mercenary or marker.mercenarySquad or marker.kind == "mercenary" then
+        return "Blue mercenaries"
+    end
+    if marker.checkpointId or marker.targetClass == "checkpoint_road_patrol" or marker.state == "checkpoint_patrol" or marker.order == "checkpoint_patrol" then
+        return sideLabel .. " checkpoint patrol"
+    end
+    if marker.roadPatrol or marker.targetClass == "road_patrol" or marker.state == "patrol" or marker.order == "patrol" then
+        return sideLabel .. " road patrol"
+    end
+    if marker.homeBaseId or marker.baseId or marker.targetClass == "base" or marker.state == "base_patrol" or marker.order == "base_patrol" then
+        return sideLabel .. " base patrol"
+    end
+    return sideLabel .. " patrol"
+end
+
+local function blnpc_normalizeGroupDisplayName(marker)
+    if not marker or marker.markerType ~= "group" then return end
+    local displayName = blnpc_groupDisplayName(marker)
+    if not displayName or displayName == "" then return end
+    marker.displayName = displayName
+    marker.name = displayName
+    marker.groupName = nil
+    marker.title = nil
+end
+
 local function blnpc_canKeepLastSeen(marker)
     return false
 end
 
 local function blnpc_staleTtlMs()
     return blnpc_settingNumber("Debug_StaleMarkerMinutes", 180, 0, 10080) * 60000
+end
+
+local function blnpc_transientGraceMs()
+    return blnpc_settingNumber("Debug_TransientMarkerGraceSeconds", 10, 0, 120) * 1000
+end
+
+local function blnpc_canKeepTransientMarker(marker)
+    if not marker or marker.dead == true then return false end
+    local markerType = tostring(marker.markerType or "")
+    return markerType == "group"
+        or markerType == "leader"
+        or markerType == "black_market"
+        or markerType == "black_market_drop"
+        or markerType == "black_market_turnin"
+        or marker.virtual == true
+        or marker.active == true
+end
+
+local function blnpc_makeTransientMarker(marker, reason)
+    if not blnpc_canKeepTransientMarker(marker) then return nil end
+
+    local now = blnpc_nowMs()
+    local grace = blnpc_transientGraceMs()
+    if grace <= 0 then return nil end
+
+    local missingSince = tonumber(marker._clientMissingSinceMs) or now
+    if now - missingSince > grace then return nil end
+
+    local transient = {}
+    for k, v in pairs(marker) do
+        transient[k] = v
+    end
+    transient.dead = false
+    transient.stale = false
+    transient.lastSeen = false
+    transient.syncGrace = true
+    transient.syncGraceReason = reason or "missing_from_sync"
+    transient._clientMissingSinceMs = missingSince
+    transient._clientLastSeenMs = tonumber(marker._clientLastSeenMs or marker._clientSeenMs) or now
+    return transient
 end
 
 local function blnpc_makeLastSeen(marker, reason)
@@ -95,6 +373,10 @@ end
 
 local function blnpc_keepFreshLastSeen(oldMarker, incoming)
     if not oldMarker or incoming[tostring(oldMarker.id or "")] then return nil end
+
+    local transient = blnpc_makeTransientMarker(oldMarker, "missing_from_sync")
+    if transient then return transient end
+
     if not blnpc_canKeepLastSeen(oldMarker) then return nil end
 
     local now = blnpc_nowMs()
@@ -114,6 +396,9 @@ function NPCDebugMapNPCMarkersBridge.Set(marker)
     if not copied then return end
 
     copied._clientSeenMs = blnpc_nowMs()
+    copied._clientMissingSinceMs = nil
+    copied.syncGrace = nil
+    copied.syncGraceReason = nil
 
     if copied.dead then
         if copied.markerType == "leader" then
@@ -133,17 +418,14 @@ function NPCDebugMapNPCMarkersBridge.Set(marker)
 
     copied.stale = copied.stale == true
     copied.lastSeen = copied.lastSeen == true
+    blnpc_normalizeGroupDisplayName(copied)
+    blnpc_prepareGroupMapMotion(copied, NPCDebugMapNPCMarkersBridge.markers[copied.id])
     NPCDebugMapNPCMarkersBridge.markers[copied.id] = copied
 end
 
 function NPCDebugMapNPCMarkersBridge.Remove(id)
     if not id then return end
     local markerId = tostring(id)
-    local marker = NPCDebugMapNPCMarkersBridge.markers[markerId]
-    if blnpc_canKeepLastSeen(marker) then
-        NPCDebugMapNPCMarkersBridge.markers[markerId] = blnpc_makeLastSeen(marker, "remove_command")
-        return
-    end
     NPCDebugMapNPCMarkersBridge.markers[markerId] = nil
 end
 
@@ -163,13 +445,22 @@ function NPCDebugMapNPCMarkersBridge.Sync(markers)
             if copied then
                 incoming[copied.id] = true
                 copied._clientSeenMs = blnpc_nowMs()
+                copied._clientMissingSinceMs = nil
+                copied.syncGrace = nil
+                copied.syncGraceReason = nil
                 if copied.dead and copied.markerType == "leader" then
                     copied.leaderState = "dead"
                     copied.dead = false
                 elseif copied.dead and blnpc_canKeepLastSeen(copied) then
                     copied = blnpc_makeLastSeen(NPCDebugMapNPCMarkersBridge.markers[copied.id] or copied, "dead_or_removed")
                 end
-                if copied then nextMarkers[copied.id] = copied end
+                if copied then
+                    copied.stale = copied.stale == true
+                    copied.lastSeen = copied.lastSeen == true
+                    blnpc_normalizeGroupDisplayName(copied)
+                    blnpc_prepareGroupMapMotion(copied, NPCDebugMapNPCMarkersBridge.markers[copied.id])
+                    nextMarkers[copied.id] = copied
+                end
             elseif id ~= nil then
                 incoming[tostring(id)] = true
             end
@@ -182,6 +473,9 @@ function NPCDebugMapNPCMarkersBridge.Sync(markers)
     end
 
     NPCDebugMapNPCMarkersBridge.markers = nextMarkers
+    NPCDebugMapNPCMarkersBridge._lastSyncReceived = blnpc_nowMs()
+    NPCDebugMapNPCMarkersBridge._lastSyncCount = NPCDebugMapNPCMarkersBridge.Count and NPCDebugMapNPCMarkersBridge.Count() or 0
+    blnpc_reconcileLocalMarkers(true)
 end
 
 function NPCDebugMapNPCMarkersBridge.Merge(markers)
@@ -194,12 +488,80 @@ function NPCDebugMapNPCMarkersBridge.Merge(markers)
     end
 end
 
+
+function NPCDebugMapNPCMarkersBridge.RefreshLocalVirtualGroups(force)
+    if not blnpc_isSinglePlayerRuntime() then return 0 end
+    if force ~= true and NPCDebugMapNPCMarkersBridge.Count and NPCDebugMapNPCMarkersBridge.Count() > 0 then return 0 end
+    local gmd = GetNPCModData and GetNPCModData() or nil
+    if type(gmd) ~= "table" then return 0 end
+
+    local changed = 0
+    if type(gmd.DebugMapMarkers) == "table" then
+        for _, marker in pairs(gmd.DebugMapMarkers) do
+            if type(marker) == "table" and marker.markerType then
+                NPCDebugMapNPCMarkersBridge.Set(marker)
+                changed = changed + 1
+                if changed >= 260 then return changed end
+            end
+        end
+    end
+
+    if changed > 0 then return changed end
+    if type(gmd.VirtualGroups) ~= "table" then return 0 end
+
+    for groupId, group in pairs(gmd.VirtualGroups) do
+        if type(group) == "table" and group.activated ~= true and group.x and group.y then
+            local id = tostring(group.id or groupId)
+            NPCDebugMapNPCMarkersBridge.Set({
+                id = id,
+                groupId = id,
+                markerType = "group",
+                x = tonumber(group.x) or 0,
+                y = tonumber(group.y) or 0,
+                z = tonumber(group.z) or 0,
+                name = group.displayName or group.name or tostring(id),
+                displayName = group.displayName or group.name or tostring(id),
+                count = group.count or (type(group.members) == "table" and #group.members) or 0,
+                hostile = group.hostile,
+                friendly = not group.hostile,
+                factionSide = group.factionSide,
+                faction = group.faction,
+                side = group.side,
+                state = group.state,
+                virtual = true,
+                active = false,
+                roadPatrol = group.roadPatrol or false,
+                inBattle = group.inBattle or false,
+                updatedAt = blnpc_worldAgeHours()
+            })
+            changed = changed + 1
+            if changed >= 260 then break end
+        end
+    end
+    return changed
+end
+
 function NPCDebugMapNPCMarkersBridge.Count()
     local c = 0
     for _, _ in pairs(NPCDebugMapNPCMarkersBridge.markers) do
         c = c + 1
     end
     return c
+end
+
+blnpc_reconcileLocalMarkers = function(force)
+    if not (NPCMarkerReconciliationBridge and NPCMarkerReconciliationBridge.ReconcileClientMarkers) then return 0 end
+    local now = blnpc_nowMs()
+    if force ~= true and now - (tonumber(NPCDebugMapNPCMarkersBridge._lastLocalReconcile) or 0) < 1500 then return 0 end
+    NPCDebugMapNPCMarkersBridge._lastLocalReconcile = now
+    local ok, changed = pcall(function()
+        return NPCMarkerReconciliationBridge.ReconcileClientMarkers(NPCDebugMapNPCMarkersBridge.markers, {
+            maxMarkers = 220,
+            leaderTtlHours = blnpc_settingNumber and blnpc_settingNumber("Debug_LeaderMarkerTtlHours", 2.0, 0.25, 24) or 2.0
+        })
+    end)
+    if ok then return tonumber(changed) or 0 end
+    return 0
 end
 
 blnpc_settingNumber = function(name, defaultValue, minValue, maxValue)
@@ -218,6 +580,41 @@ local function blnpc_settingBool(name, defaultValue)
         return NPCLegacySettingsBridge.GetBool(name, defaultValue == true)
     end
     return defaultValue == true
+end
+
+
+local function blnpc_averageFPS()
+    if getAverageFPS then
+        local ok, fps = pcall(function() return getAverageFPS() end)
+        if ok and tonumber(fps) then return tonumber(fps) end
+    end
+    return 60
+end
+
+local function blnpc_mapLoadLevel()
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.GetLoadLevel then
+        local ok, level = pcall(function() return NPCWorkSchedulerBridge.GetLoadLevel(false) end)
+        if ok and tonumber(level) then return tonumber(level) or 0 end
+    end
+    local fps = blnpc_averageFPS()
+    if fps > 0 and fps < 30 then return 3 end
+    if fps > 0 and fps < 45 then return 2 end
+    if fps > 0 and fps < 55 then return 1 end
+    return 0
+end
+
+local function blnpc_maxMarkersForLoad(isMiniMap, loadLevel)
+    local base = blnpc_settingNumber(isMiniMap and "Debug_MaxMiniMapMarkers" or "Debug_MaxWorldMapMarkers", isMiniMap and 45 or 160, 0, 5000)
+    if loadLevel >= 3 then return math.min(base, isMiniMap and 20 or 60) end
+    if loadLevel >= 2 then return math.min(base, isMiniMap and 30 or 100) end
+    if loadLevel >= 1 then return math.min(base, isMiniMap and 45 or 160) end
+    return base
+end
+
+local function blnpc_suppressLabelsForLoad(isMiniMap, loadLevel)
+    if isMiniMap then return true end
+    if loadLevel <= 0 then return false end
+    return not blnpc_settingBool("Debug_MapLabelsUnderLoad", false)
 end
 
 local function blnpc_shouldRender(isMiniMap)
@@ -246,11 +643,27 @@ function NPCDebugMapNPCMarkersBridge.RequestSync()
     if not player then return end
 
     local now = blnpc_nowMs()
-    local cooldownMs = blnpc_settingNumber("Net_DebugMapRequestCooldownSeconds", 6.0, 0, 120) * 1000
+    local cooldownSeconds = blnpc_settingNumber("Net_DebugMapRequestCooldownSeconds", 3.0, 0, 120)
+    if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.AdjustMarkerInterval then
+        cooldownSeconds = NPCStreamingRuntimeBridge.AdjustMarkerInterval(cooldownSeconds)
+    end
+    local cooldownMs = cooldownSeconds * 1000
     if cooldownMs > 0 and now - (tonumber(NPCDebugMapNPCMarkersBridge._lastRequest) or 0) < cooldownMs then
         return
     end
     NPCDebugMapNPCMarkersBridge._lastRequest = now
+
+    if blnpc_isSinglePlayerRuntime() then
+        if NPCWorldDirector and NPCWorldDirector.Bootstrap then
+            pcall(function() NPCWorldDirector.Bootstrap() end)
+        end
+        if NPCWorldDirector and NPCWorldDirector.SyncMarkers then
+            pcall(function() NPCWorldDirector.SyncMarkers() end)
+        end
+        if NPCDebugMapNPCMarkersBridge.RefreshLocalVirtualGroups then
+            NPCDebugMapNPCMarkersBridge.RefreshLocalVirtualGroups(true)
+        end
+    end
 
     sendClientCommand(player, 'NPCCommands', 'DebugMapRequest', {})
 end
@@ -335,6 +748,37 @@ local function blnpc_worldToUI(api, x, y)
     return nil, nil
 end
 
+
+local function blnpc_stabilizeScreenPosition(marker, x, y, isMiniMap)
+    if not marker or not marker.id or not x or not y then
+        return x and math.floor(x + 0.5) or x, y and math.floor(y + 0.5) or y
+    end
+
+    local key = tostring(marker.id) .. (isMiniMap == true and ":mini" or ":world")
+    local cache = NPCDebugMapNPCMarkersBridge._screenStable
+    local item = cache and cache[key] or nil
+    local rx = math.floor((tonumber(x) or 0) + 0.5)
+    local ry = math.floor((tonumber(y) or 0) + 0.5)
+
+    if item then
+        local dx = math.abs(rx - (tonumber(item.x) or rx))
+        local dy = math.abs(ry - (tonumber(item.y) or ry))
+        if dx <= 1 and dy <= 1 then
+            rx = item.x
+            ry = item.y
+        end
+    end
+
+    if cache then
+        item = item or {}
+        item.x = rx
+        item.y = ry
+        item.t = blnpc_nowMs()
+        cache[key] = item
+    end
+    return rx, ry
+end
+
 local function blnpc_getSize(ui)
     if not ui then return 0, 0 end
 
@@ -360,6 +804,7 @@ local function blnpc_drawRectSafe(ui, x, y, w, h, a, r, g, b)
 end
 
 local function blnpc_drawSmallLabel(ui, text, x, y, r, g, b, a)
+    if NPCDebugMapNPCMarkersBridge._suppressMapLabels == true then return end
     if not ui or not ui.drawTextCentre or not text or text == "" then return end
     pcall(function()
         ui:drawTextCentre(tostring(text), x, y + 1, 0, 0, 0, a or 0.92, UIFont.Small)
@@ -408,6 +853,7 @@ end
 
 local function blnpc_drawPatrolLetter(ui, x, y)
     if not ui then return end
+    if NPCDebugMapNPCMarkersBridge._suppressMapLabels == true then return end
 
     if ui.drawTextCentre then
         pcall(function()
@@ -654,7 +1100,7 @@ local function blnpc_drawBaseMarker(ui, marker, x, y)
     local alpha = 0.98
     if marker.captureActive or marker.captureStatus == "capturing" or marker.captureStatus == "decapturing" then
         if math.floor(blnpc_nowMs() / 420) % 2 == 1 then
-            alpha = 0.34
+            alpha = 0.70
         end
     end
 
@@ -865,13 +1311,73 @@ end
 local function blnpc_drawBlackMarketMarker(ui, marker, x, y)
     local size = 9
     local r, g, b = 0.65, 0.20, 0.85
+    local reward = marker and marker.blackMarketHasPendingReward == true
+    local turnIn = marker and marker.blackMarketQuestTurnInHighlight == true
     if marker and marker.blackMarketStatus == "closed" then r, g, b = 0.45, 0.18, 0.62 end
+    if reward or turnIn then
+        blnpc_drawDiamond(ui, x, y, size + 15, 0.94, 0, 0, 0)
+        blnpc_drawDiamond(ui, x, y, size + 12, 0.97, 1.0, 0.20, 0.82)
+        blnpc_drawDiamond(ui, x, y, size + 8, 0.97, 0.70, 0.25, 1.0)
+    end
     blnpc_drawDiamond(ui, x, y, size + 5, 0.92, 0, 0, 0)
     blnpc_drawDiamond(ui, x, y, size + 2, 0.95, r, g, b)
     if ui.drawTextCentre then
         ui:drawTextCentre("$", x, y - 8, 1.0, 1.0, 1.0, 1.0, UIFont.Small)
-        ui:drawTextCentre(blnpc_text("Map_MarketContact"), x, y - 22, 0.95, 0.75, 1.0, 1.0, UIFont.Small)
-        ui:drawTextCentre(blnpc_text("Map_RightClickNearby"), x, y + 10, 0.95, 0.90, 1.0, 0.90, UIFont.Small)
+        if reward then
+            ui:drawTextCentre("QUEST REWARD", x, y - 28, 1.0, 0.82, 1.0, 1.0, UIFont.Small)
+            ui:drawTextCentre("LOOT BOX", x, y + 12, 0.95, 0.90, 1.0, 0.94, UIFont.Small)
+        elseif turnIn then
+            ui:drawTextCentre("QUEST TURN-IN", x, y - 28, 1.0, 0.82, 1.0, 1.0, UIFont.Small)
+            ui:drawTextCentre("RETURN ITEM", x, y + 12, 0.95, 0.90, 1.0, 0.94, UIFont.Small)
+        else
+            ui:drawTextCentre(blnpc_text("Map_MarketContact"), x, y - 22, 0.95, 0.75, 1.0, 1.0, UIFont.Small)
+            ui:drawTextCentre(blnpc_text("Map_RightClickNearby"), x, y + 10, 0.95, 0.90, 1.0, 0.90, UIFont.Small)
+        end
+    end
+end
+
+local function blnpc_drawBlackMarketTurnInMarker(ui, marker, x, y)
+    local size = 13
+    local r, g, b = 1.0, 0.20, 0.82
+    blnpc_drawDiamond(ui, x, y, size + 10, 0.96, 0, 0, 0)
+    blnpc_drawDiamond(ui, x, y, size + 7, 0.98, r, g, b)
+    blnpc_drawDiamond(ui, x, y, size + 3, 0.98, 0.65, 0.20, 0.85)
+    blnpc_drawDiamond(ui, x, y, size, 0.95, 0.08, 0.04, 0.12)
+    if ui.drawTextCentre then
+        ui:drawTextCentre("$", x, y - 8, 1.0, 1.0, 1.0, 1.0, UIFont.Small)
+        ui:drawTextCentre("QUEST TURN-IN", x, y - 26, r, g, b, 1.0, UIFont.Small)
+        ui:drawTextCentre("RETURN ITEM", x, y + 12, 1.0, 0.85, 1.0, 0.95, UIFont.Small)
+    end
+end
+
+local function blnpc_drawBlackMarketDropMarker(ui, marker, x, y)
+    local size = 10
+    local dropType = tostring(marker and marker.blackMarketDropType or "")
+    local r, g, b = 0.75, 0.45, 1.0
+    if dropType == "weapons" then r, g, b = 0.95, 0.70, 0.20
+    elseif dropType == "ammo" then r, g, b = 0.55, 0.85, 1.0
+    elseif dropType == "armor" then r, g, b = 0.80, 0.85, 0.95
+    elseif dropType == "medical" then r, g, b = 0.30, 1.0, 0.55
+    elseif dropType == "quest" then r, g, b = 1.0, 0.20, 0.82
+    elseif dropType == "defense" then r, g, b = 0.70, 0.25, 1.0
+    elseif dropType == "documents" or dropType == "badge" or dropType == "password" then r, g, b = 0.85, 0.50, 1.0 end
+    blnpc_drawDiamond(ui, x, y, size + 8, 0.95, 0, 0, 0)
+    blnpc_drawDiamond(ui, x, y, size + 5, 0.98, r, g, b)
+    blnpc_drawDiamond(ui, x, y, size + 1, 0.98, 0.08, 0.04, 0.12)
+    if ui.drawTextCentre then
+        local code = "DROP"
+        local label = "BLACK MARKET DROP"
+        if dropType == "weapons" then label = "WEAPON CACHE"
+        elseif dropType == "ammo" then label = "AMMO CACHE"
+        elseif dropType == "armor" then label = "ARMOR CACHE"
+        elseif dropType == "medical" then label = "MED CACHE"
+        elseif dropType == "quest" then code = "QUEST"; label = "QUEST"
+        elseif dropType == "defense" then code = "DEFEND"; label = "DEFENSE ZONE"
+        elseif dropType == "documents" then label = "DOCUMENT DROP"
+        elseif dropType == "badge" then label = "BADGE DROP"
+        elseif dropType == "password" then label = "PASSWORD DROP" end
+        ui:drawTextCentre(code, x, y - 8, 1.0, 1.0, 1.0, 1.0, UIFont.Small)
+        ui:drawTextCentre(label, x, y - 24, r, g, b, 1.0, UIFont.Small)
     end
 end
 
@@ -882,28 +1388,42 @@ local function blnpc_drawLeaderMarker(ui, marker, x, y)
     local state = marker and tostring(marker.leaderState or marker.state or "active") or "active"
     local down = state == "dead" or (marker and marker.dead == true)
     if down or blnpc_isStale(marker) then return end
-    blnpc_drawDiamond(ui, x, y, size + 6, 0.92, 0, 0, 0)
-    blnpc_drawDiamond(ui, x, y, size + 3, 0.96, r, g, b)
+    local purchased = marker and (marker.blackMarketLeaderIntel == true or marker.blackMarketPurchasedIntel == true)
+    if purchased then
+        size = 13
+        r, g, b = 1.0, 0.88, 0.10
+        blnpc_drawDiamond(ui, x, y, size + 10, 0.96, 0, 0, 0)
+        blnpc_drawDiamond(ui, x, y, size + 6, 0.98, 1.0, 0.25, 0.05)
+        blnpc_drawDiamond(ui, x, y, size + 2, 0.98, r, g, b)
+    else
+        blnpc_drawDiamond(ui, x, y, size + 6, 0.92, 0, 0, 0)
+        blnpc_drawDiamond(ui, x, y, size + 3, 0.96, r, g, b)
+    end
     if ui.drawTextCentre then
-        local text = blnpc_text("Map_LeaderIntel")
+        local text = purchased and "BOUGHT LEADER INTEL" or blnpc_text("Map_LeaderIntel")
         if down then
             text = blnpc_text("Map_LeaderDown")
-        elseif marker and marker.baseId then
+        elseif not purchased and marker and marker.baseId then
             text = blnpc_text("Map_BaseCommanderIntel")
-        elseif marker and marker.groupId then
+        elseif not purchased and marker and marker.groupId then
             text = blnpc_text("Map_SquadLeaderEstimated")
         end
         ui:drawTextCentre("★", x, y - 8, 1.0, 1.0, 1.0, 1.0, UIFont.Small)
-        ui:drawTextCentre(text, x, y - 22, 1.0, 0.90, 0.30, 1.0, UIFont.Small)
+        ui:drawTextCentre(text, x, y - 25, 1.0, 0.92, 0.15, 1.0, UIFont.Small)
     end
 end
 
 local function blnpc_drawLeaderIcon(ui, marker, x, y)
     if not marker then return end
+    if marker.markerType == "group" and blnpc_settingBool("Debug_ShowGroupAuxLabels", false) ~= true then return end
     local text = nil
     if marker.leader == true or marker.isFactionLeader == true then
         if marker.leaderState == "dead" or marker.dead == true or blnpc_isStale(marker) then return end
-        text = blnpc_text("Map_Leader")
+        if marker.markerType == "group" and marker.active ~= true and marker.virtual ~= false then
+            text = marker.leaderId and blnpc_text("Map_SquadLeaderEstimated") or nil
+        else
+            text = blnpc_text("Map_Leader")
+        end
     elseif marker.commanderId then
         if marker.commanderState == "dead" or marker.dead == true or blnpc_isStale(marker) then return end
         text = blnpc_text("Map_Cmd")
@@ -914,6 +1434,7 @@ local function blnpc_drawLeaderIcon(ui, marker, x, y)
 end
 
 local function blnpc_drawSpyIcon(ui, marker, x, y)
+    if marker and marker.markerType == "group" and blnpc_settingBool("Debug_ShowGroupAuxLabels", false) ~= true then return end
     if not (NPCSpyBridge and NPCSpyBridge.ShowMarkers and NPCSpyBridge.ShowMarkers()) then return end
     if not marker or not (marker.spy == true or (tonumber(marker.spyCount) and tonumber(marker.spyCount) > 0)) then return end
     local text = marker.markerType == "group" and "i" or blnpc_text("Map_Spy")
@@ -925,6 +1446,7 @@ end
 
 local function blnpc_drawMercenaryLeaderIcon(ui, marker, x, y)
     if not marker or marker.mercenarySquadLeader ~= true then return end
+    if marker.markerType == "group" and blnpc_settingBool("Debug_ShowGroupAuxLabels", false) ~= true then return end
     if ui.drawTextCentre then
         ui:drawTextCentre("LEAD", x, y - 54, 0.25, 0.85, 1.0, 1.0, UIFont.Small)
     end
@@ -1028,8 +1550,21 @@ local function blnpc_drawDot(ui, marker, x, y)
         return
     end
 
+    if marker.markerType == "black_market_turnin" then
+        blnpc_drawBlackMarketTurnInMarker(ui, marker, x, y)
+        return
+    end
+
+    if marker.markerType == "black_market_drop" then
+        blnpc_drawBlackMarketDropMarker(ui, marker, x, y)
+        return
+    end
+
+    local defenseTarget = marker.blackMarketDefenseEnemy == true
     local r, g, b = blnpc_factionColor(marker)
-    if not r then
+    if defenseTarget then
+        r, g, b = 0.70, 0.25, 1.0
+    elseif not r then
         r, g, b = 1.0, 0.08, 0.08
         if marker.friendly or marker.hostile == false then
             r, g, b = 0.05, 0.95, 0.15
@@ -1057,6 +1592,8 @@ local function blnpc_drawDot(ui, marker, x, y)
     local size = 4
     if marker.markerType == "group" then
         size = 6
+    elseif defenseTarget then
+        size = 7
     end
 
     pcall(function()
@@ -1088,7 +1625,9 @@ local function blnpc_drawDot(ui, marker, x, y)
     end)
 
     if marker.markerType == "npc" then
-        if blnpc_isStale(marker) then
+        if defenseTarget then
+            blnpc_drawSmallLabel(ui, "DEFENCE GUARD", x, y + 12, 0.70, 0.25, 1.0, 0.96)
+        elseif blnpc_isStale(marker) then
             blnpc_drawSmallLabel(ui, blnpc_text("Map_NpcLastSeen"), x, y + 10, 0.75, 0.75, 0.75, 0.86)
         else
             blnpc_drawSmallLabel(ui, blnpc_text("Map_NpcActive"), x, y + 10, 0.90, 1.0, 0.90, 0.90)
@@ -1100,10 +1639,13 @@ local function blnpc_drawDot(ui, marker, x, y)
         elseif leaderGroup then
             -- Leader groups use the single leader icon label below; do not also
             -- print the generic patrol label under the same marker.
-        elseif marker.virtual ~= false then
-            blnpc_drawSmallLabel(ui, blnpc_text("Map_VirtualPatrol"), x, y + 12, 0.95, 0.95, 1.0, 0.90)
-        elseif marker.active then
-            blnpc_drawSmallLabel(ui, blnpc_text("Map_GroupActive"), x, y + 12, 0.90, 1.0, 0.90, 0.90)
+        else
+            local displayName = blnpc_groupDisplayName(marker)
+            if displayName then
+                blnpc_drawSmallLabel(ui, displayName, x, y - 18, 0.95, 0.95, 1.0, 0.94)
+            end
+            -- Keep group labels to one player-facing name. The marker shape already
+            -- communicates virtual/active state, so avoid stacking PATROL/GROUP text.
         end
     end
 
@@ -1113,7 +1655,9 @@ local function blnpc_drawDot(ui, marker, x, y)
     blnpc_drawLeaderIcon(ui, marker, x, y)
     blnpc_drawMercenaryLeaderIcon(ui, marker, x, y)
     blnpc_drawSpyIcon(ui, marker, x, y)
-    blnpc_drawGroupPower(ui, marker, x, y)
+    if blnpc_settingBool("Debug_ShowGroupPowerLabels", false) then
+        blnpc_drawGroupPower(ui, marker, x, y)
+    end
 end
 
 function NPCDebugMapNPCMarkersBridge.RenderOnMap(ui, api, isMiniMap)
@@ -1122,25 +1666,41 @@ function NPCDebugMapNPCMarkersBridge.RenderOnMap(ui, api, isMiniMap)
 
     if isMiniMap ~= true and blnpc_settingBool("Debug_RequestSyncOnMapOpen", true) then
         local now = blnpc_nowMs()
-        local cooldownMs = math.max(1500, blnpc_settingNumber("Net_DebugMapRequestCooldownSeconds", 6.0, 0, 120) * 1000)
+        local cooldownSeconds = blnpc_settingNumber("Net_DebugMapRequestCooldownSeconds", 6.0, 0, 120)
+        if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.AdjustMarkerInterval then
+            cooldownSeconds = NPCStreamingRuntimeBridge.AdjustMarkerInterval(cooldownSeconds)
+        end
+        local cooldownMs = math.max(1500, cooldownSeconds * 1000)
         if now - (tonumber(NPCDebugMapNPCMarkersBridge._lastMapOpenSync) or 0) >= cooldownMs then
             NPCDebugMapNPCMarkersBridge._lastMapOpenSync = now
             NPCDebugMapNPCMarkersBridge.RequestSync()
         end
     end
 
+    local loadLevel = blnpc_mapLoadLevel()
+    blnpc_reconcileLocalMarkers(loadLevel >= 2)
     local w, h = blnpc_getSize(ui)
+    local maxMarkers = blnpc_maxMarkersForLoad(isMiniMap == true, loadLevel)
+    if maxMarkers <= 0 then return end
 
+    NPCDebugMapNPCMarkersBridge._suppressMapLabels = blnpc_suppressLabelsForLoad(isMiniMap == true, loadLevel)
+    local drawn = 0
     for _, marker in pairs(NPCDebugMapNPCMarkersBridge.markers) do
+        if drawn >= maxMarkers then break end
         if marker and marker.x and marker.y and blnpc_shouldRenderPresenceMarker(marker) and not marker.dead then
-            local x, y = blnpc_worldToUI(api, marker.x, marker.y)
+            local mapX, mapY = blnpc_projectGroupMapPosition(marker)
+            local x, y = blnpc_worldToUI(api, mapX or marker.x, mapY or marker.y)
             if x and y then
-                if w <= 0 or h <= 0 or (x >= -32 and y >= -32 and x <= w + 32 and y <= h + 32) then
+                x, y = blnpc_stabilizeScreenPosition(marker, x, y, isMiniMap == true)
+                local margin = isMiniMap == true and 36 or 96
+                if w <= 0 or h <= 0 or (x >= -margin and y >= -margin and x <= w + margin and y <= h + margin) then
                     blnpc_drawDot(ui, marker, x, y)
+                    drawn = drawn + 1
                 end
             end
         end
     end
+    NPCDebugMapNPCMarkersBridge._suppressMapLabels = nil
 end
 
 function NPCDebugMapNPCMarkersBridge.HookMaps()
@@ -1197,9 +1757,10 @@ local function blnpc_tryMaterializeNearbyVirtualMarker()
     local best = nil
     local bestD2 = nil
 
+    blnpc_reconcileLocalMarkers(false)
     for _, marker in pairs(NPCDebugMapNPCMarkersBridge.markers or {}) do
         local materializeId = nil
-        if type(marker) == "table" and marker.markerType == "group" and marker.virtual ~= false and marker.active ~= true and not blnpc_isStale(marker) then
+        if type(marker) == "table" and marker.markerReconciledGhost ~= true and marker.markerType == "group" and marker.virtual ~= false and marker.active ~= true and not blnpc_isStale(marker) then
             materializeId = marker.id
         elseif type(marker) == "table" and marker.markerType == "leader" and marker.groupId and not blnpc_isStale(marker) and tostring(marker.leaderState or "") ~= "dead" then
             materializeId = marker.groupId
@@ -1220,28 +1781,65 @@ local function blnpc_tryMaterializeNearbyVirtualMarker()
     if not best then return end
     NPCDebugMapNPCMarkersBridge._lastMaterializeProbe = now
     NPCDebugMapNPCMarkersBridge._lastMaterializeMarker = tostring(best.materializeId or best.id)
+
+    if blnpc_isSinglePlayerRuntime() and NPCWorldDirector and NPCWorldDirector.EnsureData and NPCWorldDirector.MaterializeGroup then
+        local ok, materialized = pcall(function()
+            local gmd = NPCWorldDirector.EnsureData()
+            local group = gmd and gmd.VirtualGroups and gmd.VirtualGroups[tostring(best.materializeId or best.id)] or nil
+            if group and group.activated ~= true then
+                return NPCWorldDirector.MaterializeGroup(group, player)
+            end
+            return false
+        end)
+        if ok and materialized then return end
+    end
+
     sendClientCommand(player, 'NPCCommands', 'DebugMapMaterializeNear', {markerId=tostring(best.materializeId or best.id), x=best.x, y=best.y})
 end
 
-local function blnpc_onTick()
-    NPCDebugMapNPCMarkersBridge._tick = NPCDebugMapNPCMarkersBridge._tick + 1
+local function blnpc_onTick(tick)
+    tick = tonumber(tick) or ((tonumber(NPCDebugMapNPCMarkersBridge._tick) or 0) + 1)
+    NPCDebugMapNPCMarkersBridge._tick = tick
 
-    if NPCDebugMapNPCMarkersBridge._tick % 120 == 0 then
+    local nextHook = tonumber(NPCDebugMapNPCMarkersBridge._nextHookTick) or 0
+    if tick >= nextHook then
+        NPCDebugMapNPCMarkersBridge._nextHookTick = tick + 120
         NPCDebugMapNPCMarkersBridge.HookMaps()
-    end
-
-    if NPCDebugMapNPCMarkersBridge._tick % 120 == 0 then
+        if NPCDebugMapNPCMarkersBridge.RefreshLocalVirtualGroups then
+            NPCDebugMapNPCMarkersBridge.RefreshLocalVirtualGroups(false)
+        end
+        blnpc_reconcileLocalMarkers(false)
         blnpc_tryMaterializeNearbyVirtualMarker()
     end
 
-    if NPCDebugMapNPCMarkersBridge._tick % 600 == 0 then
+    local nextSync = tonumber(NPCDebugMapNPCMarkersBridge._nextSyncTick) or 0
+    if tick >= nextSync then
+        local interval = 240
+        if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.AdjustMarkerInterval then
+            interval = math.max(interval, math.floor(NPCStreamingRuntimeBridge.AdjustMarkerInterval(interval)))
+        end
+        NPCDebugMapNPCMarkersBridge._nextSyncTick = tick + interval
         NPCDebugMapNPCMarkersBridge.RequestSync()
+    end
+end
+
+local function blnpc_registerTickJob()
+    -- Stage449: prefer scheduler-governed marker sync. Direct OnTick remains
+    -- only as a fallback, so map/debug marker maintenance no longer runs every
+    -- frame when the shared scheduler is already available.
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.RegisterTickJob then
+        NPCWorkSchedulerBridge.RegisterTickJob("NPCDebugMapNPCMarkersBridge.Sync", blnpc_onTick, "marker", 30, 2)
+        return
+    end
+    if Events and Events.OnTick and not NPCDebugMapNPCMarkersBridge._directTickInstalled then
+        NPCDebugMapNPCMarkersBridge._directTickInstalled = true
+        Events.OnTick.Add(blnpc_onTick)
     end
 end
 
 Events.OnServerCommand.Add(blnpc_onServerCommand)
 Events.OnGameStart.Add(blnpc_onGameStart)
-Events.OnTick.Add(blnpc_onTick)
+blnpc_registerTickJob()
 
 NPCDebugMapNPCMarkersBridge.HookMaps()
 

@@ -1,7 +1,7 @@
 UI_DE = {
-    
-    /***** Localized by Eaglefire *****/
+    /***** Factions Confrontation localization: German *****/
 
-    UI_optionscreen_binding_FactionsConfrontation = "FactionConfrontationen",
+    UI_optionscreen_binding_FactionsConfrontation = "Factions Confrontation",
     UI_optionscreen_binding_POSTS = "Wachposten verwalten",
+
 }

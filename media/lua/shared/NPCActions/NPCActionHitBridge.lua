@@ -1,6 +1,7 @@
 NPCActionHitBridge = NPCActionHitBridge or {}
 require "NPCCore/NPCLegacyGlobalsBridge"
 require "NPCCore/NPCLegacyContractBridge"
+require "NPCCore/NPCZombieLifecycleClassifierBridge"
 
 local NPC_ACTION_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
 NPCEntity = NPCEntity or NPC_ACTION_LEGACY_GLOBALS.Get("Entity")
@@ -64,6 +65,40 @@ local function bff_groupId(brain)
     return brain.worldGroupId or brain.groupId or brain.homeGroupId
 end
 
+local function bff_ownerId(brain)
+    if type(brain) ~= "table" then return nil end
+    return brain.mercenaryHiredBy or brain.master or brain.followPlayer or brain.ownerPlayerId or brain.hiredByPlayerId
+end
+
+local function bff_playerId(player)
+    if not player then return nil end
+    if player.getOnlineID then
+        local ok, value = pcall(function() return player:getOnlineID() end)
+        if ok and value ~= nil then return tostring(value) end
+    end
+    if player.getUsername then
+        local ok, value = pcall(function() return player:getUsername() end)
+        if ok and value ~= nil and tostring(value) ~= "" then return tostring(value) end
+    end
+    if player.getDisplayName then
+        local ok, value = pcall(function() return player:getDisplayName() end)
+        if ok and value ~= nil and tostring(value) ~= "" then return tostring(value) end
+    end
+    return nil
+end
+
+local function bff_sameOwner(a, b)
+    local ao = bff_ownerId(a)
+    local bo = bff_ownerId(b)
+    return ao ~= nil and bo ~= nil and tostring(ao) == tostring(bo)
+end
+
+local function bff_isOwnerPlayer(attackerBrain, player)
+    local owner = bff_ownerId(attackerBrain)
+    local pid = bff_playerId(player)
+    return owner ~= nil and pid ~= nil and tostring(owner) == tostring(pid)
+end
+
 local function bff_sameSquad(a, b)
     if not (type(a) == "table" and type(b) == "table") then return false end
     if bff_sameValue(a.id, b.id) then return true end
@@ -75,7 +110,9 @@ end
 local function bff_isFriendlyLiveNPC(attackerBrain, targetBrain, target)
     if not IsLiveNPC(target) then return false end
     if not attackerBrain then return true end
+    if NPCFactionBridge and NPCFactionBridge.IsBrainRogueBreakdown and NPCFactionBridge.IsBrainRogueBreakdown(attackerBrain) then return false end
     if not targetBrain then return true end
+    if bff_sameOwner(attackerBrain, targetBrain) then return true end
     if bff_sameSquad(attackerBrain, targetBrain) then return true end
     if NPCFactionBridge and NPCFactionBridge.IsEnabled and NPCFactionBridge.IsEnabled() and NPCFactionBridge.AreBrainsEnemies then
         local ok, enemies = pcall(function() return NPCFactionBridge.AreBrainsEnemies(attackerBrain, targetBrain) end)
@@ -96,6 +133,7 @@ local function CanDamageTarget(attackerBrain, targetBrain, target)
     end
 
     if target and instanceof and instanceof(target, "IsoPlayer") then
+        if bff_isOwnerPlayer(attackerBrain, target) then return false end
         if attackerBrain and attackerBrain.spy == true and attackerBrain.spyDefected ~= true and NPCSpyBridge and NPCSpyBridge.PlayerId and tostring(attackerBrain.spyForPlayerId or "") == tostring(NPCSpyBridge.PlayerId(target) or "") then return false end
         if NPCSpyBridge and NPCSpyBridge.ShouldHoldFireAgainstPlayer and NPCSpyBridge.ShouldHoldFireAgainstPlayer(attackerBrain, target) then return false end
         if NPCFactionBridge and NPCFactionBridge.IsEnabled and NPCFactionBridge.IsEnabled() and NPCFactionBridge.CanBrainAttackPlayer then
@@ -110,16 +148,126 @@ local function CanDamageTarget(attackerBrain, targetBrain, target)
     return attackerBrain.clan ~= targetBrain.clan or (attackerBrain.hostile and not targetBrain.hostile)
 end
 
+local function ResolveHitTaskTarget(task)
+    if not task then return nil end
+    local targetId = task.targetId or task.eid
+    if targetId == nil then return nil end
+
+    if NPCZombieCacheBridge and NPCZombieCacheBridge.Cache then
+        local enemy = NPCZombieCacheBridge.Cache[targetId] or NPCZombieCacheBridge.Cache[tostring(targetId)]
+        if enemy then return enemy end
+    end
+
+    if NPCPlayerClient and NPCPlayerClient.GetPlayerById then
+        local ok, player = pcall(function() return NPCPlayerClient.GetPlayerById(targetId) end)
+        if ok and player then return player end
+    end
+
+    return nil
+end
+
+local function RefreshHitTaskTarget(bandit, task)
+    local enemy = ResolveHitTaskTarget(task)
+    if not enemy then return nil end
+    if enemy.isAlive then
+        local okAlive, alive = pcall(function() return enemy:isAlive() end)
+        if okAlive and alive == false then return nil end
+    end
+    if enemy.getX and enemy.getY then
+        task.x = enemy:getX()
+        task.y = enemy:getY()
+        task.z = enemy.getZ and enemy:getZ() or task.z
+    end
+    return enemy
+end
+
+
+local function GetMeleeStrikeRange(item, task)
+    local taskRange = task and tonumber(task.meleeStrikeRange) or nil
+    if taskRange and taskRange > 0 then return taskRange end
+
+    local maxRange = 1.1
+    if item and item.getMaxRange then
+        local okRange, value = pcall(function() return item:getMaxRange() end)
+        if okRange and tonumber(value) then maxRange = tonumber(value) end
+    end
+
+    if maxRange < 0.70 then return math.max(0.48, maxRange - 0.05) end
+    if maxRange < 1.15 then return math.max(0.62, maxRange - 0.18) end
+    return math.max(0.78, maxRange - 0.25)
+end
+
+local function IsTargetInMeleeStrikeRange(attacker, target, item, task)
+    if not (attacker and target and target.getX and target.getY and attacker.getX and attacker.getY) then return false end
+    if target.getZ and attacker.getZ and math.floor(target:getZ() or 0) ~= math.floor(attacker:getZ() or 0) then return false end
+    local dx = (target:getX() or 0) - (attacker:getX() or 0)
+    local dy = (target:getY() or 0) - (attacker:getY() or 0)
+    local range = GetMeleeStrikeRange(item, task)
+    if task then task.meleeStrikeRange = range end
+    return dx * dx + dy * dy <= range * range
+end
+
+local function bff_isNpcLikeZombie(victim)
+    if NPCZombieLifecycleClassifierBridge and NPCZombieLifecycleClassifierBridge.IsNPCLikeZombie then
+        local ok, value = pcall(function() return NPCZombieLifecycleClassifierBridge.IsNPCLikeZombie(victim) end)
+        if ok then return value == true end
+    end
+    if not victim or not instanceof or not instanceof(victim, "IsoZombie") then return false end
+    return IsLiveNPC(victim) or IsFormerNPCZombie(victim) or IsArmedNpcZombieResidue(victim)
+end
+
+local function bff_fakeZombieForKill()
+    if getCell and getCell() and getCell().getFakeZombieForHit then
+        return getCell():getFakeZombieForHit()
+    end
+    return nil
+end
+
 local function bff_killVictim(attacker, victim)
     if not victim then return end
-    local md = victim.getModData and victim:getModData() or nil
-    if md then
-        md.NPCKeepCorpse = true
-        md.NPCCorpseFromNPCCombat = true
-        md.NPCCorpseDeathAt = getTimestampMs and getTimestampMs() or 0
+
+    local npcLike = bff_isNpcLikeZombie(victim)
+    local killer = nil
+
+    if NPCZombieLifecycleClassifierBridge and NPCZombieLifecycleClassifierBridge.GetSafeKillSource then
+        local ok, safeKiller, class = pcall(function()
+            return NPCZombieLifecycleClassifierBridge.GetSafeKillSource(attacker, victim, bff_fakeZombieForKill)
+        end)
+        if ok then
+            killer = safeKiller
+            npcLike = class ~= "ordinary_zombie" and class ~= "non_zombie" and class ~= "black_market"
+        end
     end
-    local killer = attacker
-    if not killer and getCell and getCell() then killer = getCell():getFakeZombieForHit() end
+
+    if not killer then
+        local md = victim.getModData and victim:getModData() or nil
+        if md then
+            if npcLike then
+                md.NPCKeepCorpse = true
+                md.NPCCorpseFromNPCCombat = true
+                md.NPCCorpseDeathAt = getTimestampMs and getTimestampMs() or 0
+            else
+                md.NPCKeepCorpse = nil
+                md.NPCCorpseFromNPCCombat = nil
+                md.NPCCorpseDeathAt = nil
+            end
+        end
+        killer = npcLike and attacker or bff_fakeZombieForKill()
+    end
+
+    if not killer then killer = attacker end
+
+    if npcLike then
+        local md = victim.getModData and victim:getModData() or nil
+        if md then
+            md.NPCKeepCorpse = true
+            md.NPCLootableCorpse = true
+            md.NPCCorpseFromNPCCombat = true
+            md.NPCCorpseDeathAt = getTimestampMs and getTimestampMs() or 0
+        end
+        if NPCEntity and NPCEntity.UpdateItemsToSpawnAtDeath then pcall(function() NPCEntity.UpdateItemsToSpawnAtDeath(victim) end) end
+    end
+
     if killer then
         victim:Kill(killer, true)
     elseif victim.Kill then
@@ -266,7 +414,7 @@ NPCActionHitBridge.OnStart = function(bandit, task)
     local anim 
     local sound
 
-    local enemy = NPCZombieCacheBridge.Cache[task.eid] or NPCPlayerClient.GetPlayerById(task.eid)
+    local enemy = RefreshHitTaskTarget(bandit, task)
     if not enemy then return true end
     local brainNPC = NPCBrainData.Get(bandit)
     local enemyBrain = NPCBrainData.Get(enemy)
@@ -274,6 +422,10 @@ NPCActionHitBridge.OnStart = function(bandit, task)
     
     local prone = enemy:isProne() or enemy:getActionStateName() == "onground" or enemy:getActionStateName() == "sitonground" or enemy:getActionStateName() == "climbfence" 
     local meleeItem = NPCCompatibilityBridge.InstanceItem(task.weapon)
+    if not IsTargetInMeleeStrikeRange(bandit, enemy, meleeItem, task) then
+        if task.x and task.y then bandit:faceLocation(task.x, task.y) end
+        return true
+    end
     local meleeItemType = WeaponType.getWeaponType(meleeItem)
 
     local sound = meleeItem:getSwingSound()
@@ -330,7 +482,11 @@ NPCActionHitBridge.OnStart = function(bandit, task)
 end
 
 NPCActionHitBridge.OnWorking = function(bandit, task)
+    local currentEnemy = RefreshHitTaskTarget(bandit, task)
+    if not currentEnemy then return true end
     bandit:faceLocation(task.x, task.y)
+    local itemForRange = NPCCompatibilityBridge.InstanceItem(task.weapon)
+    if not IsTargetInMeleeStrikeRange(bandit, currentEnemy, itemForRange, task) then return true end
     local bumpType = bandit:getBumpType()
 
     if bumpType ~= task.anim then return false end
@@ -347,9 +503,9 @@ NPCActionHitBridge.OnWorking = function(bandit, task)
         NPCEntity.UpdateTask(bandit, task)
 
         local item = NPCCompatibilityBridge.InstanceItem(task.weapon)
-        local enemy = NPCZombieCacheBridge.Cache[task.eid]
+        local enemy = ResolveHitTaskTarget(task)
         local brainNPC = NPCBrainData.Get(bandit)
-        if enemy then 
+        if enemy and instanceof(enemy, "IsoZombie") then 
             local brainEnemy = NPCBrainData.Get(enemy)
             if CanDamageTarget(brainNPC, brainEnemy, enemy) then 
                 Hit (bandit, item, enemy)
@@ -357,10 +513,11 @@ NPCActionHitBridge.OnWorking = function(bandit, task)
             end
         end
 
-        local player = NPCPlayerClient.GetPlayerById(task.eid)
+        local player = (enemy and instanceof(enemy, "IsoPlayer")) and enemy or NPCPlayerClient.GetPlayerById(task.eid)
         if player then
             local eid = NPCUtils.GetCharacterID(player)
-            if player:isAlive() and eid == task.eid and CanDamageTarget(brainNPC, nil, player) then
+            local requestedId = task.targetId or task.eid
+            if player:isAlive() and tostring(eid) == tostring(requestedId) and CanDamageTarget(brainNPC, nil, player) then
                 Hit (bandit, item, player)
                 if task.weapon ~= "AuthenticZClothing.Chainsaw" then return false end
             end

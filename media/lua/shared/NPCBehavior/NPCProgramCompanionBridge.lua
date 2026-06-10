@@ -1,5 +1,8 @@
 require "NPCBehavior/NPCBehaviorBridge"
+require "NPCCore/NPCLootTargetCacheBridge"
 require "NPCCore/NPCLegacyContractBridge"
+require "NPCCore/NPCPostCombatLootBridge"
+require "NPCCore/NPCSquadDynamicsBridge"
 
 NPCProgramCompanionBridge = NPCProgramCompanionBridge or {}
 
@@ -13,6 +16,107 @@ local function npcSandboxBool(name, fallback)
     local vars = SandboxVars and SandboxVars[NPCLegacyContractBridge.Sandbox.main] or nil
     if vars and vars[name] ~= nil then return vars[name] == true end
     return fallback == true
+end
+
+local function npcCompanionNowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and tonumber(value) then return tonumber(value) end
+    end
+    if getGameTime then
+        local ok, value = pcall(function() return getGameTime():getWorldAgeHours() end)
+        if ok and tonumber(value) then return math.floor((tonumber(value) or 0) * 3600000) end
+    end
+    return 0
+end
+
+local function npcCompanionDist2(x1, y1, x2, y2)
+    local dx = (tonumber(x1) or 0) - (tonumber(x2) or 0)
+    local dy = (tonumber(y1) or 0) - (tonumber(y2) or 0)
+    return dx * dx + dy * dy
+end
+
+local function npcCompanionResolveFreeFollowSlot(master, dx, dy, dz)
+    if not (master and dx and dy) then return dx, dy, dz end
+    local cell = getCell and getCell() or nil
+    if not cell then return dx, dy, dz end
+
+    local z = math.floor(tonumber(dz) or (master.getZ and master:getZ()) or 0)
+    local cx = math.floor(tonumber(dx) or 0)
+    local cy = math.floor(tonumber(dy) or 0)
+    local bestSquare = nil
+    local bestScore = nil
+
+    for r = 0, 2 do
+        for ox = -r, r do
+            for oy = -r, r do
+                if r == 0 or math.abs(ox) == r or math.abs(oy) == r then
+                    local square = cell:getGridSquare(cx + ox, cy + oy, z)
+                    local free = false
+                    if square then
+                        local ok, value = pcall(function() return square:isFree(false) end)
+                        free = (not ok) or value == true
+                    end
+                    if free then
+                        local sx = square:getX() + 0.5
+                        local sy = square:getY() + 0.5
+                        local score = npcCompanionDist2(sx, sy, dx, dy)
+                        if master.getX and master.getY then
+                            local md = math.sqrt(npcCompanionDist2(sx, sy, master:getX(), master:getY()))
+                            if md < 0.55 or md > 3.8 then score = score + 8 end
+                        end
+                        if not bestScore or score < bestScore then
+                            bestScore = score
+                            bestSquare = square
+                        end
+                    end
+                end
+            end
+        end
+        if bestSquare and r >= 1 then break end
+    end
+
+    if bestSquare then
+        return bestSquare:getX() + 0.5, bestSquare:getY() + 0.5, bestSquare:getZ()
+    end
+    return dx, dy, dz
+end
+
+local function npcCompanionStabilizeStrictFollowSlot(brain, master, dx, dy, dz, leaderDriven)
+    if not (brain and master and dx and dy) then return dx, dy, dz end
+    brain.ai = brain.ai or {}
+    local seq = 0
+    if type(brain.order) == "table" and tonumber(brain.order.sequence) then seq = tonumber(brain.order.sequence) end
+    local key = leaderDriven and "strictLeaderFollowSlot" or "strictFollowSlot"
+    local slot = brain.ai[key]
+    local nowMs = npcCompanionNowMs()
+    local anchorDelta = leaderDriven and 0.95 or 0.28
+    local targetDelta = leaderDriven and 1.15 or 0.38
+    local maxAgeMs = leaderDriven and 1400 or 520
+
+    if type(slot) == "table" and slot.seq == seq and slot.x and slot.y then
+        local anchorMoved = false
+        if slot.mx and slot.my then
+            anchorMoved = npcCompanionDist2(slot.mx, slot.my, master:getX(), master:getY()) > anchorDelta * anchorDelta
+        end
+        local targetMoved = npcCompanionDist2(slot.x, slot.y, dx, dy) > targetDelta * targetDelta
+        local expired = nowMs > 0 and tonumber(slot.at) and (nowMs - tonumber(slot.at)) > maxAgeMs
+        if not anchorMoved and not targetMoved and not expired then
+            return slot.x, slot.y, slot.z or dz
+        end
+    end
+
+    brain.ai[key] = {
+        seq = seq,
+        x = dx,
+        y = dy,
+        z = dz,
+        mx = master:getX(),
+        my = master:getY(),
+        mz = master:getZ(),
+        at = nowMs
+    }
+    return dx, dy, dz
 end
 
 NPCProgramCompanionBridge.Init = function(bandit)
@@ -86,6 +190,12 @@ NPCProgramCompanionBridge.TryMobileOrder = function(bandit, brain, orderName, ta
         return NPCBehaviorBridge.CompanionTryMobileOrder(bandit, brain, orderName, tasks)
     end
     return nil
+end
+
+function NPCProgramCompanionBridge.IsPlayerCommandOrder(brain, order)
+    if not (brain and order and NPCOrderContract and NPCOrderContract.IsPlayerCommandedOrderActive) then return false end
+    local ok, active = pcall(function() return NPCOrderContract.IsPlayerCommandedOrderActive(brain) end)
+    return ok and active == true
 end
 
 NPCProgramCompanionBridge.TryVehicleSync = function(bandit, master, vehicle, dist, tasks)
@@ -165,32 +275,31 @@ end
 NPCProgramCompanionBridge.TryLootWeapons = function(bandit, cell, tasks)
     if not NPCEntity.IsOutOfAmmo(bandit) then return nil end
 
-    -- deadbodies
-    for z=0, 2 do
-        for y=-12, 12 do
-            for x=-12, 12 do
-                local square = cell:getGridSquare(bandit:getX() + x, bandit:getY() + y, z)
-                if square then
-                    local body = square:getDeadBody()
-                    if body then
+    local brain = NPCBrainData and NPCBrainData.Get and NPCBrainData.Get(bandit) or nil
+    if brain and (brain.master ~= nil or brain.mercenaryHired == true or brain.mercenaryHiredBy ~= nil or brain.isPlayerGuard == true or (brain.relationshipToPlayer == "hired_bodyguard" or brain.relationshipToPlayer == "companion")) then
+        local order = NPCBehaviorBridge and NPCBehaviorBridge.CompanionGetOrder and NPCBehaviorBridge.CompanionGetOrder(brain) or brain.order
+        local manualAllowed = NPCPostCombatLootBridge and NPCPostCombatLootBridge.IsManualLootOrder and NPCPostCombatLootBridge.IsManualLootOrder(order)
+        if manualAllowed ~= true then return nil end
+    end
 
-                        -- we found one body, but there my be more bodies on that square and we need to check all
-                        local objects = square:getStaticMovingObjects()
-                        for i=0, objects:size()-1 do
-                            local object = objects:get(i)
-                            if instanceof (object, "IsoDeadBody") then
-                                local body = object
-                                container = body:getContainer()
-                                if container and not container:isEmpty() then
-                                    local subTasks = NPCPrograms.Container.WeaponLoot(bandit, body, container)
-                                    if #subTasks > 0 then
-                                        for _, subTask in pairs(subTasks) do
-                                            table.insert(tasks, subTask)
-                                        end
-                                        return "Prepare"
-                                    end
-                                end
+    -- Stage 311: prefer shared building/container cache before doing any room-wide scan.
+    if NPCLootTargetCacheBridge and NPCLootTargetCacheBridge.FindContainerSquare then
+        local ok, square = pcall(function()
+            return NPCLootTargetCacheBridge.FindContainerSquare(bandit, 10, {need = "ammo", ttlMs = 5200, maxSquareChecks = 110, maxObjectChecks = 12, maxItemChecks = 45})
+        end)
+        if ok and square then
+            local objects = square:getObjects()
+            if objects then
+                for i=0, math.min(objects:size() - 1, 11) do
+                    local object = objects:get(i)
+                    local container = object and object.getContainer and object:getContainer() or nil
+                    if container and not container:isEmpty() then
+                        local subTasks = NPCPrograms.Container.WeaponLoot(bandit, object, container)
+                        if #subTasks > 0 then
+                            for _, subTask in pairs(subTasks) do
+                                table.insert(tasks, subTask)
                             end
+                            return "Prepare"
                         end
                     end
                 end
@@ -198,38 +307,80 @@ NPCProgramCompanionBridge.TryLootWeapons = function(bandit, cell, tasks)
         end
     end
 
-    -- containers in rooms
-    local room = bandit:getSquare():getRoom()
-    if room then
-        local roomDef = room:getRoomDef()
-        for x=roomDef:getX(), roomDef:getX2() do
-            for y=roomDef:getY(), roomDef:getY2() do
-                local square = cell:getGridSquare(x, y, roomDef:getZ())
-                if square then
-                    local objects = square:getObjects()
-                    for i=0, objects:size() - 1 do
-                        local object = objects:get(i)
-                        local container = object:getContainer()
-                        if container and not container:isEmpty() then
-                            local subTasks = NPCPrograms.Container.WeaponLoot(bandit, object, container)
-                            if #subTasks > 0 then
-                                for _, subTask in pairs(subTasks) do
-                                    table.insert(tasks, subTask)
+    -- deadbodies: bounded ring scan, not a full 25x25x3 sweep every decision.
+    local bx = math.floor(bandit:getX())
+    local by = math.floor(bandit:getY())
+    local bz = math.floor(bandit:getZ())
+    local checks = 0
+    for r=0, 8 do
+        for x=-r, r do
+            for y=-r, r do
+                if checks >= 120 then break end
+                if r == 0 or math.abs(x) == r or math.abs(y) == r then
+                    checks = checks + 1
+                    local square = cell:getGridSquare(bx + x, by + y, bz)
+                    if square then
+                        local body = square:getDeadBody()
+                        if body then
+                            local objects = square:getStaticMovingObjects()
+                            if objects then
+                                for i=0, objects:size()-1 do
+                                    local object = objects:get(i)
+                                    if instanceof (object, "IsoDeadBody") then
+                                        local body = object
+                                        local container = body:getContainer()
+                                        if container and not container:isEmpty() then
+                                            local subTasks = NPCPrograms.Container.WeaponLoot(bandit, body, container)
+                                            if #subTasks > 0 then
+                                                for _, subTask in pairs(subTasks) do
+                                                    table.insert(tasks, subTask)
+                                                end
+                                                return "Prepare"
+                                            end
+                                        end
+                                    end
                                 end
-                                return "Prepare"
                             end
-
-                            --[[local subTasks = legacy container loot program(bandit, object, container)
-                            if #subTasks > 0 then
-                                for _, subTask in pairs(subTasks) do
-                                    table.insert(tasks, subTask)
-                                end
-                                return "Prepare"
-                            end]]
                         end
                     end
                 end
             end
+            if checks >= 120 then break end
+        end
+        if checks >= 120 then break end
+    end
+
+    -- containers in current room only; shared cache handles broader building scans.
+    local square = bandit:getSquare()
+    local room = square and square:getRoom() or nil
+    if room then
+        local roomDef = room:getRoomDef()
+        local inspected = 0
+        for x=roomDef:getX(), roomDef:getX2() do
+            for y=roomDef:getY(), roomDef:getY2() do
+                if inspected >= 80 then break end
+                local square = cell:getGridSquare(x, y, roomDef:getZ())
+                if square then
+                    inspected = inspected + 1
+                    local objects = square:getObjects()
+                    if objects then
+                        for i=0, math.min(objects:size() - 1, 11) do
+                            local object = objects:get(i)
+                            local container = object and object.getContainer and object:getContainer() or nil
+                            if container and not container:isEmpty() then
+                                local subTasks = NPCPrograms.Container.WeaponLoot(bandit, object, container)
+                                if #subTasks > 0 then
+                                    for _, subTask in pairs(subTasks) do
+                                        table.insert(tasks, subTask)
+                                    end
+                                    return "Prepare"
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            if inspected >= 80 then break end
         end
     end
 
@@ -458,37 +609,70 @@ NPCProgramCompanionBridge.TryHomeBaseTasks = function(bandit, cm, tasks)
 end
 
 NPCProgramCompanionBridge.TryFollowSlot = function(bandit, master, brain, order, tasks, endurance, walkType)
-    -- follow the player.
+    -- Follow the player, or for hired squads let the squad leader follow the
+    -- player while other members walk by short local slots around the leader.
     local minDist = 2
     local dx, dy, dz = nil, nil, nil
     local followDistance = order and tonumber(order.followDistance) or nil
     local formation = order and order.formation or "close"
     local strictFollow = order and order.name == "Follow" and brain and brain.mercenaryHired == true
+    local leaderDriven = false
+    local leaderPoint = nil
 
-    if strictFollow then
-        minDist = 1.35
-        if formation == "wide" then
-            followDistance = math.min(followDistance or 4.0, 4.0)
-        elseif formation == "line" or formation == "wedge" or formation == "ring" or formation == "bodyguard" then
-            followDistance = math.min(followDistance or 3.0, 3.0)
-        else
-            followDistance = math.min(followDistance or 2.0, 2.0)
+    -- Stage 370: player Follow is a bodyguard formation, not a direct run into
+    -- the player's tile.  Formation changes are allowed while moving; the target
+    -- slot is refreshed frequently so guards walk shoulder-to-shoulder with the
+    -- player instead of lagging behind or piling into one point.
+    -- Stage 446/370: player-commanded Follow must be a player-anchored
+    -- bodyguard formation around the player.  The old leader-driven helper can use stale
+    -- squad-channel leader coordinates and make mercenaries spread around the
+    -- map instead of converging to the player's formation slots.
+    if strictFollow and not (order and (order.commandAuthority == "player" or order.playerCommand == true or order.source == "player")) and NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.GetLeaderFollowPoint then
+        local ok, point = pcall(function()
+            return NPCSquadDynamicsBridge.GetLeaderFollowPoint(bandit, brain, master, order)
+        end)
+        if ok and point and point.x and point.y then
+            leaderDriven = true
+            leaderPoint = point
+            dx, dy, dz = point.x, point.y, point.z
+            minDist = tonumber(point.arriveDist) or 1.15
+            if point.walkType then walkType = point.walkType end
+            if point.catchUp == true then endurance = -0.07 end
+        elseif ok and point and point.isLeader == true then
+            -- The leader keeps the old player-follow behavior. Followers will
+            -- use this leader's position as their locomotion anchor.
+            leaderDriven = false
         end
     end
 
-    if order and (order.name == "Hold" or order.name == "Guard") and order.anchor and order.anchor.x and order.anchor.y then
-        if NPCFormationSlotsBridge and NPCFormationSlotsBridge.GetAnchorSlotPoint then
-            dx, dy, dz = NPCFormationSlotsBridge.GetAnchorSlotPoint(order.anchor, brain, bandit, formation or "close", followDistance or 2.0)
+    if strictFollow then
+        -- Tight bodyguard follow.  The arrival radius stays below one tile so
+        -- walking guards keep correcting their shoulder slot while the player moves.
+        minDist = leaderDriven and math.max(minDist, 1.15) or 0.72
+        followDistance = tonumber(followDistance) or 0.95
+        if followDistance < 0.75 then followDistance = 0.75 end
+        if followDistance > 2.4 then followDistance = 2.4 end
+    end
+
+    if not (dx and dy) then
+        if order and (order.name == "Hold" or order.name == "Guard") and order.anchor and order.anchor.x and order.anchor.y then
+            if NPCFormationSlotsBridge and NPCFormationSlotsBridge.GetAnchorSlotPoint then
+                dx, dy, dz = NPCFormationSlotsBridge.GetAnchorSlotPoint(order.anchor, brain, bandit, formation or "close", followDistance or 2.0)
+            end
+            if not (dx and dy) then
+                dx = tonumber(order.anchor.x)
+                dy = tonumber(order.anchor.y)
+                dz = tonumber(order.anchor.z) or master:getZ()
+            end
+            minDist = 1.0
+        elseif NPCFormationSlotsBridge then
+            if strictFollow and NPCFormationSlotsBridge.GetPlayerFollowSlotPoint then
+                dx, dy, dz = NPCFormationSlotsBridge.GetPlayerFollowSlotPoint(master, brain, bandit, formation or "close", followDistance or 3.0)
+            elseif NPCFormationSlotsBridge.GetSlotPoint then
+                dx, dy, dz = NPCFormationSlotsBridge.GetSlotPoint(master, brain, bandit, formation or "close", followDistance or 3.0)
+            end
+            if not strictFollow then minDist = 1.4 end
         end
-        if not (dx and dy) then
-            dx = tonumber(order.anchor.x)
-            dy = tonumber(order.anchor.y)
-            dz = tonumber(order.anchor.z) or master:getZ()
-        end
-        minDist = 1.0
-    elseif NPCFormationSlotsBridge and NPCFormationSlotsBridge.GetSlotPoint then
-        dx, dy, dz = NPCFormationSlotsBridge.GetSlotPoint(master, brain, bandit, formation or "close", followDistance or 3.0)
-        if not strictFollow then minDist = 1.4 end
     end
 
     if not (dx and dy) then
@@ -505,13 +689,25 @@ NPCProgramCompanionBridge.TryFollowSlot = function(bandit, master, brain, order,
         dy = dy + ((math.abs(id) % 11) - 5) / 10
     end
 
+    if strictFollow and dx and dy then
+        if not leaderDriven then
+            dx, dy, dz = npcCompanionResolveFreeFollowSlot(master, dx, dy, dz)
+        end
+        dx, dy, dz = npcCompanionStabilizeStrictFollowSlot(brain, master, dx, dy, dz, leaderDriven)
+    end
+
     local slotDist = NPCUtils.DistTo(bandit:getX(), bandit:getY(), dx, dy)
     if strictFollow then
         local masterDist = NPCUtils.DistTo(bandit:getX(), bandit:getY(), master:getX(), master:getY())
-        if masterDist > 10 then
-            walkType = "Run"
+        local mustCatchUp = masterDist > 3.8 or slotDist > (leaderDriven and 2.10 or 1.15)
+        if leaderDriven and leaderPoint then
+            mustCatchUp = leaderPoint.catchUp == true or slotDist > math.max(2.45, (tonumber(leaderPoint.arriveDist) or 1.35) + 1.10)
+        end
+        if mustCatchUp then
+            walkType = (leaderDriven and leaderPoint and leaderPoint.walkType) or "Run"
             endurance = -0.07
-            if brain then
+            local hasActiveThreat = brain and (brain.currentThreat or brain.radioThreat or brain.squadPlanThreat or brain.targetId)
+            if brain and (not leaderDriven or not hasActiveThreat) then
                 brain.target = nil
                 brain.targetId = nil
                 brain.targetKind = nil
@@ -527,8 +723,59 @@ NPCProgramCompanionBridge.TryFollowSlot = function(bandit, master, brain, order,
         end
     end
     if slotDist > minDist then
+        if strictFollow and brain then
+            brain.ai = brain.ai or {}
+            local nowMs = getTimestampMs and getTimestampMs() or 0
+            local pathKey = leaderDriven and "leaderFollowSlotPathAtMs" or "followSlotPathAtMs"
+            local xKey = leaderDriven and "leaderFollowSlotTargetX" or "followSlotTargetX"
+            local yKey = leaderDriven and "leaderFollowSlotTargetY" or "followSlotTargetY"
+            local lastMs = tonumber(brain.ai[pathKey]) or 0
+            local lastX = tonumber(brain.ai[xKey])
+            local lastY = tonumber(brain.ai[yKey])
+            local targetDelta = leaderDriven and ((NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.Config and tonumber(NPCSquadDynamicsBridge.Config.leaderFollowerSlotTargetDelta)) or 0.85) or 0.36
+            local movedTarget = (not lastX or not lastY) or (NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(lastX, lastY, dx, dy) or 999) > targetDelta
+            local minInterval = (walkType == "Run" or slotDist > 2.2) and 180 or 360
+            if leaderDriven then
+                minInterval = (walkType == "Run" or (leaderPoint and leaderPoint.catchUp == true)) and 620 or ((NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.Config and tonumber(NPCSquadDynamicsBridge.Config.leaderFollowerSlotCooldownMs)) or 1050)
+            end
+            if nowMs > 0 and lastMs > 0 and (nowMs - lastMs) < minInterval and movedTarget ~= true then
+                local hasMoveTask = false
+                if NPCEntity and NPCEntity.HasMoveTask then
+                    local okMove, retMove = pcall(function() return NPCEntity.HasMoveTask(bandit) end)
+                    hasMoveTask = okMove and retMove == true
+                end
+                if hasMoveTask then
+                    return "Follow"
+                end
+                -- No active move task is present. Do not replace required
+                -- follow locomotion with a short Time/Idle task: that can leave
+                -- the character facing the player while the old run animation is
+                -- still active. Fall through and create a fresh Move task.
+                if NPCEntity and NPCEntity.SetMoving then pcall(function() NPCEntity.SetMoving(bandit, false) end) end
+            end
+            brain.ai[pathKey] = nowMs
+            brain.ai[xKey] = dx
+            brain.ai[yKey] = dy
+        end
         if NPCEntity and NPCEntity.ForceStationary then NPCEntity.ForceStationary(bandit, false) end
-        table.insert(tasks, NPCUtils.GetMoveTask(endurance, dx, dy, dz or master:getZ(), walkType, slotDist, false))
+        local task = NPCUtils.GetMoveTask(endurance, dx, dy, dz or master:getZ(), walkType, slotDist, false)
+        if strictFollow then
+            task.arriveDist = math.max(tonumber(task.arriveDist) or 0, minDist, 0.68)
+            task.strictFollowSlot = true
+            task.bodyguardFollow = true
+            task.pathThrottleMs = task.pathThrottleMs or ((walkType == "Run") and 180 or 360)
+            task.sameTargetPathThrottleMs = task.sameTargetPathThrottleMs or ((walkType == "Run") and 520 or 900)
+        end
+        if leaderDriven then
+            task.squadSupport = true
+            task.leaderDrivenFollow = true
+            task.leaderId = leaderPoint and leaderPoint.leaderId or nil
+            task.pathThrottleMs = (walkType == "Run") and 950 or 1350
+            task.sameTargetPathThrottleMs = (walkType == "Run") and 3200 or 5200
+            task.arriveDist = math.max(tonumber(task.arriveDist) or 0, minDist)
+            task.noRecoveryReplan = true
+        end
+        table.insert(tasks, task)
         return "Follow"
     end
 
@@ -570,11 +817,15 @@ NPCProgramCompanionBridge.Follow = function(bandit)
     local brain = NPCBrainData and NPCBrainData.Get and NPCBrainData.Get(bandit) or nil
     local order = brain and ((NPCOrderContract and NPCOrderContract.Get and NPCOrderContract.Get(brain)) or brain.order) or nil
     local orderName = order and order.name or nil
+    local playerCommandOrder = NPCProgramCompanionBridge.IsPlayerCommandOrder(brain, order)
+    local strictFollowOrder = NPCProgramCompanionBridge.IsStrictFollowOrder(brain, order)
 
     -- If at guardpost, switch to the CompanionGuard program unless a direct player
-    -- order needs the mobile director logic below.
+    -- order needs the mobile director logic below. Stage 431: strict Follow must
+    -- never be converted into a guard-post assignment, otherwise hired NPCs look
+    -- like they ignored the player's command.
     local atGuardpost = NPCPost.At(bandit, "guard")
-    if atGuardpost and orderName ~= "Patrol" and orderName ~= "Loot" and orderName ~= "Return" then
+    if atGuardpost and not strictFollowOrder and orderName ~= "Patrol" and orderName ~= "Loot" and orderName ~= "Return" and orderName ~= "RearmHere" and orderName ~= "LootBodies" then
         NPCEntity.SetProgram(bandit, "CompanionGuard", {})
         return {status=true, next="Prepare", tasks=tasks}
     end
@@ -594,7 +845,8 @@ NPCProgramCompanionBridge.Follow = function(bandit)
     local vehicle = master:getVehicle()
     local dist = NPCUtils.DistTo(bandit:getX(), bandit:getY(), master:getX(), master:getY())
 
-    if master:isRunning() or master:isSprinting() or vehicle or dist > 10 then
+    local strictOrder = strictFollowOrder
+    if master:isRunning() or master:isSprinting() or vehicle or (strictOrder and dist > 2.4) or dist > 10 then
         walkType = "Run"
         endurance = -0.07
     elseif master:isSneaking() and dist < 12 then
@@ -622,13 +874,19 @@ NPCProgramCompanionBridge.Follow = function(bandit)
     nextStage = NPCProgramCompanionBridge.TryVehicleSync(bandit, master, vehicle, dist, tasks)
     if nextStage then return {status=true, next=nextStage, tasks=tasks} end
 
-    if NPCProgramCompanionBridge.IsStrictFollowOrder(brain, order) then
+    if strictOrder then
         nextStage = NPCProgramCompanionBridge.TryFollowSlot(bandit, master, brain, order, tasks, endurance, walkType)
         if nextStage then return {status=true, next=nextStage, tasks=tasks} end
 
         nextStage = NPCProgramCompanionBridge.TryIdle(bandit, tasks)
         if nextStage then return {status=true, next=nextStage, tasks=tasks} end
 
+        return {status=true, next="Follow", tasks=tasks}
+    end
+
+    if playerCommandOrder then
+        nextStage = NPCProgramCompanionBridge.TryIdle(bandit, tasks)
+        if nextStage then return {status=true, next=nextStage, tasks=tasks} end
         return {status=true, next="Follow", tasks=tasks}
     end
 

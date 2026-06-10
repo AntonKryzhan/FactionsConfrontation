@@ -21,7 +21,7 @@ NPCFactionBridge.SIDE_MASK = NPCFactionBridge.SIDE_MASK or {
 NPCFactionBridge.ENEMY_MASK = NPCFactionBridge.ENEMY_MASK or {
     red = 2 + 8,
     green = 1 + 8,
-    blue = 0,
+    blue = 8,
     black = 1 + 2 + 4 + 8
 }
 
@@ -97,10 +97,10 @@ end
 
 function NPCFactionBridge.NormalizeSide(side)
     side = tostring(side or ""):lower()
-    if side == "friendly" then return NPCFactionBridge.SIDE_GREEN end
-    if side == "hostile" then return NPCFactionBridge.SIDE_RED end
-    if side == "neutral" then return NPCFactionBridge.SIDE_BLUE end
-    if side == "rogue" or side == "deserter" or side == "renegade" then return NPCFactionBridge.SIDE_BLACK end
+    if side == "friendly" or side == "survivor" or side == "survivors" or side == "ally" then return NPCFactionBridge.SIDE_GREEN end
+    if side == "hostile" or side == "bandit" or side == "raider" or side == "enemy" then return NPCFactionBridge.SIDE_RED end
+    if side == "neutral" or side == "civilian" or side == "blue_neutral" or side == "neutral_blue" or side == "mercenary" then return NPCFactionBridge.SIDE_BLUE end
+    if side == "rogue" or side == "deserter" or side == "renegade" or side == "black_rogue" or side == "rogue_black" then return NPCFactionBridge.SIDE_BLACK end
     if side == NPCFactionBridge.SIDE_RED or side == NPCFactionBridge.SIDE_GREEN or side == NPCFactionBridge.SIDE_BLUE or side == NPCFactionBridge.SIDE_BLACK then
         return side
     end
@@ -409,6 +409,32 @@ function NPCFactionBridge.SetPlayerSide(player, side, reason, durationHours, sil
     return rec
 end
 
+
+local function bf_sameValue(a, b)
+    return a ~= nil and b ~= nil and tostring(a) == tostring(b)
+end
+
+local function bf_groupId(brain)
+    if type(brain) ~= "table" then return nil end
+    return brain.worldGroupId or brain.groupId or brain.homeGroupId or brain.group or brain.squadId
+end
+
+local function bf_sameCombatGroup(a, b)
+    if not (type(a) == "table" and type(b) == "table") then return false end
+    if bf_sameValue(a.id, b.id) or bf_sameValue(a.uid or a.persistentId, b.uid or b.persistentId) then return true end
+    local ag = bf_groupId(a)
+    local bg = bf_groupId(b)
+    return bf_sameValue(ag, bg)
+end
+
+local function bf_explicitBattleEnemy(a, b)
+    if not (type(a) == "table" and type(b) == "table") then return false end
+    if bf_sameValue(a.battleEnemyGroupId, bf_groupId(b)) then return true end
+    if bf_sameValue(b.battleEnemyGroupId, bf_groupId(a)) then return true end
+    if a.roadPatrol and b.roadPatrol and a.patrolColor and b.patrolColor and tostring(a.patrolColor) ~= tostring(b.patrolColor) then return true end
+    return false
+end
+
 function NPCFactionBridge.GetSideLabel(side)
     side = NPCFactionBridge.NormalizeSide(side) or NPCFactionBridge.SIDE_BLUE
     if side == NPCFactionBridge.SIDE_RED then return "Red" end
@@ -446,6 +472,15 @@ function NPCFactionBridge.SetBrainSide(brain, side, reason)
         return NPCFactionBridge.SIDE_BLUE
     end
     side = NPCFactionBridge.NormalizeSide(side) or NPCFactionBridge.SIDE_RED
+    local previousSide = NPCFactionBridge.NormalizeSide(brain.factionSide or brain.faction or brain.side or brain.patrolColor)
+    if side == NPCFactionBridge.SIDE_BLACK and previousSide and previousSide ~= NPCFactionBridge.SIDE_BLACK then
+        brain.rogueOriginalSide = brain.rogueOriginalSide or previousSide
+        brain.factionOriginalSide = brain.factionOriginalSide or previousSide
+    elseif side ~= NPCFactionBridge.SIDE_BLACK then
+        brain.rogueBreakdown = nil
+        brain.shootAllies = nil
+        brain.friendlyFireUnlocked = nil
+    end
 
     brain.factionSide = side
     brain.faction = side
@@ -495,13 +530,50 @@ function NPCFactionBridge.IsEnemySide(observerSide, targetSide)
     return NPCFactionBridge.MaskHas(enemyMask, targetMask)
 end
 
+function NPCFactionBridge.IsHiredMercenaryBrain(brain)
+    if type(brain) ~= "table" then return false end
+    if brain.mercenaryHired == true or brain.isPlayerGuard == true then return true end
+    if brain.relationshipToPlayer == "hired_bodyguard" or brain.relationship == "hired_bodyguard" then return true end
+    return false
+end
+
+function NPCFactionBridge.IsBrainRogueBreakdown(brain)
+    if type(brain) ~= "table" then return false end
+    local state = tostring(brain.factionState or brain.mentalState or "")
+    local reason = tostring(brain.factionReason or brain.rogueReason or "")
+    return brain.rogueBreakdown == true
+        or brain.shootAllies == true
+        or brain.friendlyFireUnlocked == true
+        or reason == "panic_desertion"
+        or state == "deserted_black"
+        or state == "panic_rogue_breakdown"
+        or state == "shoot_all"
+end
+
+local function bf_sameOriginalSideRogue(brain, targetBrain)
+    if not (type(brain) == "table" and type(targetBrain) == "table") then return false end
+    if NPCFactionBridge.GetBrainSide(brain) ~= NPCFactionBridge.SIDE_BLACK then return false end
+    if NPCFactionBridge.IsBrainRogueBreakdown(brain) then return false end
+    local original = NPCFactionBridge.NormalizeSide(brain.rogueOriginalSide or brain.factionOriginalSide or brain.previousFactionSide)
+    if not original then return false end
+    return original == NPCFactionBridge.GetBrainSide(targetBrain)
+end
+
 function NPCFactionBridge.AreBrainsEnemies(brain, targetBrain)
     if not targetBrain then return true end
     if NPCFactionBridge.IsServiceBrain and (NPCFactionBridge.IsServiceBrain(brain) or NPCFactionBridge.IsServiceBrain(targetBrain)) then return false end
-    if brain and targetBrain and brain.id and targetBrain.id and tostring(brain.id) == tostring(targetBrain.id) then return false end
+    if NPCFactionBridge.IsBrainRogueBreakdown(brain) then return true end
+    if bf_sameCombatGroup(brain, targetBrain) then return false end
+    if bf_explicitBattleEnemy(brain, targetBrain) then return true end
 
     local observerSide = NPCFactionBridge.GetBrainSide(brain)
     local targetSide = NPCFactionBridge.GetBrainSide(targetBrain)
+    if observerSide == NPCFactionBridge.SIDE_BLACK and not NPCFactionBridge.IsBrainRogueBreakdown(brain) then
+        if targetSide == NPCFactionBridge.SIDE_BLACK then return false end
+        if bf_sameOriginalSideRogue(brain, targetBrain) then return false end
+        if brain and targetBrain and brain.clan ~= nil and targetBrain.clan ~= nil and brain.clan == targetBrain.clan then return false end
+    end
+    if NPCFactionBridge.IsHiredMercenaryBrain and NPCFactionBridge.IsHiredMercenaryBrain(brain) and targetSide == NPCFactionBridge.SIDE_BLACK then return true end
     return NPCFactionBridge.IsEnemySide(observerSide, targetSide)
 end
 
@@ -562,6 +634,10 @@ function NPCFactionBridge.UpdateNPCState(bandit, brain)
                 if chance >= 100 or roll < math.floor(chance * 100) then
                     side = NPCFactionBridge.SetBrainSide(brain, NPCFactionBridge.SIDE_BLACK, "panic_desertion")
                     brain.factionState = "deserted_black"
+                    brain.rogueBreakdown = true
+                    brain.shootAllies = true
+                    brain.friendlyFireUnlocked = true
+                    brain.factionBrokeAt = now
                     brain.factionShoot = true
                     return brain.factionState
                 end

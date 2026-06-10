@@ -480,6 +480,14 @@ local function bbsc_onTick()
     end
 end
 
+local function bbsc_registerTickJob()
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.RegisterTickJob then
+        NPCWorkSchedulerBridge.RegisterTickJob("NPCBaseSupplyClientBridge.SyncBootstrap", bbsc_onTick, "ui", 30, 1)
+    elseif Events and Events.OnTick then
+        Events.OnTick.Add(bbsc_onTick)
+    end
+end
+
 Events.OnFillInventoryObjectContextMenu.Add(NPCBaseSupplyClientBridge.OnFillInventoryObjectContextMenu)
 Events.OnServerCommand.Add(NPCBaseSupplyClientBridge.OnServerCommand)
-Events.OnTick.Add(bbsc_onTick)
+bbsc_registerTickJob()

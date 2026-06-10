@@ -714,6 +714,11 @@ IGUI_EN = {
     IGUI_FactionsConfrontation_Menu_BuyStolenBadge = "Buy stolen badge",
     IGUI_FactionsConfrontation_Menu_BuyDailyPassword = "Buy daily password",
     IGUI_FactionsConfrontation_Menu_PayOffBounty = "Pay off bounty",
+    IGUI_FactionsConfrontation_Menu_OrderDeadDrop = "Order dead drop",
+    IGUI_FactionsConfrontation_Menu_OrderAmmoDrop = "Ammo package",
+    IGUI_FactionsConfrontation_Menu_OrderMedicalDrop = "Medical package",
+    IGUI_FactionsConfrontation_Menu_OrderWeaponDrop = "Weapon package",
+    IGUI_FactionsConfrontation_Menu_OrderArmorDrop = "Armor package",
     IGUI_FactionsConfrontation_Menu_BuyLeaderRumor = "Buy leader rumor",
     IGUI_FactionsConfrontation_Menu_Checkpoint = "Checkpoint",
     IGUI_FactionsConfrontation_Menu_CheckpointLower = "checkpoint",
@@ -780,4 +785,14 @@ IGUI_EN = {
     IGUI_FactionsConfrontation_Map_Resent = "RESENT",
     IGUI_FactionsConfrontation_Map_Steady = "STEADY",
     IGUI_FactionsConfrontation_RadioLangProbe = "EN",
+    /***** STAGE 357 INTELLIGENCE DOSSIERS *****/
+    IGUI_FactionsConfrontation_Menu_SellIntelDossiers = "Sell intelligence documents",
+    IGUI_FactionsConfrontation_Menu_Resource_intel = "intelligence documents",
+    IGUI_FactionsConfrontation_Menu_Resource_goldtoken = "black market gold",
+
+    /***** STAGE 365 PHYSICAL CONTRACT OBJECTIVES *****/
+    IGUI_FactionsConfrontation_Menu_RequestRecoverContract = "Request recovery contract",
+    IGUI_FactionsConfrontation_Menu_RecoverContractObjective = "Recover contract package",
+    IGUI_FactionsConfrontation_Menu_ActiveRecover = "Recover package",
+
 }

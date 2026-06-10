@@ -16,15 +16,23 @@ NPCInfluenceFieldBridge = NPCInfluenceFieldBridge or {}
 
 NPCInfluenceFieldBridge.Config = NPCInfluenceFieldBridge.Config or {
     enabled = true,
+    numericKeys = true,
+    asyncMaintenance = true,
     bucketSize = 50,
-    maxCells = 2200,
-    updateBucketsPerTick = 18,
+    maxCells = 1600,
+    updateBucketsPerTick = 8,
+    processIntervalTicks = 4,
     decayPerUpdate = 0.035,
     diffusionRate = 0.08,
     sourceRadius = 140,
     virtualGroups = true,
     baseZones = true,
     npcUtility = true,
+    tacticalEnabled = true,
+    tacticalShotNoiseRadius = 115,
+    tacticalContactRadius = 95,
+    tacticalCongestionRadius = 42,
+    tacticalMinScore = -24,
     debugLog = false
 }
 
@@ -36,7 +44,9 @@ NPCInfluenceFieldBridge.Tick = NPCInfluenceFieldBridge.Tick or 0
 NPCInfluenceFieldBridge.CellCount = NPCInfluenceFieldBridge.CellCount or 0
 NPCInfluenceFieldBridge.LastSourceWorldHour = NPCInfluenceFieldBridge.LastSourceWorldHour or 0
 
-local BIF_FIELDS = {"threat", "noise", "baseNeed", "loot", "red", "green", "blue", "black", "zombie"}
+local BIF_FIELDS = {"threat", "noise", "baseNeed", "loot", "red", "green", "blue", "black", "zombie", "cover", "firefight", "congestion"}
+local BIF_KEY_BIAS = 1000000
+local BIF_KEY_STRIDE = 2000003
 
 local function bif_log(msg)
     if NPCInfluenceFieldBridge.Config and NPCInfluenceFieldBridge.Config.debugLog then
@@ -110,15 +120,28 @@ end
 function NPCInfluenceFieldBridge.ApplySettings()
     local c = NPCInfluenceFieldBridge.Config
     c.enabled = bif_settingBool("Influence_Enabled", c.enabled ~= false)
+    local previousNumericKeys = c._numericKeysApplied
+    c.numericKeys = bif_settingBool("Influence_NumericKeys", c.numericKeys ~= false)
+    c.asyncMaintenance = bif_settingBool("Influence_AsyncMaintenance", c.asyncMaintenance ~= false)
+    if previousNumericKeys ~= nil and previousNumericKeys ~= c.numericKeys and NPCInfluenceFieldBridge.Reset then
+        NPCInfluenceFieldBridge.Reset()
+    end
+    c._numericKeysApplied = c.numericKeys
     c.bucketSize = bif_settingNumber("Influence_BucketSize", c.bucketSize or 50, 10, 200)
-    c.maxCells = bif_settingNumber("Influence_MaxCells", c.maxCells or 2200, 128, 20000)
-    c.updateBucketsPerTick = bif_settingNumber("Influence_UpdateBucketsPerTick", c.updateBucketsPerTick or 18, 0, 500)
+    c.maxCells = bif_settingNumber("Influence_MaxCells", c.maxCells or 1600, 128, 20000)
+    c.updateBucketsPerTick = bif_settingNumber("Influence_UpdateBucketsPerTick", c.updateBucketsPerTick or 8, 0, 500)
+    c.processIntervalTicks = bif_settingNumber("Influence_ProcessIntervalTicks", c.processIntervalTicks or 4, 1, 600)
     c.decayPerUpdate = bif_settingNumber("Influence_DecayPerUpdate", c.decayPerUpdate or 0.035, 0.0, 1.0)
     c.diffusionRate = bif_settingNumber("Influence_DiffusionRate", c.diffusionRate or 0.08, 0.0, 1.0)
     c.sourceRadius = bif_settingNumber("Influence_SourceRadius", c.sourceRadius or 140, 0, 600)
     c.virtualGroups = bif_settingBool("Influence_UseForVirtualGroups", c.virtualGroups ~= false)
     c.baseZones = bif_settingBool("Influence_UseForBaseZones", c.baseZones ~= false)
     c.npcUtility = bif_settingBool("Influence_UseForNPCUtility", c.npcUtility ~= false)
+    c.tacticalEnabled = bif_settingBool("Influence_TacticalEnabled", c.tacticalEnabled ~= false)
+    c.tacticalShotNoiseRadius = bif_settingNumber("Influence_TacticalShotNoiseRadius", c.tacticalShotNoiseRadius or 115, 20, 360)
+    c.tacticalContactRadius = bif_settingNumber("Influence_TacticalContactRadius", c.tacticalContactRadius or 95, 20, 320)
+    c.tacticalCongestionRadius = bif_settingNumber("Influence_TacticalCongestionRadius", c.tacticalCongestionRadius or 42, 10, 160)
+    c.tacticalMinScore = bif_settingNumber("Influence_TacticalMinScore", c.tacticalMinScore or -24, -200, 200)
     c.debugLog = bif_settingBool("Influence_DebugLog", c.debugLog == true)
 end
 
@@ -132,7 +155,16 @@ function NPCInfluenceFieldBridge.CellXY(x, y)
 end
 
 function NPCInfluenceFieldBridge.Key(bx, by)
-    return tostring(math.floor(tonumber(bx) or 0)) .. ":" .. tostring(math.floor(tonumber(by) or 0))
+    bx = math.floor(tonumber(bx) or 0)
+    by = math.floor(tonumber(by) or 0)
+    if NPCInfluenceFieldBridge.Config and NPCInfluenceFieldBridge.Config.numericKeys ~= false then
+        local kx = bx + BIF_KEY_BIAS
+        local ky = by + BIF_KEY_BIAS
+        if kx >= 0 and ky >= 0 and kx < BIF_KEY_STRIDE and ky < BIF_KEY_STRIDE then
+            return kx * BIF_KEY_STRIDE + ky
+        end
+    end
+    return tostring(bx) .. ":" .. tostring(by)
 end
 
 function NPCInfluenceFieldBridge.Center(bx, by)
@@ -191,14 +223,23 @@ function NPCInfluenceFieldBridge.Inject(field, x, y, value, radius)
     local steps = math.max(0, math.ceil(radius / size))
     local changed = false
 
+    local limit = radius + size
+    local limit2 = limit * limit
+    local sx = tonumber(x) or 0
+    local sy = tonumber(y) or 0
+    local now = nil
+
     for oy=-steps, steps do
         for ox=-steps, steps do
             local cx, cy = NPCInfluenceFieldBridge.Center(bx + ox, by + oy)
-            local d = bif_dist(x, y, cx, cy)
-            if d <= radius + size then
+            local dx = sx - cx
+            local dy = sy - cy
+            local d2 = dx * dx + dy * dy
+            if d2 <= limit2 then
                 local weight = 1.0
                 if radius > 0 then
-                    weight = 1.0 - (d / (radius + size))
+                    local d = math.sqrt(d2)
+                    weight = 1.0 - (d / limit)
                     if weight < 0 then weight = 0 end
                 end
                 if weight > 0 then
@@ -206,7 +247,8 @@ function NPCInfluenceFieldBridge.Inject(field, x, y, value, radius)
                     if cell then
                         local old = tonumber(cell[field]) or 0
                         cell[field] = bif_clamp(old + value * weight, -1000, 1000)
-                        cell.updatedAt = bif_nowHours()
+                        if not now then now = bif_nowHours() end
+                        cell.updatedAt = now
                         changed = true
                     end
                 end
@@ -237,6 +279,52 @@ function NPCInfluenceFieldBridge.InjectBaseNeed(x, y, value, radius)
     return NPCInfluenceFieldBridge.Inject("baseNeed", x, y, value or 8, radius)
 end
 
+function NPCInfluenceFieldBridge.InjectCover(x, y, value, radius)
+    return NPCInfluenceFieldBridge.Inject("cover", x, y, value or 5, radius or 70)
+end
+
+function NPCInfluenceFieldBridge.InjectFirefight(x, y, value, radius)
+    return NPCInfluenceFieldBridge.Inject("firefight", x, y, value or 9, radius or NPCInfluenceFieldBridge.Config.tacticalShotNoiseRadius or 115)
+end
+
+function NPCInfluenceFieldBridge.InjectCongestion(x, y, value, radius)
+    return NPCInfluenceFieldBridge.Inject("congestion", x, y, value or 2.4, radius or NPCInfluenceFieldBridge.Config.tacticalCongestionRadius or 42)
+end
+
+function NPCInfluenceFieldBridge.InjectCombatContact(observer, target, data)
+    if not NPCInfluenceFieldBridge.IsEnabled() or not NPCInfluenceFieldBridge.Config.tacticalEnabled then return false end
+    if not (target and target.getX and target.getY) then return false end
+    data = data or {}
+    local tx = tonumber(target:getX()) or 0
+    local ty = tonumber(target:getY()) or 0
+    local confidence = tonumber(data.confidence) or 1.0
+    local radius = tonumber(data.radius) or tonumber(NPCInfluenceFieldBridge.Config.tacticalContactRadius) or 95
+    local changed = NPCInfluenceFieldBridge.InjectThreat(tx, ty, 3.5 + confidence * 4.5, radius)
+    changed = NPCInfluenceFieldBridge.InjectNoise(tx, ty, 1.4 + confidence * 2.0, radius * 1.12) or changed
+    if data.firefight == true then
+        changed = NPCInfluenceFieldBridge.InjectFirefight(tx, ty, 4.0 + confidence * 4.0, radius * 1.2) or changed
+    end
+    return changed
+end
+
+function NPCInfluenceFieldBridge.InjectShot(shooter, victim, hit, data)
+    if not NPCInfluenceFieldBridge.IsEnabled() or not NPCInfluenceFieldBridge.Config.tacticalEnabled then return false end
+    if not (shooter and shooter.getX and shooter.getY) then return false end
+    data = data or {}
+    local sx = tonumber(shooter:getX()) or 0
+    local sy = tonumber(shooter:getY()) or 0
+    local radius = tonumber(data.radius) or tonumber(NPCInfluenceFieldBridge.Config.tacticalShotNoiseRadius) or 115
+    local changed = NPCInfluenceFieldBridge.InjectNoise(sx, sy, 7.0, radius)
+    changed = NPCInfluenceFieldBridge.InjectFirefight(sx, sy, hit and 8.5 or 5.0, radius * 1.05) or changed
+    if victim and victim.getX and victim.getY then
+        local vx = tonumber(victim:getX()) or sx
+        local vy = tonumber(victim:getY()) or sy
+        changed = NPCInfluenceFieldBridge.InjectThreat(vx, vy, hit and 8.0 or 4.0, radius * 0.82) or changed
+        changed = NPCInfluenceFieldBridge.InjectFirefight((sx + vx) * 0.5, (sy + vy) * 0.5, hit and 7.0 or 4.0, radius * 0.95) or changed
+    end
+    return changed
+end
+
 function NPCInfluenceFieldBridge.GetField(x, y, field)
     if not NPCInfluenceFieldBridge.IsEnabled() then return 0 end
     local cell = NPCInfluenceFieldBridge.GetCell(x, y, false)
@@ -257,6 +345,85 @@ end
 function NPCInfluenceFieldBridge.GetScore(x, y, weights)
     local bx, by = NPCInfluenceFieldBridge.CellXY(x, y)
     return NPCInfluenceFieldBridge.GetScoreAtBucket(bx, by, weights)
+end
+
+local function bif_tacticalWeights(side, context)
+    side = bif_normalSide(side)
+    context = context or {}
+    local weights = {threat=-0.42, firefight=-0.34, congestion=-0.58, zombie=-0.28, noise=-0.08, cover=0.35, baseNeed=0.04, loot=0.05}
+    if side == "red" then
+        weights.green = -0.10; weights.black = -0.16; weights.red = 0.06
+    elseif side == "green" then
+        weights.red = -0.10; weights.black = -0.16; weights.green = 0.06
+    elseif side == "black" then
+        weights.red = -0.06; weights.green = -0.06; weights.black = 0.08; weights.noise = 0.02
+    elseif side == "blue" then
+        weights.red = -0.12; weights.green = -0.12; weights.black = -0.24; weights.threat = -0.50
+    end
+    if context and context.combat == true then
+        weights.cover = 0.62
+        weights.firefight = -0.20
+        weights.threat = -0.26
+    end
+    if context and context.indoor == true then
+        weights.congestion = -0.82
+        weights.cover = weights.cover + 0.10
+    end
+    return weights
+end
+
+function NPCInfluenceFieldBridge.GetTacticalSnapshot(x, y, side, context)
+    if not NPCInfluenceFieldBridge.IsEnabled() or not NPCInfluenceFieldBridge.Config.tacticalEnabled then return nil end
+    local cell = NPCInfluenceFieldBridge.GetCell(x, y, false)
+    if not cell then return {score=0, threat=0, noise=0, cover=0, firefight=0, congestion=0, zombie=0} end
+    local weights = bif_tacticalWeights(side, context)
+    local score = 0
+    for field, weight in pairs(weights) do
+        score = score + (tonumber(cell[field]) or 0) * (tonumber(weight) or 0)
+    end
+    return {
+        score = score,
+        threat = tonumber(cell.threat) or 0,
+        noise = tonumber(cell.noise) or 0,
+        cover = tonumber(cell.cover) or 0,
+        firefight = tonumber(cell.firefight) or 0,
+        congestion = tonumber(cell.congestion) or 0,
+        zombie = tonumber(cell.zombie) or 0,
+        bx = cell.bx,
+        by = cell.by
+    }
+end
+
+function NPCInfluenceFieldBridge.GetMovementBias(x, y, side, context)
+    local snap = NPCInfluenceFieldBridge.GetTacticalSnapshot(x, y, side, context)
+    if not snap then return 0 end
+    local score = tonumber(snap.score) or 0
+    if score > 35 then score = 35 end
+    if score < -35 then score = -35 end
+    return score, snap
+end
+
+function NPCInfluenceFieldBridge.FindSaferNeighbor(x, y, side, radiusBuckets, context)
+    if not NPCInfluenceFieldBridge.IsEnabled() or not NPCInfluenceFieldBridge.Config.tacticalEnabled then return nil end
+    radiusBuckets = tonumber(radiusBuckets) or 1
+    if radiusBuckets < 1 then radiusBuckets = 1 end
+    if radiusBuckets > 3 then radiusBuckets = 3 end
+    local bx, by = NPCInfluenceFieldBridge.CellXY(x, y)
+    local best = nil
+    local bestScore = NPCInfluenceFieldBridge.GetMovementBias(x, y, side, context)
+    for oy=-radiusBuckets, radiusBuckets do
+        for ox=-radiusBuckets, radiusBuckets do
+            if ox ~= 0 or oy ~= 0 then
+                local cx, cy = NPCInfluenceFieldBridge.Center(bx + ox, by + oy)
+                local score = NPCInfluenceFieldBridge.GetMovementBias(cx, cy, side, context)
+                if score > bestScore then
+                    bestScore = score
+                    best = {x=cx, y=cy, z=0, score=score, bx=bx + ox, by=by + oy}
+                end
+            end
+        end
+    end
+    return best
 end
 
 function NPCInfluenceFieldBridge.FindBestNeighbor(x, y, weights, radiusBuckets)
@@ -456,17 +623,28 @@ function NPCInfluenceFieldBridge.Prune(targetCount)
     targetCount = tonumber(targetCount) or math.floor((tonumber(NPCInfluenceFieldBridge.Config.maxCells) or 2200) * 0.85)
     if (NPCInfluenceFieldBridge.CellCount or 0) <= targetCount then return 0 end
 
-    local list = {}
+    local list = nil
+    local pooled = false
+    if NPCBufferPoolBridge and NPCBufferPoolBridge.Acquire then
+        list = NPCBufferPoolBridge.Acquire("NPCInfluenceFieldBridge.Prune")
+        pooled = true
+    else
+        list = {n = 0}
+    end
+
     for key, cell in pairs(NPCInfluenceFieldBridge.Cells) do
-        list[#list + 1] = {key=key, score=bif_cellMagnitude(cell)}
+        local n = (tonumber(list.n) or 0) + 1
+        list.n = n
+        list[n] = {key=key, score=bif_cellMagnitude(cell)}
     end
     table.sort(list, function(a, b) return (a.score or 0) < (b.score or 0) end)
 
     local removed = 0
-    for i=1, #list do
+    for i=1, tonumber(list.n) or #list do
         if (NPCInfluenceFieldBridge.CellCount or 0) <= targetCount then break end
-        local key = list[i].key
-        if NPCInfluenceFieldBridge.Cells[key] then
+        local rec = list[i]
+        local key = rec and rec.key or nil
+        if key and NPCInfluenceFieldBridge.Cells[key] then
             NPCInfluenceFieldBridge.Cells[key] = nil
             NPCInfluenceFieldBridge.ActiveSet[key] = nil
             NPCInfluenceFieldBridge.CellCount = math.max(0, (NPCInfluenceFieldBridge.CellCount or 1) - 1)
@@ -474,14 +652,66 @@ function NPCInfluenceFieldBridge.Prune(targetCount)
         end
     end
 
-    -- Rebuild active list compactly after pruning.
-    NPCInfluenceFieldBridge.ActiveKeys = {}
-    for key, _ in pairs(NPCInfluenceFieldBridge.Cells) do
-        NPCInfluenceFieldBridge.ActiveSet[key] = true
-        NPCInfluenceFieldBridge.ActiveKeys[#NPCInfluenceFieldBridge.ActiveKeys + 1] = key
+    if pooled and NPCBufferPoolBridge and NPCBufferPoolBridge.Release then
+        NPCBufferPoolBridge.Release("NPCInfluenceFieldBridge.Prune", list, list.n)
     end
-    NPCInfluenceFieldBridge.Head = 1
+
+    NPCInfluenceFieldBridge.RebuildActiveKeys()
     return removed
+end
+
+function NPCInfluenceFieldBridge.RebuildActiveKeys()
+    local newKeys = {}
+    local newSet = {}
+    for key, cell in pairs(NPCInfluenceFieldBridge.Cells) do
+        if cell then
+            newKeys[#newKeys + 1] = key
+            newSet[key] = true
+        end
+    end
+    NPCInfluenceFieldBridge.ActiveKeys = newKeys
+    NPCInfluenceFieldBridge.ActiveSet = newSet
+    NPCInfluenceFieldBridge.Head = 1
+    NPCInfluenceFieldBridge._compactQueued = false
+    return #newKeys
+end
+
+function NPCInfluenceFieldBridge.CompactActiveKeysJob(job, budget)
+    job.cursor = tonumber(job.cursor) or 1
+    job.newKeys = job.newKeys or {}
+    job.newSet = job.newSet or {}
+    local active = NPCInfluenceFieldBridge.ActiveKeys or {}
+    local limit = math.min(#active, job.cursor + math.max(1, tonumber(budget) or 96) - 1)
+
+    for i = job.cursor, limit do
+        local key = active[i]
+        if key and NPCInfluenceFieldBridge.Cells[key] then
+            local n = #job.newKeys + 1
+            job.newKeys[n] = key
+            job.newSet[key] = true
+        end
+    end
+
+    job.cursor = limit + 1
+    if job.cursor <= #active then
+        return false
+    end
+
+    NPCInfluenceFieldBridge.ActiveKeys = job.newKeys
+    NPCInfluenceFieldBridge.ActiveSet = job.newSet
+    NPCInfluenceFieldBridge.Head = 1
+    NPCInfluenceFieldBridge._compactQueued = false
+    return true
+end
+
+function NPCInfluenceFieldBridge.ScheduleActiveCompact()
+    if NPCInfluenceFieldBridge._compactQueued then return true end
+    if NPCInfluenceFieldBridge.Config and NPCInfluenceFieldBridge.Config.asyncMaintenance ~= false and NPCAsyncBudgetBridge and NPCAsyncBudgetBridge.Schedule then
+        NPCInfluenceFieldBridge._compactQueued = NPCAsyncBudgetBridge.Schedule("NPCInfluenceFieldBridge.CompactActiveKeys", NPCInfluenceFieldBridge.CompactActiveKeysJob, {budget=64, interval=8}) == true
+        return NPCInfluenceFieldBridge._compactQueued
+    end
+    NPCInfluenceFieldBridge.RebuildActiveKeys()
+    return true
 end
 
 function NPCInfluenceFieldBridge.ProcessTick()
@@ -490,6 +720,9 @@ function NPCInfluenceFieldBridge.ProcessTick()
     if NPCInfluenceFieldBridge.Tick % 180 == 1 then
         NPCInfluenceFieldBridge.ApplySettings()
     end
+
+    local processInterval = math.max(1, tonumber(NPCInfluenceFieldBridge.Config.processIntervalTicks) or 4)
+    if processInterval > 1 and ((NPCInfluenceFieldBridge.Tick or 0) % processInterval) ~= 0 then return end
 
     local budget = tonumber(NPCInfluenceFieldBridge.Config.updateBucketsPerTick) or 0
     if budget <= 0 then return end
@@ -512,17 +745,7 @@ function NPCInfluenceFieldBridge.ProcessTick()
     end
 
     if NPCInfluenceFieldBridge.Head > 96 and NPCInfluenceFieldBridge.Head > (#NPCInfluenceFieldBridge.ActiveKeys / 2) then
-        local newKeys = {}
-        local newSet = {}
-        for key, cell in pairs(NPCInfluenceFieldBridge.Cells) do
-            if cell then
-                newKeys[#newKeys + 1] = key
-                newSet[key] = true
-            end
-        end
-        NPCInfluenceFieldBridge.ActiveKeys = newKeys
-        NPCInfluenceFieldBridge.ActiveSet = newSet
-        NPCInfluenceFieldBridge.Head = 1
+        NPCInfluenceFieldBridge.ScheduleActiveCompact()
     end
 end
 
@@ -536,7 +759,11 @@ end
 
 NPCInfluenceFieldBridge.ApplySettings()
 
-if Events and Events.OnTick and not NPCInfluenceFieldBridge._registered then
+if not NPCInfluenceFieldBridge._registered then
     NPCInfluenceFieldBridge._registered = true
-    Events.OnTick.Add(NPCInfluenceFieldBridge.ProcessTick)
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.RegisterTickJob then
+        NPCWorkSchedulerBridge.RegisterTickJob("NPCInfluenceFieldBridge.Process", NPCInfluenceFieldBridge.ProcessTick, "world", 4, 1)
+    elseif Events and Events.OnTick then
+        Events.OnTick.Add(NPCInfluenceFieldBridge.ProcessTick)
+    end
 end

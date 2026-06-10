@@ -14,9 +14,9 @@ function NPCBrainSchedulerBridge.ApplyDefaults(scheduler)
 
     local config = scheduler.Config
     if config.enabled == nil then config.enabled = true end
-    if config.minThinkMs == nil then config.minThinkMs = 120 end
-    if config.lowThinkMs == nil then config.lowThinkMs = 900 end
-    if config.proxyThinkMs == nil then config.proxyThinkMs = 2400 end
+    if config.minThinkMs == nil then config.minThinkMs = 100 end
+    if config.lowThinkMs == nil then config.lowThinkMs = 800 end
+    if config.proxyThinkMs == nil then config.proxyThinkMs = 2200 end
     if config.debugLog == nil then config.debugLog = false end
 end
 
@@ -85,6 +85,11 @@ function NPCBrainSchedulerBridge.ShouldThink(scheduler, bandit, brain, tick, sub
     end
 
     if threat or (brain and (brain.currentThreat or brain.radioThreat or brain.targetId)) then
+        scheduler.LastThink[key] = nbs_now()
+        return true
+    end
+
+    if brain and brain.ai and tonumber(brain.ai.reactivePulseUntilMs or 0) > nbs_now() then
         scheduler.LastThink[key] = nbs_now()
         return true
     end

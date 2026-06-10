@@ -1,0 +1,2 @@
+require "NPCClient/NPCCounterIntelHunterClientBridge"
+NPCCounterIntelHunterClient = NPCCounterIntelHunterClientBridge

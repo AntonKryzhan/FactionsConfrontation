@@ -8,7 +8,7 @@ require "NPCCore/NPCLegacyContractBridge"
 
 NPCNavigationPerformanceBridge = NPCNavigationPerformanceBridge or {}
 
-NPCNavigationPerformanceBridge.VERSION = "2026-05-07-nav-performance-portal-queue-2"
+NPCNavigationPerformanceBridge.VERSION = "2026-06-10-stage454-safe-queue-compaction-1"
 local BNP_LEGACY_ENTITY_GLOBAL = NPCLegacyContractBridge.Key("FLAG")
 
 local function bnp_entity()
@@ -28,6 +28,9 @@ NPCNavigationPerformanceBridge.Config = NPCNavigationPerformanceBridge.Config or
     badTargetPenalty = 12.0,
     crowdPenalty = 2.2,
     crowdRadius = 1,
+    densityCacheMs = 220,
+    densityHighCost = 8.0,
+    densityCriticalCost = 16.0,
     portalGuardEnabled = true,
     portalHoldMs = 1100,
     portalPenalty = 6.0,
@@ -46,6 +49,7 @@ NPCNavigationPerformanceBridge.RepairIds = NPCNavigationPerformanceBridge.Repair
 NPCNavigationPerformanceBridge.BadCells = NPCNavigationPerformanceBridge.BadCells or {}
 NPCNavigationPerformanceBridge.PortalClaims = NPCNavigationPerformanceBridge.PortalClaims or {}
 NPCNavigationPerformanceBridge.PortalQueues = NPCNavigationPerformanceBridge.PortalQueues or {}
+NPCNavigationPerformanceBridge.DensityCache = NPCNavigationPerformanceBridge.DensityCache or {}
 NPCNavigationPerformanceBridge.Stats = NPCNavigationPerformanceBridge.Stats or {
     queued = 0,
     repaired = 0,
@@ -89,6 +93,9 @@ function NPCNavigationPerformanceBridge.ApplySettings()
     c.badTargetPenalty = bnp_number("NavPerf_BadTargetPenalty", c.badTargetPenalty or 12.0, 0, 150)
     c.crowdPenalty = bnp_number("NavPerf_CrowdPenalty", c.crowdPenalty or 2.2, 0, 50)
     c.crowdRadius = bnp_number("NavPerf_CrowdRadius", c.crowdRadius or 1, 0, 4)
+    c.densityCacheMs = bnp_number("NavPerf_DensityCacheMs", c.densityCacheMs or 220, 0, 5000)
+    c.densityHighCost = bnp_number("NavPerf_DensityHighCost", c.densityHighCost or 8.0, 0, 200)
+    c.densityCriticalCost = bnp_number("NavPerf_DensityCriticalCost", c.densityCriticalCost or 16.0, 0, 400)
     c.portalGuardEnabled = bnp_bool("NavPerf_PortalGuardEnabled", c.portalGuardEnabled ~= false)
     c.portalHoldMs = bnp_number("NavPerf_PortalHoldMs", c.portalHoldMs or 1100, 100, 10000)
     c.portalPenalty = bnp_number("NavPerf_PortalPenalty", c.portalPenalty or 6.0, 0, 80)
@@ -106,6 +113,15 @@ local function bnp_now()
     if getTimestampMs then return getTimestampMs() end
     if getGameTime then return math.floor(getGameTime():getWorldAgeHours() * 3600000) end
     return 0
+end
+
+local function bnp_stat(name, amount)
+    NPCNavigationPerformanceBridge.Stats = NPCNavigationPerformanceBridge.Stats or {}
+    name = tostring(name or "unknown")
+    NPCNavigationPerformanceBridge.Stats[name] = (tonumber(NPCNavigationPerformanceBridge.Stats[name]) or 0) + (tonumber(amount) or 1)
+    if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+        pcall(function() NPCPerformanceTelemetryBridge.Record("nav." .. name, amount or 1) end)
+    end
 end
 
 local function bnp_key(x, y, z)
@@ -297,14 +313,28 @@ local function bnp_claimPortal(zombie, brain, square)
     return key, claim
 end
 
+local function bnp_compactPortalQueue(queue)
+    if not queue or type(queue.queue) ~= "table" then return end
+    local old = queue.queue
+    local new = {}
+    for i = 1, #old do
+        local entry = old[i]
+        if entry and entry.id then new[#new + 1] = entry end
+    end
+    queue.queue = new
+end
+
 local function bnp_removeQueuedPortalId(queue, id)
     if not queue or not queue.queue or not id then return end
+    local removed = false
     for i = #queue.queue, 1, -1 do
         local entry = queue.queue[i]
         if not entry or entry.id == id then
-            table.remove(queue.queue, i)
+            queue.queue[i] = false
+            removed = true
         end
     end
+    if removed then bnp_compactPortalQueue(queue) end
 end
 
 local function bnp_portalQueuePosition(queue, id)
@@ -335,12 +365,15 @@ local function bnp_cleanPortalQueues(now)
             end
 
             if queue.queue then
+                local removed = false
                 for i = #queue.queue, 1, -1 do
                     local entry = queue.queue[i]
                     if not entry or now - (entry.queuedAt or now) > staleMs then
-                        table.remove(queue.queue, i)
+                        queue.queue[i] = false
+                        removed = true
                     end
                 end
+                if removed then bnp_compactPortalQueue(queue) end
             end
 
             if (not queue.owner) and (not queue.queue or #queue.queue == 0) then
@@ -393,8 +426,10 @@ function NPCNavigationPerformanceBridge.RequestPortalTurn(zombie, object, purpos
                 table.insert(queue.queue, {id=id, queuedAt=now, lastSeenAt=now, purpose=purpose or "portal"})
                 pos = #queue.queue
                 NPCNavigationPerformanceBridge.Stats.portalsQueued = (NPCNavigationPerformanceBridge.Stats.portalsQueued or 0) + 1
+                bnp_stat("portalWait", 1)
             else
                 NPCNavigationPerformanceBridge.Stats.portalsSkipped = (NPCNavigationPerformanceBridge.Stats.portalsSkipped or 0) + 1
+                bnp_stat("portalDenied", 1)
                 pos = #queue.queue + 1
             end
         else
@@ -419,6 +454,7 @@ function NPCNavigationPerformanceBridge.RequestPortalTurn(zombie, object, purpos
     bnp_removeQueuedPortalId(queue, id)
     NPCNavigationPerformanceBridge.PortalClaims[key] = {id=id, untilMs=now + math.max(tonumber(NPCNavigationPerformanceBridge.Config.portalHoldMs) or 1100, tonumber(NPCNavigationPerformanceBridge.Config.portalQueueHoldMs) or 8500)}
     NPCNavigationPerformanceBridge.Stats.portalsGranted = (NPCNavigationPerformanceBridge.Stats.portalsGranted or 0) + 1
+    bnp_stat("portalAllowed", 1)
 
     if brain then
         brain.ai = brain.ai or {}
@@ -465,6 +501,7 @@ function NPCNavigationPerformanceBridge.ReleasePortalKey(zombie, key)
         if queue.owner and (not zombie or queue.owner.id == id or bnp_now() > (queue.owner.untilMs or 0)) then
             queue.owner = nil
             NPCNavigationPerformanceBridge.Stats.portalsReleased = (NPCNavigationPerformanceBridge.Stats.portalsReleased or 0) + 1
+        bnp_stat("portalReleased", 1)
         end
         bnp_removeQueuedPortalId(queue, id)
         if (not queue.owner) and (not queue.queue or #queue.queue == 0) then
@@ -524,13 +561,24 @@ local function bnp_crowdCost(square, mover)
     local penalty = tonumber(NPCNavigationPerformanceBridge.Config.crowdPenalty) or 0
     if not square or radius < 0 or penalty <= 0 then return 0 end
 
+    local cacheMs = tonumber(NPCNavigationPerformanceBridge.Config.densityCacheMs) or 220
+    local now = bnp_now()
+    local sx = square:getX()
+    local sy = square:getY()
+    local sz = square:getZ()
+    local key = bnp_key(sx, sy, sz) .. ":" .. tostring(radius)
+    if cacheMs > 0 then
+        local cached = NPCNavigationPerformanceBridge.DensityCache[key]
+        if cached and now - (tonumber(cached.at) or 0) <= cacheMs then
+            return tonumber(cached.cost) or 0
+        end
+    end
+
     local cell = getCell and getCell() or nil
     if not cell then return 0 end
 
     local cost = 0
-    local sx = square:getX()
-    local sy = square:getY()
-    local sz = square:getZ()
+    local count = 0
     for dx = -radius, radius do
         for dy = -radius, radius do
             local sq = cell:getGridSquare(sx + dx, sy + dy, sz)
@@ -541,6 +589,7 @@ local function bnp_crowdCost(square, mover)
                         local obj = mlist:get(i)
                         if obj and obj ~= mover then
                             if instanceof and (instanceof(obj, "IsoZombie") or instanceof(obj, "IsoPlayer")) then
+                                count = count + 1
                                 cost = cost + penalty
                             end
                         end
@@ -549,7 +598,20 @@ local function bnp_crowdCost(square, mover)
             end
         end
     end
+    if cacheMs > 0 then
+        NPCNavigationPerformanceBridge.DensityCache[key] = {at=now, cost=cost, count=count}
+    end
     return cost
+end
+
+function NPCNavigationPerformanceBridge.GetDensityPressureAt(square)
+    if not square then return 0, 0 end
+    local cost = bnp_crowdCost(square, nil)
+    local high = tonumber(NPCNavigationPerformanceBridge.Config.densityHighCost) or 8.0
+    local critical = tonumber(NPCNavigationPerformanceBridge.Config.densityCriticalCost) or 16.0
+    if cost >= critical then return 2, cost end
+    if cost >= high then return 1, cost end
+    return 0, cost
 end
 
 local function bnp_portalCost(square, mover, brain)
@@ -651,6 +713,17 @@ local function bnp_delayScore(zombie, task, reason)
     return score
 end
 
+local function bnp_compactRepairQueue()
+    local queue = NPCNavigationPerformanceBridge.RepairQueue
+    if type(queue) ~= "table" then return end
+    local new = {}
+    for i = 1, #queue do
+        local entry = queue[i]
+        if entry and entry.id then new[#new + 1] = entry end
+    end
+    NPCNavigationPerformanceBridge.RepairQueue = new
+end
+
 local function bnp_queueIndex(id)
     local queue = NPCNavigationPerformanceBridge.RepairQueue
     for i = 1, #queue do
@@ -677,9 +750,12 @@ local function bnp_dropLowestIfNeeded(newScore)
     end
 
     if lowestIndex and lowestScore < (tonumber(newScore) or 0) then
-        local old = table.remove(queue, lowestIndex)
+        local old = queue[lowestIndex]
+        queue[lowestIndex] = false
         if old then NPCNavigationPerformanceBridge.RepairIds[old.id] = nil end
+        bnp_compactRepairQueue()
         NPCNavigationPerformanceBridge.Stats.dropped = (NPCNavigationPerformanceBridge.Stats.dropped or 0) + 1
+        bnp_stat("repairDropped", 1)
         return true
     end
     return false
@@ -727,6 +803,7 @@ function NPCNavigationPerformanceBridge.RequestRepair(zombie, task, reason)
     table.insert(NPCNavigationPerformanceBridge.RepairQueue, entry)
     NPCNavigationPerformanceBridge.RepairIds[id] = true
     NPCNavigationPerformanceBridge.Stats.queued = (NPCNavigationPerformanceBridge.Stats.queued or 0) + 1
+    bnp_stat("repairQueued", 1)
 
     task._bms.lastRepairQueuedAt = now
     task._bms.waitingRepair = true
@@ -845,21 +922,35 @@ function NPCNavigationPerformanceBridge.ProcessRepairQueue()
         budget = NPCStreamingRuntimeBridge.AdjustNavRepairBudget(budget)
     end
     local processed = 0
-    while #queue > 0 and processed < budget do
-        local entry = table.remove(queue, 1)
+    local index = 1
+    while index <= #queue and processed < budget do
+        local entry = queue[index]
+        queue[index] = false
         if entry then NPCNavigationPerformanceBridge.RepairIds[entry.id] = nil end
-        processed = processed + 1
-        if bnp_applyRepair(entry) then
+        index = index + 1
+        if entry then processed = processed + 1 end
+        if entry and bnp_applyRepair(entry) then
             NPCNavigationPerformanceBridge.Stats.repaired = (NPCNavigationPerformanceBridge.Stats.repaired or 0) + 1
-        else
+            bnp_stat("repairProcessed", 1)
+        elseif entry then
             NPCNavigationPerformanceBridge.Stats.skipped = (NPCNavigationPerformanceBridge.Stats.skipped or 0) + 1
         end
     end
+    bnp_compactRepairQueue()
     return processed
 end
 
 local function bnp_onTick()
-    bnp_cleanPortalQueues(bnp_now())
+    local now = bnp_now()
+    bnp_cleanPortalQueues(now)
+    local cacheMs = tonumber(NPCNavigationPerformanceBridge.Config.densityCacheMs) or 220
+    if cacheMs > 0 then
+        for key, entry in pairs(NPCNavigationPerformanceBridge.DensityCache or {}) do
+            if not entry or now - (tonumber(entry.at) or 0) > cacheMs * 6 then
+                NPCNavigationPerformanceBridge.DensityCache[key] = nil
+            end
+        end
+    end
     NPCNavigationPerformanceBridge.ProcessRepairQueue()
 end
 
@@ -869,6 +960,32 @@ function NPCNavigationPerformanceBridge.InstallTick()
         Events.OnTick.Add(bnp_onTick)
         NPCNavigationPerformanceBridge.TickInstalled = true
     end
+end
+
+function NPCNavigationPerformanceBridge.GetDiagnostics(reset)
+    local stats = {}
+    for k, v in pairs(NPCNavigationPerformanceBridge.Stats or {}) do stats[k] = v end
+    local pendingRepair = 0
+    if type(NPCNavigationPerformanceBridge.RepairQueue) == "table" then pendingRepair = #NPCNavigationPerformanceBridge.RepairQueue end
+    local portalQueues = 0
+    if type(NPCNavigationPerformanceBridge.PortalQueues) == "table" then
+        for _, _ in pairs(NPCNavigationPerformanceBridge.PortalQueues) do portalQueues = portalQueues + 1 end
+    end
+    local out = {
+        version = NPCNavigationPerformanceBridge.VERSION,
+        stats = stats,
+        pendingRepair = pendingRepair,
+        portalQueues = portalQueues,
+        config = NPCNavigationPerformanceBridge.Config
+    }
+    if reset == true then
+        NPCNavigationPerformanceBridge.Stats = {
+            queued = 0, repaired = 0, skipped = 0, dropped = 0, badCells = 0,
+            portalsQueued = 0, portalsGranted = 0, portalsReleased = 0, portalsSkipped = 0,
+            portalAllowed = 0, portalDenied = 0, portalWait = 0, repairQueued = 0, repairProcessed = 0, repairDropped = 0
+        }
+    end
+    return out
 end
 
 NPCNavigationPerformanceBridge.ApplySettings()

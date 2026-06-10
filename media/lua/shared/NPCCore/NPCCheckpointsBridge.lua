@@ -1,6 +1,7 @@
 -- NPCCheckpointsBridge.lua
 -- Neutral shared backend for lightweight faction road checkpoints and tolls.
--- Checkpoints are virtual map entities: they do not spawn heavy NPC logic, but they gate roads through faction checks, disguise checks and toll payments.
+-- Checkpoints are lightweight map entities that can now gain physical guard/prop scenes when a player approaches.
+-- The gameplay contract remains context-menu driven: passage checks, tolls and faction documents stay server-authoritative.
 
 NPCCheckpointsBridge = NPCCheckpointsBridge or {}
 
@@ -113,6 +114,59 @@ function NPCCheckpointsBridge.TollAmount()
     return math.floor(bcp_num("Checkpoint_TollAmount", 4, 0, 50))
 end
 
+function NPCCheckpointsBridge.IsPhysicalEnabled()
+    return bcp_bool("Checkpoint_PhysicalEnabled", true)
+end
+
+function NPCCheckpointsBridge.PhysicalSpawnDistance()
+    return bcp_num("Checkpoint_PhysicalSpawnDistance", 92, 16, 260)
+end
+
+function NPCCheckpointsBridge.PhysicalMaxMaterializePerTick()
+    return math.floor(bcp_num("Checkpoint_PhysicalMaxMaterializePerTick", 1, 0, 8))
+end
+
+function NPCCheckpointsBridge.PhysicalGuardRange()
+    local minCount = math.floor(bcp_num("Checkpoint_PhysicalGuardMin", 2, 0, 16))
+    local maxCount = math.floor(bcp_num("Checkpoint_PhysicalGuardMax", 5, 0, 24))
+    if maxCount < minCount then maxCount = minCount end
+    return minCount, maxCount
+end
+
+function NPCCheckpointsBridge.PhysicalPropsEnabled()
+    return bcp_bool("Checkpoint_PhysicalPropsEnabled", true)
+end
+
+function NPCCheckpointsBridge.PhysicalPropRadius()
+    return bcp_num("Checkpoint_PhysicalPropRadius", 4, 1, 12)
+end
+
+function NPCCheckpointsBridge.PhysicalPropsMax()
+    return math.floor(bcp_num("Checkpoint_PhysicalPropsMax", 6, 0, 24))
+end
+
+function NPCCheckpointsBridge.ZoneRadius()
+    return bcp_num("Checkpoint_ZoneRadius", NPCCheckpointsBridge.InteractionRadius(), 8, 160)
+end
+
+function NPCCheckpointsBridge.RoadblockVehicleEnabled()
+    local defaultValue = true
+    if isClient and isClient() then
+        defaultValue = false
+    elseif isServer and not isServer() then
+        defaultValue = false
+    end
+    return bcp_bool("Checkpoint_RoadblockVehiclesEnabled", defaultValue)
+end
+
+function NPCCheckpointsBridge.BreachForgivenessRadius()
+    return bcp_num("Checkpoint_BreachForgivenessRadius", 6, 1, 40)
+end
+
+function NPCCheckpointsBridge.LifetimeHours()
+    return bcp_num("Checkpoint_LifetimeHours", 24, 1, 168)
+end
+
 function NPCCheckpointsBridge.NowHours()
     return bcp_now()
 end
@@ -123,7 +177,7 @@ function NPCCheckpointsBridge.EnsureData(gmd)
     gmd.NPCCheckpointsBridge.active = gmd.NPCCheckpointsBridge.active or {}
     gmd.NPCCheckpointsBridge.history = gmd.NPCCheckpointsBridge.history or {}
     gmd.NPCCheckpointsBridge.playerPasses = gmd.NPCCheckpointsBridge.playerPasses or {}
-    gmd.NPCCheckpointsBridge.stats = gmd.NPCCheckpointsBridge.stats or {created=0, passed=0, tolled=0, denied=0, forced=0}
+    gmd.NPCCheckpointsBridge.stats = gmd.NPCCheckpointsBridge.stats or {created=0, passed=0, tolled=0, denied=0, forced=0, physical=0, props=0}
     gmd.NPCCheckpointsBridge.nextId = tonumber(gmd.NPCCheckpointsBridge.nextId) or 1
     if not gmd.DebugMapMarkers then gmd.DebugMapMarkers = {} end
     return gmd.NPCCheckpointsBridge
@@ -205,6 +259,19 @@ function NPCCheckpointsBridge.MakeCheckpoint(gmd, x, y, z, side, source)
         tollAmount = NPCCheckpointsBridge.TollAmount(),
         source = source and source.source or "road",
         sourceId = source and source.sourceId or nil,
+        physicalEnabled = NPCCheckpointsBridge.IsPhysicalEnabled(),
+        physicalState = "virtual",
+        physicalPropsPlaced = false,
+        physicalGuardGroupId = nil,
+        physicalGuardCount = 0,
+        physicalLastSeenAt = 0,
+        strategic = source and source.strategic == true or false,
+        strategicScore = source and source.strategicScore or nil,
+        lifetimeHours = NPCCheckpointsBridge.LifetimeHours(),
+        lifetimePausedHours = 0,
+        lifetimePauseStartedAt = nil,
+        lifetimeStartedAt = bcp_now(),
+        relocatedAt = nil,
         createdAt = bcp_now(),
         updatedAt = bcp_now()
     }
@@ -234,7 +301,17 @@ function NPCCheckpointsBridge.MakeMarker(cp)
         tollType = cp.tollType,
         tollLabel = cp.tollLabel,
         tollAmount = cp.tollAmount,
-        hostile = side == "red",
+        physicalState = cp.physicalState,
+        physicalGuardGroupId = cp.physicalGuardGroupId,
+        physicalGuardCount = cp.physicalGuardCount,
+        physicalPropsPlaced = cp.physicalPropsPlaced == true,
+        physicalRoadblockPlaced = cp.physicalRoadblockPlaced == true,
+        checkpointStrategic = cp.strategic == true,
+        checkpointLifetimeHours = cp.lifetimeHours,
+        checkpointEffectiveAgeHours = cp.effectiveAgeHours,
+        checkpointZoneRadius = cp.zoneRadius or (NPCCheckpointsBridge.ZoneRadius and NPCCheckpointsBridge.ZoneRadius()) or NPCCheckpointsBridge.InteractionRadius(),
+        breachActive = cp.breachActive == true,
+        hostile = side == "red" or cp.breachActive == true or cp.status == "alert" or cp.status == "bounty_alert",
         friendly = side == "green" or side == "blue",
         active = true,
         updatedAt = cp.updatedAt or bcp_now()

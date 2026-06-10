@@ -1,6 +1,7 @@
 NPCProgramBaseGuardBridge = NPCProgramBaseGuardBridge or {}
 
 require "NPCBehavior/NPCBehaviorBridge"
+require "NPCBehavior/NPCBrainDataBridge"
 require "NPCCore/NPCLegacyContractBridge"
 
 local Bridge = NPCBehaviorBridge
@@ -133,6 +134,39 @@ end
 function NPCProgramBaseGuardBridge.Wait(bandit)
     local tasks = {}
     local mode, spotDist = currentSchedule(getGameTime():getHour())
+    local brain = NPCBrainDataBridge and NPCBrainDataBridge.Get and NPCBrainDataBridge.Get(bandit) or nil
+    local questGuard = brain and brain.blackMarketQuestGuard == true
+    if brain and ((brain.checkpointGuard == true or brain.checkpointPhysical == true or brain.checkpointId) or questGuard) and not brain.breachPursuit and not brain.checkpointBreachPursuit then
+        local anchor = brain.guardPoint or brain.holdPoint or (type(brain.order) == "table" and (brain.order.guardPoint or brain.order.anchor)) or nil
+        if type(anchor) == "table" and anchor.x and anchor.y and NPCUtils and NPCUtils.DistTo then
+            local dist = NPCUtils.DistTo(bandit:getX(), bandit:getY(), tonumber(anchor.x) or bandit:getX(), tonumber(anchor.y) or bandit:getY())
+            if dist > math.max(3, tonumber(brain.checkpointHoldRadius) or 5) then
+                table.insert(tasks, {action="Move", time=120, endurance=0.01, x=tonumber(anchor.x), y=tonumber(anchor.y), z=tonumber(anchor.z) or bandit:getZ(), walkType="Run", closeSlow=false, checkpointReturn=true})
+                return {status=true, next="Wait", tasks=tasks}
+            end
+        end
+        appendGuardTask(tasks)
+        if spottedPlayer(bandit, spotDist) then
+            if questGuard then
+                npcEntityCall("Say", bandit, "SPOTTED")
+                npcEntityCall("SetSleeping", bandit, false)
+                npcEntityCall("ForceStationary", bandit, true)
+                return {status=true, next="Wait", tasks=tasks}
+            end
+            return wakeAndHandoff(bandit, tasks)
+        end
+        return {status=true, next="Wait", tasks=tasks}
+    end
+
+    if mode == "guard" and Bridge and Bridge.TryLivingWorldTask then
+        local profile = Bridge.WalkProfile and Bridge.WalkProfile(bandit, {defaultWalkType = "Walk", defaultEndurance = 0, limpWalkType = "Limp", limpEndurance = 0}) or {walkType = "Walk", endurance = 0}
+        if Bridge.TryLivingWorldTask(bandit, tasks, profile, {program = "BaseGuard", allowLoot = false, allowBaseLife = true, cooldownMs = 5200, baseCooldownMs = 5600, fallbackAnim = "ShiftWeight"}) then
+            if spottedPlayer(bandit, spotDist) then
+                return wakeAndHandoff(bandit, tasks)
+            end
+            return {status=true, next="Wait", tasks=tasks}
+        end
+    end
 
     appendScheduledTask(bandit, tasks, mode)
 

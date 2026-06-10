@@ -1,4 +1,7 @@
 UI_FR = {
+    /***** Factions Confrontation localization: French *****/
+
     UI_optionscreen_binding_FactionsConfrontation = "FactionsConfrontation",
-    UI_optionscreen_binding_POSTS = "Gérer le poste de garde",
+    UI_optionscreen_binding_POSTS = "GÃ©rer les postes de garde",
+
 }

@@ -21,7 +21,7 @@ local function keyFor(x, y, z)
 end
 
 local function ensureTable(parent, name)
-    if not parent[name] then
+    if type(parent[name]) ~= "table" then
         parent[name] = {}
     end
     return parent[name]
@@ -161,16 +161,23 @@ local function removeItems(base, x, y, z)
         return
     end
     local id = keyFor(x, y, z)
-    if base.containers then
+    if type(base.containers) == "table" then
         base.containers[id] = nil
     end
-    if base.items then
+    if type(base.items) == "table" then
+        local emptyItemTypes
         for itemType, locations in pairs(base.items) do
             if type(locations) == "table" then
                 locations[id] = nil
                 if not next(locations) then
-                    base.items[itemType] = nil
+                    emptyItemTypes = emptyItemTypes or {}
+                    emptyItemTypes[#emptyItemTypes + 1] = itemType
                 end
+            end
+        end
+        if emptyItemTypes then
+            for index = 1, #emptyItemTypes do
+                base.items[emptyItemTypes[index]] = nil
             end
         end
     end
@@ -221,7 +228,15 @@ local function countContainerItems(container)
 end
 
 local function hasEntries(tbl)
-    return tbl and next(tbl) ~= nil
+    if type(tbl) ~= "table" then
+        return false
+    end
+
+    for _ in pairs(tbl) do
+        return true
+    end
+
+    return false
 end
 
 local function scanSquareItems(base, square)

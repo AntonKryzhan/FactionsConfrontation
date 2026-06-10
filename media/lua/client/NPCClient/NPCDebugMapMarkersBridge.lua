@@ -20,6 +20,7 @@ NPCDebugMapMarkersBridge.SyncMoveDelta = 2
 NPCDebugMapMarkersBridge._hooksInstalled = NPCDebugMapMarkersBridge._hooksInstalled or {}
 NPCDebugMapMarkersBridge._lastSync = NPCDebugMapMarkersBridge._lastSync or 0
 NPCDebugMapMarkersBridge._lastSent = NPCDebugMapMarkersBridge._lastSent or {}
+NPCDebugMapMarkersBridge._screenStable = NPCDebugMapMarkersBridge._screenStable or {}
 
 
 local function banditDebugSettingBool(name, defaultValue)
@@ -27,6 +28,27 @@ local function banditDebugSettingBool(name, defaultValue)
         return NPCLegacySettingsBridge.GetBool(name, defaultValue == true)
     end
     return defaultValue == true
+end
+
+
+local function banditDebugAverageFPS()
+    if getAverageFPS then
+        local ok, fps = pcall(function() return getAverageFPS() end)
+        if ok and tonumber(fps) then return tonumber(fps) end
+    end
+    return 60
+end
+
+local function banditDebugMapLoadLevel()
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.GetLoadLevel then
+        local ok, level = pcall(function() return NPCWorkSchedulerBridge.GetLoadLevel(false) end)
+        if ok and tonumber(level) then return tonumber(level) or 0 end
+    end
+    local fps = banditDebugAverageFPS()
+    if fps > 0 and fps < 30 then return 3 end
+    if fps > 0 and fps < 45 then return 2 end
+    if fps > 0 and fps < 55 then return 1 end
+    return 0
 end
 
 local function banditDebugSettingNumber(name, defaultValue, minValue, maxValue)
@@ -99,6 +121,46 @@ local function banditDebugWorldToUI(mapAPI, x, y)
     if ok and ux and uy then return ux, uy end
 
     return nil, nil
+end
+
+
+local function banditDebugNowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and value then return tonumber(value) or 0 end
+    end
+    if os and os.time then return os.time() * 1000 end
+    return 0
+end
+
+local function banditDebugStabilizeScreenPosition(pos, x, y, isMiniMap)
+    if not pos or not pos.id or not x or not y then
+        return x and math.floor(x + 0.5) or x, y and math.floor(y + 0.5) or y
+    end
+
+    local key = tostring(pos.id) .. (isMiniMap == true and ":mini" or ":world")
+    local cache = NPCDebugMapMarkersBridge._screenStable
+    local item = cache and cache[key] or nil
+    local rx = math.floor((tonumber(x) or 0) + 0.5)
+    local ry = math.floor((tonumber(y) or 0) + 0.5)
+
+    if item then
+        local dx = math.abs(rx - (tonumber(item.x) or rx))
+        local dy = math.abs(ry - (tonumber(item.y) or ry))
+        if dx <= 1 and dy <= 1 then
+            rx = item.x
+            ry = item.y
+        end
+    end
+
+    if cache then
+        item = item or {}
+        item.x = rx
+        item.y = ry
+        item.t = banditDebugNowMs()
+        cache[key] = item
+    end
+    return rx, ry
 end
 
 local function banditDebugGetWidth(ui)
@@ -230,6 +292,52 @@ local function banditDebugDrawTextCentre(ui, text, x, y, r, g, b, a, font)
     local ok = pcall(function() ui:drawTextCentre(text, x, y, r, g, b, a, font) end)
     if ok then return end
     pcall(function() ui:drawTextCentre(text, x, y, r, g, b, font) end)
+end
+
+local function banditDebugCleanDisplayLabel(label)
+    if label == nil then return nil end
+    local text = tostring(label or "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" or text == "nil" or text == "false" then return nil end
+    local lower = string.lower(text)
+    if string.match(text, "^P%d+%s+[%w_%-]+$") or string.match(text, "^BBC%d+$") or string.match(text, "^WG[%w_%-]*$") or string.match(text, "^CP[%w_%-]*$") or string.match(text, "^SG[%w_%-]*$") then return nil end
+    text = string.gsub(text, "%s+P%d+%s+[%w_%-]+$", "")
+    text = string.gsub(text, "%s+BBC%d+$", "")
+    text = string.gsub(text, "%s+WG[%w_%-]*$", "")
+    text = string.gsub(text, "%s+CP[%w_%-]*$", "")
+    text = string.gsub(text, "%s+SG[%w_%-]*$", "")
+    text = string.gsub(text, "%s+[%w_%-]*%d+$", "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    lower = string.lower(text)
+    if text == "" then return nil end
+    if string.match(lower, "^npc group%s*") or lower == "patrol" or lower == "road patrol" or lower == "checkpoint patrol" then return nil end
+    return text
+end
+
+local function banditDebugSideLabel(pos)
+    local side = pos and (pos.factionSide or pos.faction or pos.side or pos.patrolColor or pos.owner or pos.captureTeam) or nil
+    if NPCFactionBridge and NPCFactionBridge.NormalizeSide then
+        side = NPCFactionBridge.NormalizeSide(side)
+    end
+    side = tostring(side or "")
+    if side == "red" then return "Red" end
+    if side == "green" then return "Green" end
+    if side == "blue" then return "Blue" end
+    if side == "black_market" then return "Blue" end
+    if side == "black" then return "Black" end
+    if pos and pos.hostile then return "Red" end
+    return "Green"
+end
+
+local function banditDebugFallbackDisplayLabel(pos)
+    local sideLabel = banditDebugSideLabel(pos)
+    if pos and (pos.mercenaryHired or pos.mercenary or pos.mercenarySquad) then return "Blue mercenaries" end
+    if pos and (pos.checkpointId or pos.targetClass == "checkpoint_road_patrol" or pos.state == "checkpoint_patrol") then return sideLabel .. " checkpoint patrol" end
+    if pos and pos.roadPatrol then return sideLabel .. " road patrol" end
+    if pos and (pos.homeBaseId or pos.baseId or pos.targetClass == "base" or pos.state == "base_patrol") then return sideLabel .. " base patrol" end
+    return sideLabel .. " patrol"
 end
 
 local function banditDebugDrawMarkerShape(ui, pos, cx, cy, size, r, g, b)
@@ -374,11 +482,29 @@ local function banditDebugHasAuthoritativeNpcMarker(pos)
     banditDebugAddAuthoritativeNpcCandidate(candidates, pos.runtimeId)
     banditDebugAddAuthoritativeNpcCandidate(candidates, pos.uid)
     banditDebugAddAuthoritativeNpcCandidate(candidates, pos.persistentId)
+    banditDebugAddAuthoritativeNpcCandidate(candidates, pos.groupId)
+    banditDebugAddAuthoritativeNpcCandidate(candidates, pos.worldGroupId)
 
     for _, key in ipairs(candidates) do
         local marker = NPCDebugMapNPCMarkersBridge.markers[key]
-        if marker and marker.markerType == "npc" and marker.dead ~= true and marker.stale ~= true and marker.lastSeen ~= true then
+        if marker and (marker.markerType == "npc" or marker.markerType == "group") and marker.dead ~= true and marker.stale ~= true and marker.lastSeen ~= true then
             return true
+        end
+    end
+
+    local px = tonumber(pos.x)
+    local py = tonumber(pos.y)
+    if px and py then
+        for _, marker in pairs(NPCDebugMapNPCMarkersBridge.markers) do
+            if marker and marker.markerType == "group" and marker.dead ~= true and marker.stale ~= true and marker.lastSeen ~= true then
+                local mx = tonumber(marker.preciseX or marker.x)
+                local my = tonumber(marker.preciseY or marker.y)
+                if mx and my then
+                    local dx = mx - px
+                    local dy = my - py
+                    if dx * dx + dy * dy <= 16 then return true end
+                end
+            end
         end
     end
 
@@ -423,6 +549,11 @@ function NPCDebugMapMarkersBridge.Render(mapUI, isMiniMap)
     local height = banditDebugGetHeight(mapUI)
     if width <= 0 or height <= 0 then return end
 
+    local loadLevel = banditDebugMapLoadLevel()
+    if loadLevel >= 2 and not banditDebugSettingBool("Debug_MapRuntimeEntityMarkersUnderLoad", false) then
+        return
+    end
+
     local markerSize = NPCDebugMapMarkersBridge.MarkerSize
     local halfSize = markerSize / 2
     local maxMarkers
@@ -431,17 +562,29 @@ function NPCDebugMapMarkersBridge.Render(mapUI, isMiniMap)
     else
         maxMarkers = banditDebugSettingNumber("Debug_MaxWorldMapMarkers", 900, 0, 5000)
     end
+    if loadLevel >= 3 then
+        maxMarkers = math.min(maxMarkers, 45)
+    elseif loadLevel >= 2 then
+        maxMarkers = math.min(maxMarkers, 90)
+    elseif loadLevel >= 1 then
+        maxMarkers = math.min(maxMarkers, 160)
+    end
     if maxMarkers <= 0 then return end
+    local suppressLabels = loadLevel >= 1 and not banditDebugSettingBool("Debug_MapLabelsUnderLoad", false)
 
     local visible = {}
     for _, pos in pairs(NPCDebugMapMarkersBridge.GetPositions()) do
         if not banditDebugHasAuthoritativeNpcMarker(pos) then
             local ux, uy = banditDebugWorldToUI(mapAPI, pos.x, pos.y)
-            if ux and uy and ux >= -markerSize and uy >= -markerSize and ux <= width + markerSize and uy <= height + markerSize then
-                pos._screenX = ux
-                pos._screenY = uy
-                pos._importance = banditDebugMarkerImportance(pos, isMiniMap == true)
-                table.insert(visible, pos)
+            if ux and uy then
+                ux, uy = banditDebugStabilizeScreenPosition(pos, ux, uy, isMiniMap == true)
+                local margin = isMiniMap == true and math.max(markerSize, 36) or math.max(markerSize, 96)
+                if ux >= -margin and uy >= -margin and ux <= width + margin and uy <= height + margin then
+                    pos._screenX = ux
+                    pos._screenY = uy
+                    pos._importance = banditDebugMarkerImportance(pos, isMiniMap == true)
+                    table.insert(visible, pos)
+                end
             end
         end
     end
@@ -464,23 +607,11 @@ function NPCDebugMapMarkersBridge.Render(mapUI, isMiniMap)
 
             banditDebugDrawMarkerShape(mapUI, pos, ux, uy, halfSize, r, g, b)
 
-            local label = pos.name or pos.clan or "NPC"
-            if pos.state then
-                label = label .. " [" .. tostring(pos.state) .. "]"
-            end
-            if pos.order then
-                label = label .. " {" .. tostring(pos.order) .. "}"
-            end
-            if pos.fireMode then
-                label = label .. " <" .. tostring(pos.fireMode) .. ">"
-            end
-            if pos.factionState then
-                label = label .. " (" .. tostring(pos.factionState) .. ")"
-            end
-            if banditDebugIsInBattle(pos) then
-                label = label .. " [BATTLE]"
-            end
-            if markerSize >= 8 and mapUI.drawTextCentre then
+            local label = banditDebugCleanDisplayLabel(pos.displayName) or banditDebugCleanDisplayLabel(pos.name) or banditDebugCleanDisplayLabel(pos.clan) or banditDebugFallbackDisplayLabel(pos)
+            -- Keep debug-map entities to one readable name. State/order/fire-mode
+            -- markers still drive color/icons elsewhere and should not stack as
+            -- extra text lines over the global-map group marker.
+            if not suppressLabels and markerSize >= 8 and mapUI.drawTextCentre then
                 banditDebugDrawTextCentre(mapUI, label, ux, uy + markerSize, 1, 1, 1, 0.9, UIFont.Small)
             end
             count = count + 1
@@ -540,8 +671,22 @@ local function banditDebugOnTick()
     NPCDebugMapMarkersBridge.SyncLoadedPositions()
 end
 
+local function banditDebugRegisterTickJob()
+    -- Stage449: prefer the shared work scheduler. The old direct OnTick path is
+    -- kept only as a fallback for unusual load orders. This avoids calling the
+    -- hook installer every frame in normal runtime.
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.RegisterTickJob then
+        NPCWorkSchedulerBridge.RegisterTickJob("NPCDebugMapMarkersBridge.Hooks", banditDebugOnTick, "marker", 120, 1)
+        return
+    end
+    if Events and Events.OnTick and not NPCDebugMapMarkersBridge._directTickInstalled then
+        NPCDebugMapMarkersBridge._directTickInstalled = true
+        Events.OnTick.Add(banditDebugOnTick)
+    end
+end
+
 Events.OnGameStart.Add(NPCDebugMapMarkersBridge.InstallHooks)
-Events.OnTick.Add(banditDebugOnTick)
+banditDebugRegisterTickJob()
 
 
 NPCLegacyGlobalsBridge.InstallAlias("DebugMapMarkers", NPCDebugMapMarkersBridge, "NPCDebugMapMarkersBridge")

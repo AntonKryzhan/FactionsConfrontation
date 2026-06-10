@@ -6,15 +6,18 @@
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCLegacyGlobalsBridge"
+pcall(require, "NPCCore/NPCStreamingRuntimeBridge")
+pcall(require, "NPCCore/NPCDiagnosticsBridge")
+pcall(require, "NPCCore/NPCPerformanceTelemetryBridge")
 
 local NPC_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
-if not isServer() then return end
+if isClient and isClient() then return end
 
 local legacyBaseCampSystem = NPC_LEGACY_GLOBALS.Get("BaseCampSystem")
 NPCBaseCampServerBridge = NPCLegacyGlobalsBridge.InstallAlias("BaseCampSystem", NPCBaseCampServerBridge or legacyBaseCampSystem, "NPCBaseCampServerBridge")
 
 NPCBaseCampServerBridge.Enabled = true
-NPCBaseCampServerBridge.Version = 4
+NPCBaseCampServerBridge.Version = 458
 NPCBaseCampServerBridge.MAX_BASES = NPCBaseCampServerBridge.MAX_BASES or 24
 NPCBaseCampServerBridge.BASE_RADIUS = NPCBaseCampServerBridge.BASE_RADIUS or 36
 NPCBaseCampServerBridge.BASE_MIN_DISTANCE = NPCBaseCampServerBridge.BASE_MIN_DISTANCE or 640
@@ -36,6 +39,10 @@ NPCBaseCampServerBridge.ZONE_REBALANCE_HOURS = NPCBaseCampServerBridge.ZONE_REBA
 NPCBaseCampServerBridge.BUILDING_SEARCH_RADIUS = NPCBaseCampServerBridge.BUILDING_SEARCH_RADIUS or 96
 NPCBaseCampServerBridge.BUILDING_SEARCH_STEP = NPCBaseCampServerBridge.BUILDING_SEARCH_STEP or 12
 NPCBaseCampServerBridge.BUILDING_MIN_AREA = NPCBaseCampServerBridge.BUILDING_MIN_AREA or 24
+NPCBaseCampServerBridge.INITIAL_FACTION_BASE_OWNERSHIP_ENABLED = NPCBaseCampServerBridge.INITIAL_FACTION_BASE_OWNERSHIP_ENABLED ~= false
+NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MIX_GRID = NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MIX_GRID or 820
+NPCBaseCampServerBridge.INITIAL_FACTION_BASE_PROVOCATION_RADIUS = NPCBaseCampServerBridge.INITIAL_FACTION_BASE_PROVOCATION_RADIUS or 1500
+NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MAX_IMBALANCE = NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MAX_IMBALANCE or 1
 
 NPCBaseCampSystem = NPCBaseCampSystem or NPCBaseCampServerBridge
 NPCLegacyGlobalsBridge.InstallAlias("BaseCampSystem", NPCBaseCampSystem, "NPCBaseCampSystem")
@@ -46,6 +53,50 @@ local basecamp_gmd = NPCGMD or (NPCLegacyGlobalsBridge and NPCLegacyGlobalsBridg
 local basecamp_baseSupply = NPCBaseSupplyServer or NPCBaseSupplyServerBridge or (NPCLegacyGlobalsBridge and NPCLegacyGlobalsBridge.Get and NPCLegacyGlobalsBridge.Get("BaseSupply"))
 local basecamp_spy = NPCSpyBridge or (NPCLegacyGlobalsBridge and NPCLegacyGlobalsBridge.Get and NPCLegacyGlobalsBridge.Get("Spy"))
 local basecamp_worldObjects = NPCWorldObjectCommandBridge or (NPCLegacyGlobalsBridge and NPCLegacyGlobalsBridge.Get and NPCLegacyGlobalsBridge.Get("WorldObjectCommand"))
+
+
+local function bcs_recordBootstrapGate(reason, retryTicks, gateReason)
+    reason = tostring(reason or "basecamp")
+    if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+        pcall(function() NPCPerformanceTelemetryBridge.Record("basecamp_bootstrap_gate_deferred", 1) end)
+    end
+    if NPCDiagnosticsBridge and NPCDiagnosticsBridge.Verbose then
+        NPCDiagnosticsBridge.Verbose("WORLD_QUARANTINE", "gate_bootstrap_task", {
+            task=reason,
+            retryTicks=retryTicks,
+            reason=gateReason or "sp_basecamp_gate"
+        }, "basecamp-bootstrap-gate:" .. reason)
+    elseif NPCWorldDirectorBridge and NPCWorldDirectorBridge.RecordBootstrapGate then
+        pcall(function() NPCWorldDirectorBridge.RecordBootstrapGate(reason, retryTicks, gateReason or "sp_basecamp_gate") end)
+    end
+end
+
+local function bcs_shouldGateBaseCampWork(reason)
+    if not (NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldGateWorldBootstrapTask) then return false end
+    local ok, gate, retryTicks, gateReason = pcall(function()
+        return NPCStreamingRuntimeBridge.ShouldGateWorldBootstrapTask(reason or "basecamp_work")
+    end)
+    if ok and gate == true then
+        bcs_recordBootstrapGate(reason or "basecamp_work", retryTicks, gateReason)
+        return true, retryTicks, gateReason
+    end
+    return false
+end
+
+local function bcs_shouldGateBaseMarkers(reason)
+    return bcs_shouldGateBaseCampWork(reason or "base_marker")
+end
+
+local function bcs_isPlayerCommandedMercenaryGroup(group)
+    if type(group) ~= "table" then return false end
+    return group.commandAuthority == "player"
+        or group.playerCommandAuthority == true
+        or group.worldCommandDisabled == true
+        or group.mercenaryHired == true
+        or group.hired == true
+        or group.isPlayerGuard == true
+        or group.state == "player_commanded"
+end
 
 
 
@@ -248,12 +299,108 @@ local function bcs_applySettings()
     NPCBaseCampServerBridge.BUILDING_SEARCH_RADIUS = bcs_settingNumber("Base_BuildingSearchRadius", NPCBaseCampServerBridge.BUILDING_SEARCH_RADIUS or 96, 8, 512)
     NPCBaseCampServerBridge.BUILDING_SEARCH_STEP = bcs_settingNumber("Base_BuildingSearchStep", NPCBaseCampServerBridge.BUILDING_SEARCH_STEP or 12, 4, 64)
     NPCBaseCampServerBridge.BUILDING_MIN_AREA = bcs_settingNumber("Base_BuildingMinArea", NPCBaseCampServerBridge.BUILDING_MIN_AREA or 24, 4, 5000)
+    NPCBaseCampServerBridge.INITIAL_FACTION_BASE_OWNERSHIP_ENABLED = bcs_settingBool("Base_InitialFactionOwnershipEnabled", NPCBaseCampServerBridge.INITIAL_FACTION_BASE_OWNERSHIP_ENABLED ~= false)
+    NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MIX_GRID = bcs_settingNumber("Base_InitialFactionMixGrid", NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MIX_GRID or 820, 180, 5000)
+    NPCBaseCampServerBridge.INITIAL_FACTION_BASE_PROVOCATION_RADIUS = bcs_settingNumber("Base_InitialFactionProvocationRadius", NPCBaseCampServerBridge.INITIAL_FACTION_BASE_PROVOCATION_RADIUS or 1500, 200, 10000)
+    NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MAX_IMBALANCE = bcs_settingNumber("Base_InitialFactionMaxImbalance", NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MAX_IMBALANCE or 1, 0, 12)
 end
 
 local function bcs_dist(x1, y1, x2, y2)
     local dx = (tonumber(x1) or 0) - (tonumber(x2) or 0)
     local dy = (tonumber(y1) or 0) - (tonumber(y2) or 0)
     return math.sqrt(dx * dx + dy * dy)
+end
+
+local function bcs_initialOwnerHash(base, salt)
+    local x = tonumber(base and base.x) or 0
+    local y = tonumber(base and base.y) or 0
+    local key = tostring(base and (base.id or base.name or "") or "") .. tostring(salt or "")
+    local sum = 0
+    for i = 1, #key do
+        sum = sum + string.byte(key, i) * (i + 17)
+    end
+    local v = math.sin(x * 12.9898 + y * 78.233 + sum * 0.037719) * 43758.5453
+    return v - math.floor(v)
+end
+
+local function bcs_initialBaseIsNeutral(base)
+    if type(base) ~= "table" then return false end
+    local owner = base.owner
+    local captureTeam = base.captureTeam
+    owner = owner ~= nil and tostring(owner) or ""
+    captureTeam = captureTeam ~= nil and tostring(captureTeam) or ""
+    return (owner == "" or owner == "neutral") and (captureTeam == "" or captureTeam == "neutral")
+end
+
+local function bcs_initialSideCounts(gmd)
+    local red, green = 0, 0
+    for _, base in pairs(gmd and gmd.BaseCamps or {}) do
+        if type(base) == "table" then
+            if base.owner == "red" then red = red + 1 end
+            if base.owner == "green" then green = green + 1 end
+        end
+    end
+    return red, green
+end
+
+local function bcs_nearestInitialOwnedSide(gmd, base, radius)
+    if not (gmd and base and base.x and base.y) then return nil, nil end
+    local bestSide = nil
+    local bestDist = tonumber(radius) or 0
+    if bestDist <= 0 then return nil, nil end
+    for _, other in pairs(gmd.BaseCamps or {}) do
+        if type(other) == "table" and other ~= base and other.x and other.y and (other.owner == "red" or other.owner == "green") then
+            local d = bcs_dist(base.x, base.y, other.x, other.y)
+            if d <= bestDist then
+                bestDist = d
+                bestSide = other.owner
+            end
+        end
+    end
+    return bestSide, bestDist
+end
+
+local function bcs_chooseInitialFactionBaseOwner(gmd, base)
+    if not (gmd and base and base.x and base.y) then return nil end
+
+    local redCount, greenCount = bcs_initialSideCounts(gmd)
+    local maxImbalance = tonumber(NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MAX_IMBALANCE) or 1
+    if redCount > greenCount + maxImbalance then return "green" end
+    if greenCount > redCount + maxImbalance then return "red" end
+
+    local nearSide = bcs_nearestInitialOwnedSide(gmd, base, NPCBaseCampServerBridge.INITIAL_FACTION_BASE_PROVOCATION_RADIUS)
+    local h = bcs_initialOwnerHash(base, "near")
+    if nearSide and h > 0.28 then
+        return nearSide == "red" and "green" or "red"
+    end
+
+    local grid = math.max(180, tonumber(NPCBaseCampServerBridge.INITIAL_FACTION_BASE_MIX_GRID) or 820)
+    local cellX = math.floor((tonumber(base.x) or 0) / grid)
+    local cellY = math.floor((tonumber(base.y) or 0) / grid)
+    local side = ((cellX + cellY) % 2 == 0) and "red" or "green"
+    if bcs_initialOwnerHash(base, "flip") > 0.66 then side = side == "red" and "green" or "red" end
+
+    if side == "red" and redCount > greenCount + maxImbalance then return "green" end
+    if side == "green" and greenCount > redCount + maxImbalance then return "red" end
+    return side
+end
+
+function NPCBaseCampServerBridge.ApplyInitialFactionOwner(base, worldAge)
+    if NPCBaseCampServerBridge.INITIAL_FACTION_BASE_OWNERSHIP_ENABLED == false then return false end
+    if not bcs_initialBaseIsNeutral(base) then return false end
+    local gmd = NPCBaseCampServerBridge.EnsureData()
+    local side = bcs_chooseInitialFactionBaseOwner(gmd, base)
+    if side ~= "red" and side ~= "green" then return false end
+
+    base.owner = side
+    base.captureTeam = nil
+    base.progress = 100
+    base.status = "controlled"
+    base.initialFactionOwner = side
+    base.initialFactionOwnerStage = 447
+    base.strategicSeedSide = side
+    base.updatedAt = worldAge or bcs_nowHours()
+    return true
 end
 
 local function bcs_lower(value)
@@ -894,6 +1041,12 @@ local function bcs_resourceMarkerHash(base)
     table.insert(parts, tostring(math.floor((tonumber(base.logisticsReadiness) or 0) + 0.5)))
     table.insert(parts, tostring(math.floor((tonumber(base.foodReadiness) or 0) + 0.5)))
     table.insert(parts, tostring(math.floor((tonumber(base.ammoReadiness) or 0) + 0.5)))
+    local economy = type(base.economy) == "table" and base.economy or {}
+    table.insert(parts, tostring(economy.status or ""))
+    table.insert(parts, tostring(math.floor((tonumber(economy.manpower) or tonumber(base.manpower) or 0) + 0.5)))
+    table.insert(parts, tostring(math.floor((tonumber(economy.manpowerReserve) or tonumber(base.manpowerReserve) or 0) + 0.5)))
+    table.insert(parts, tostring(math.floor((tonumber(economy.deployed) or tonumber(base.manpowerDeployed) or 0) + 0.5)))
+    table.insert(parts, tostring(math.floor((tonumber(economy.morale) or tonumber(base.baseEconomyMorale) or 0) + 0.5)))
     return table.concat(parts, ":")
 end
 
@@ -980,9 +1133,17 @@ local function bcs_makeMarker(base)
         stockWeapons = bcs_stockValueForMarker(base, "weapons", "stockWeapons"),
         stockSpareParts = bcs_stockValueForMarker(base, "spareParts", "stockSpareParts"),
         stockSupplies = bcs_stockValueForMarker(base, "supplies", "stockSupplies"),
-        economyStatus = economy.status or "unknown",
-        needSummary = economy.needSummary or "ok",
-        missionCount = economy.missionCount or 0,
+        economyStatus = economy.status or base.economyStatus or "unknown",
+        needSummary = economy.needSummary or base.needSummary or "ok",
+        missionCount = economy.missionCount or base.missionCount or 0,
+        manpower = math.floor((tonumber(economy.manpower) or tonumber(base.manpower) or 0) + 0.5),
+        manpowerReserve = math.floor((tonumber(economy.manpowerReserve) or tonumber(base.manpowerReserve) or 0) + 0.5),
+        manpowerDeployed = math.floor((tonumber(economy.deployed) or tonumber(base.manpowerDeployed) or 0) + 0.5),
+        manpowerWounded = math.floor((tonumber(economy.wounded) or 0) + 0.5),
+        manpowerLosses = math.floor((tonumber(economy.losses) or 0) + 0.5),
+        baseEconomyMorale = math.floor((tonumber(economy.morale) or tonumber(base.baseEconomyMorale) or 0) + 0.5),
+        canSpawnPatrol = economy.canSpawnPatrol == true or base.canSpawnPatrol == true,
+        canRaid = economy.canRaid == true or base.canRaid == true,
         garrisonReadiness = base.garrisonReadiness or 0,
         defenseReadiness = base.defenseReadiness or 0,
         logisticsReadiness = base.logisticsReadiness or 0,
@@ -1010,6 +1171,7 @@ local bcs_brainPosition
 
 function NPCBaseCampServerBridge.SendBaseMarker(base)
     if not base then return false end
+    if bcs_shouldGateBaseMarkers("base_marker") then return false end
 
     local gmd = NPCBaseCampServerBridge.EnsureData()
     local marker = bcs_makeMarker(base)
@@ -1281,6 +1443,7 @@ end
 
 function NPCBaseCampServerBridge.SendBaseZoneMarker(base, zone)
     if not base or not zone then return false end
+    if bcs_shouldGateBaseMarkers("base_zone_marker") then return false end
 
     local gmd = NPCBaseCampServerBridge.EnsureData()
     local marker = bcs_makeZoneMarker(base, zone)
@@ -1298,6 +1461,7 @@ end
 function NPCBaseCampServerBridge.SendBaseZoneMarkers(base)
     if not base then return false end
     if NPCBaseCampServerBridge.ZONE_MARKERS_ENABLED == false then return false end
+    if bcs_shouldGateBaseMarkers("base_zone_markers") then return false end
     NPCBaseCampServerBridge.EnsureBaseArchetype(base)
     NPCBaseCampServerBridge.EnsureBaseZones(base)
 
@@ -1318,6 +1482,7 @@ end
 
 function NPCBaseCampServerBridge.SendBaseMarkers(base, includeZones)
     if not base then return false end
+    if bcs_shouldGateBaseMarkers("base_markers") then return false end
     NPCBaseCampServerBridge.SendBaseMarker(base)
     if includeZones then
         NPCBaseCampServerBridge.SendBaseZoneMarkers(base)
@@ -1719,7 +1884,7 @@ function NPCBaseCampServerBridge.BuildRuntimeIndex(gmd)
     local index = bcs_runtimeBuildBaseBuckets(gmd)
 
     for groupId, group in pairs(gmd.VirtualGroups or {}) do
-        if type(group) == "table" and (tonumber(group.count) or 0) > 0 then
+        if type(group) == "table" and (tonumber(group.count) or 0) > 0 and not bcs_isPlayerCommandedMercenaryGroup(group) then
             local direct = {}
             if group.homeBaseId and gmd.BaseCamps[tostring(group.homeBaseId)] then direct[tostring(group.homeBaseId)] = true end
             if group.targetBaseId and gmd.BaseCamps[tostring(group.targetBaseId)] then direct[tostring(group.targetBaseId)] = true end
@@ -1990,7 +2155,7 @@ function NPCBaseCampServerBridge.UpdateBaseZones(base, worldAge)
         end
     else
         for groupId, group in pairs(gmd.VirtualGroups or {}) do
-            if type(group) == "table" and (group.homeBaseId == base.id or group.targetBaseId == base.id) then
+            if type(group) == "table" and not bcs_isPlayerCommandedMercenaryGroup(group) and (group.homeBaseId == base.id or group.targetBaseId == base.id) then
                 NPCBaseCampServerBridge.AssignGroupZone(base, group, groupId)
             end
         end
@@ -2062,6 +2227,10 @@ function NPCBaseCampServerBridge.CreateStrategicPoint(force)
     local gmd = NPCBaseCampServerBridge.EnsureData()
     if not NPCBaseCampServerBridge.IsEnabled() then return false end
     if bcs_count(gmd.BaseCamps) >= NPCBaseCampServerBridge.MAX_BASES then return false end
+    if bcs_shouldGateBaseCampWork("basecamp_create_point") then
+        gmd.BaseCampDirector.lastSearch = bcs_nowHours()
+        return false
+    end
 
     local point = NPCBaseCampServerBridge.FindStrategicPoint()
     if not point then return false end
@@ -2103,6 +2272,7 @@ function NPCBaseCampServerBridge.CreateStrategicPoint(force)
     NPCBaseCampServerBridge.EnsureBaseArchetype(base, point)
     NPCBaseCampServerBridge.EnsureBaseHumanName(base, point)
     NPCBaseCampServerBridge.EnsureBaseZones(base)
+    NPCBaseCampServerBridge.ApplyInitialFactionOwner(base, base.createdAt)
     if basecamp_factionEconomy and basecamp_factionEconomy.SyncBaseStockFields then
         base.stock = base.stock or {}
         basecamp_factionEconomy.SyncBaseStockFields(base)
@@ -2114,6 +2284,7 @@ end
 
 function NPCBaseCampServerBridge.MigrateBaseToBuilding(base)
     if type(base) ~= "table" then return false end
+    if bcs_shouldGateBaseCampWork("basecamp_migrate_building") then return false end
     if base.buildingBased == true then return false end
     if base.buildingMigrationChecked == true then return false end
 
@@ -2237,7 +2408,7 @@ function NPCBaseCampServerBridge.GetPresencePower(base)
     local radius = tonumber(base.radius) or NPCBaseCampServerBridge.BASE_RADIUS
 
     for _, group in pairs(gmd.VirtualGroups or {}) do
-        if group and not group.activated and group.x and group.y and (tonumber(group.count) or 0) > 0 then
+        if group and not group.activated and not bcs_isPlayerCommandedMercenaryGroup(group) and group.x and group.y and (tonumber(group.count) or 0) > 0 then
             if bcs_dist(group.x, group.y, base.x, base.y) <= radius then
                 local side = bcs_sideForGroup(group)
                 local count = tonumber(group.count) or 1
@@ -2318,7 +2489,7 @@ function NPCBaseCampServerBridge.AssignHomeBase(base, side)
     local nearestDist = 999999
 
     for groupId, group in pairs(gmd.VirtualGroups or {}) do
-        if group and bcs_sideForGroup(group) == side and group.x and group.y and (tonumber(group.count) or 0) > 0 then
+        if group and not bcs_isPlayerCommandedMercenaryGroup(group) and bcs_sideForGroup(group) == side and group.x and group.y and (tonumber(group.count) or 0) > 0 then
             local d = bcs_dist(group.x, group.y, base.x, base.y)
             if d < nearestDist and d <= NPCBaseCampServerBridge.HOME_ASSIGN_RADIUS then
                 nearestDist = d
@@ -2557,7 +2728,7 @@ function NPCBaseCampServerBridge.AssignVirtualGroupTargets()
     local changed = false
 
     for groupId, group in pairs(gmd.VirtualGroups or {}) do
-        if group and not group.activated and not group.inBattle and not group.roadPatrol and not group.economyMissionId and (tonumber(group.count) or 0) > 0 then
+        if group and not group.activated and not group.inBattle and not bcs_isPlayerCommandedMercenaryGroup(group) and not group.roadPatrol and not group.economyMissionId and (tonumber(group.count) or 0) > 0 then
             local base = nil
             if group.targetBaseId then
                 local current = gmd.BaseCamps[tostring(group.targetBaseId)]
@@ -2625,6 +2796,11 @@ function NPCBaseCampServerBridge.Init()
     bcs_applySettings()
     local gmd = NPCBaseCampServerBridge.EnsureData()
     if not NPCBaseCampServerBridge.IsEnabled() then return false end
+    if bcs_shouldGateBaseCampWork("basecamp_init") then
+        gmd.BaseCampDirector.initDeferredByGate = true
+        gmd.BaseCampDirector.lastInitGate = bcs_nowHours()
+        return false
+    end
 
     if not gmd.BaseCampDirector.initialized then
         gmd.BaseCampDirector.initialized = true
@@ -2687,6 +2863,7 @@ end
 
 function NPCBaseCampServerBridge.PrepareBasePresentation(base, worldAge)
     if type(base) ~= "table" or not base.x or not base.y then return false end
+    if bcs_shouldGateBaseCampWork("basecamp_presentation") then return false end
     local cell = getCell and getCell() or nil
     if not cell then return false end
     local config = NPCBaseCampServerBridge.EnsureBaseArchetype(base)
@@ -2748,6 +2925,12 @@ function NPCBaseCampServerBridge.UpdateWorld()
     local gmd = NPCBaseCampServerBridge.EnsureData()
     local worldAge = bcs_nowHours()
     local changed = false
+
+    if bcs_shouldGateBaseCampWork("basecamp_update_world") then
+        gmd.BaseCampDirector.updateDeferredByGate = true
+        gmd.BaseCampDirector.lastUpdateGate = worldAge
+        return false
+    end
 
     if not gmd.BaseCampDirector.initialized then
         NPCBaseCampServerBridge.Init()
@@ -2830,10 +3013,23 @@ end
 local function bcs_onTick()
     NPCBaseCampServerBridge._tick = NPCBaseCampServerBridge._tick + 1
 
-    if NPCBaseCampServerBridge._tick == 240 then
-        NPCBaseCampServerBridge.Init()
-    elseif NPCBaseCampServerBridge._tick % 240 == 0 then
-        NPCBaseCampServerBridge.UpdateWorld()
+    if NPCBaseCampServerBridge._tick >= 360 and NPCBaseCampServerBridge._tick % 300 == 0 then
+        local gmd = NPCBaseCampServerBridge.EnsureData()
+        if not (gmd.BaseCampDirector and gmd.BaseCampDirector.initialized) then
+            NPCBaseCampServerBridge.Init()
+            return
+        end
+    end
+
+    if NPCBaseCampServerBridge._tick % 900 == 300 then
+        local level = 0
+        if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.GetLoadLevel then
+            local okLevel, gotLevel = pcall(function() return NPCWorkSchedulerBridge.GetLoadLevel(false) end)
+            if okLevel then level = tonumber(gotLevel) or 0 end
+        end
+        if level < 2 then
+            NPCBaseCampServerBridge.UpdateWorld()
+        end
     end
 end
 

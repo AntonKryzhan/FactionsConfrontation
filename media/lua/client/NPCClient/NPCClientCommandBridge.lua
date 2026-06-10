@@ -19,6 +19,37 @@ function NPCClientCommandBridge.NormalizeModule(module)
     return module
 end
 
+local function npcclient_nowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and value then return tonumber(value) or 0 end
+    end
+    if getGameTime then
+        local ok, value = pcall(function() return getGameTime():getWorldAgeHours() end)
+        if ok and value then return math.floor((tonumber(value) or 0) * 3600000) end
+    end
+    return 0
+end
+
+local function npcclient_mercTelemetryText(args, nowMs)
+    if type(args) ~= "table" then return "" end
+    local parts = {}
+    if args.clientTraceId ~= nil then parts[#parts + 1] = "trace=" .. tostring(args.clientTraceId) end
+    if args.clientEvent ~= nil then parts[#parts + 1] = "event=" .. tostring(args.clientEvent) end
+    if args.orderRevision ~= nil or args.groupOrderRevision ~= nil then parts[#parts + 1] = "revision=" .. tostring(args.orderRevision or args.groupOrderRevision) end
+    local clientSendMs = tonumber(args.clientSendMs)
+    local serverReceiveMs = tonumber(args.serverReceiveMs)
+    local orderAcceptedMs = tonumber(args.orderAcceptedMs)
+    local serverFlushMs = tonumber(args.serverFlushMs)
+    local now = tonumber(nowMs) or npcclient_nowMs()
+    if clientSendMs and now > 0 then parts[#parts + 1] = "clientTotalMs=" .. tostring(math.floor(now - clientSendMs)) end
+    if clientSendMs and serverReceiveMs then parts[#parts + 1] = "clientToServerMs=" .. tostring(math.floor(serverReceiveMs - clientSendMs)) end
+    if serverReceiveMs and orderAcceptedMs then parts[#parts + 1] = "serverAcceptMs=" .. tostring(math.floor(orderAcceptedMs - serverReceiveMs)) end
+    if orderAcceptedMs and serverFlushMs then parts[#parts + 1] = "serverFlushMs=" .. tostring(math.floor(serverFlushMs - orderAcceptedMs)) end
+    if #parts == 0 then return "" end
+    return " " .. table.concat(parts, " ")
+end
+
 function NPCClientCommandBridge.UpdateVehicle(args)
     for i=0, 100 do
         local vehicleList = getCell():getVehicles()
@@ -188,10 +219,6 @@ local function npcclient_mergeQueuedBrain(gmd, id, args)
 end
 
 local function npcclient_worldAgeHours()
-    if NPCOrderContract and NPCOrderContract.Now then
-        local ok, value = pcall(function() return NPCOrderContract.Now() end)
-        if ok and tonumber(value) then return tonumber(value) end
-    end
     if getGameTime then
         local gt = getGameTime()
         if gt and gt.getWorldAgeHours then
@@ -217,44 +244,123 @@ local function npcclient_isOrderInterruptActive(args, brain)
     return false
 end
 
+local function npcclient_isCombatAction(action)
+    action = tostring(action or "")
+    return action == "Shoot" or action == "Aim" or action == "Hit" or action == "Shove" or action == "Reload" or action == "FaceTarget"
+end
+
+local function npcclient_orderToken(args, brain)
+    local order = type(args) == "table" and type(args.order) == "table" and args.order or (type(brain) == "table" and brain.order or nil)
+    local revision = tonumber((type(args) == "table" and (args.orderRevision or args.groupOrderRevision or args.mercenaryOrderRevision)) or (type(brain) == "table" and (brain.orderRevision or brain.groupOrderRevision or brain.mercenaryOrderRevision)) or (order and (order.orderRevision or order.groupOrderRevision)))
+    if revision then return "r:" .. tostring(revision) end
+    local sequence = tonumber(order and order.sequence) or tonumber(args and args.orderSequence) or tonumber(args and args.sequence)
+    if sequence then return "s:" .. tostring(sequence) end
+    local issued = tonumber(order and (order.interruptIssued or order.issued)) or 0
+    return "i:" .. tostring(issued)
+end
+
+local function npcclient_queueImmediateMercenaryOrderTask(bandit, brain, args, source)
+    if not (bandit and type(brain) == "table" and brain.mercenaryHired == true) then return false end
+    local order = type(args) == "table" and type(args.order) == "table" and args.order or brain.order
+    if type(order) ~= "table" then return false end
+    if order.source ~= "player" and order.commandAuthority ~= "player" and order.playerCommand ~= true and brain.commandAuthority ~= "player" then return false end
+    if not (NPCUpdateBridge and NPCUpdateBridge.QueueImmediateMercenaryOrderTask and NPCUpdateBridge.EnqueueGeneratedTasks) then return false end
+
+    brain.ai = brain.ai or {}
+    local token = npcclient_orderToken(args, brain)
+    local nowMs = getTimestampMs and getTimestampMs() or 0
+    if token and brain.ai.clientMercenaryImmediateToken == token and nowMs > 0 and (nowMs - (tonumber(brain.ai.clientMercenaryImmediateAtMs) or 0)) < 220 then
+        return true
+    end
+
+    local tasks = {}
+    local okQueued, queued = pcall(function() return NPCUpdateBridge.QueueImmediateMercenaryOrderTask(bandit, brain, order, tasks) end)
+    if okQueued and queued == true and #tasks > 0 then
+        local okEnqueue = pcall(function() NPCUpdateBridge.EnqueueGeneratedTasks(bandit, brain, tasks, source or "client_order_dispatch") end)
+        if okEnqueue then
+            if args and (args.clientTraceId ~= nil or args.serverReceiveMs ~= nil) then
+                print("[NPCMercenaryTelemetry] client immediate task queued source=" .. tostring(source or "client_order_dispatch") .. " id=" .. tostring(args.id) .. " order=" .. tostring(order and order.name) .. npcclient_mercTelemetryText(args, nowMs))
+            end
+            brain.ai.clientMercenaryImmediateToken = token
+            brain.ai.clientMercenaryImmediateAtMs = nowMs
+            brain.ai.forceManualOrderNow = false
+            if NPCBrainData and NPCBrainData.Update then pcall(function() NPCBrainData.Update(bandit, brain) end) end
+            return true
+        end
+    end
+    return false
+end
+
 local function npcclient_interruptMercenaryOrder(bandit, brain, args, previousTask)
     if not (bandit and type(brain) == "table") then return end
     if brain.mercenaryHired ~= true then return end
     if not npcclient_isOrderInterruptActive(args, brain) then return end
 
+    brain.ai = brain.ai or {}
+    local order = type(args) == "table" and type(args.order) == "table" and args.order or brain.order
+    local revision = tonumber((type(args) == "table" and (args.orderRevision or args.groupOrderRevision or args.mercenaryOrderRevision)) or (order and (order.orderRevision or order.groupOrderRevision)) or brain.orderRevision or brain.groupOrderRevision or brain.mercenaryOrderRevision)
+    local sequence = tonumber(order and order.sequence) or tonumber(args and args.orderSequence) or tonumber(args and args.sequence)
+    local issued = tonumber(order and (order.interruptIssued or order.issued)) or 0
+    local token = revision and ("r:" .. tostring(revision)) or (sequence and ("s:" .. tostring(sequence)) or ("i:" .. tostring(issued)))
+    local nowMs = getTimestampMs and getTimestampMs() or 0
+    if brain.ai.clientMercenaryInterruptToken == token and nowMs > 0 and (nowMs - (tonumber(brain.ai.clientMercenaryInterruptAtMs) or 0)) < 1800 then
+        brain.ai.forceManualOrderNow = true
+        return
+    end
+    brain.ai.clientMercenaryInterruptToken = token
+    brain.ai.clientMercenaryInterruptAtMs = nowMs
+
     local currentTask = previousTask or (brain.tasks and brain.tasks[1]) or nil
-    if currentTask and currentTask.lock == true then
+    if currentTask and (currentTask.action == "Die" or currentTask.action == "Zombify") then
         if type(brain.tasks) ~= "table" or #brain.tasks == 0 then brain.tasks = {currentTask} end
         return
     end
 
+    local clearCombat = args == nil or args.clearCombat ~= false
+    local name = tostring(order and order.name or "")
+    local lightMoveOrder = name == "Follow" or name == "Patrol" or name == "Return"
+
     if NPCEntity and NPCEntity.ClearTasks then pcall(function() NPCEntity.ClearTasks(bandit) end) end
     brain.tasks = {}
-    brain.targetId = nil
-    brain.targetKind = nil
-    brain.currentThreat = nil
-    brain.lastThreat = nil
-    if brain.fsm then
-        brain.fsm.targetId = nil
-        brain.fsm.targetKind = nil
-        brain.fsm.currentThreat = nil
-        brain.fsm.lastThreat = nil
+    brain.ai.forceManualOrderNow = true
+    brain.ai.manualOrderConsumedIssued = nil
+    brain.ai.manualOrderConsumedSequence = nil
+    brain.ai.manualOrderConsumedRevision = nil
+    brain.ai.lastGenerateTaskFrameTick = nil
+
+    if clearCombat then
+        brain.targetId = nil
+        brain.targetKind = nil
+        brain.currentThreat = nil
+        brain.lastThreat = nil
+        brain.target = nil
+        brain.enemy = nil
+        brain.combatTarget = nil
+        brain.radioThreat = nil
+        brain._threatCache = nil
+        brain._combatTargetCache = nil
+        if brain.fsm then
+            brain.fsm.targetId = nil
+            brain.fsm.targetKind = nil
+            brain.fsm.currentThreat = nil
+            brain.fsm.lastThreat = nil
+            brain.fsm.target = nil
+        end
+        if bandit.setTarget then pcall(function() bandit:setTarget(nil) end) end
+        if bandit.setAttackedBy then pcall(function() bandit:setAttackedBy(nil) end) end
+        if not lightMoveOrder and bandit.clearAggroList then pcall(function() bandit:clearAggroList() end) end
     end
+
     if NPCEntity and NPCEntity.SetAim then pcall(function() NPCEntity.SetAim(bandit, false) end) end
     if NPCEntity and NPCEntity.SetMoving then pcall(function() NPCEntity.SetMoving(bandit, false) end) end
-    if bandit.clearAggroList then pcall(function() bandit:clearAggroList() end) end
-    if bandit.setTarget then pcall(function() bandit:setTarget(nil) end) end
-    if bandit.setAttackedBy then pcall(function() bandit:setAttackedBy(nil) end) end
-    if bandit.changeState and ZombieIdleState and ZombieIdleState.instance then
-        local state = bandit.getActionStateName and bandit:getActionStateName() or nil
-        if state ~= "onground" and state ~= "getup" and state ~= "getup-fromonback" and state ~= "getup-fromonfront" and state ~= "getup-fromsitting" then
-            pcall(function() bandit:changeState(ZombieIdleState.instance()) end)
-        end
-    end
+    if bandit.setBumpDone then pcall(function() bandit:setBumpDone(true) end) end
+    -- Do not force ZombieIdleState here.  A hard state swap on every squad
+    -- order was visible as a micro-swap and also increased B41 path2 churn.
 end
 
-local function npcclient_applyNPCPart(args)
-    if type(args) ~= "table" then return end
+local function npcclient_applyNPCPart(args, options)
+    if type(args) ~= "table" then return nil, nil end
+    options = options or {}
     local ids = npcclient_idCandidatesFromPayload(args)
     local id = args.id or ids[1]
     if id then
@@ -271,13 +377,18 @@ local function npcclient_applyNPCPart(args)
                     end
                 end
                 npcclient_interruptMercenaryOrder(bandit, brain, args, previousTask)
+                if options.deferImmediate ~= true then
+                    npcclient_queueImmediateMercenaryOrderTask(bandit, brain, args, "client_order_dispatch")
+                end
                 NPCBrainData.Update(bandit, brain)
+                return bandit, brain
             end
         else
             local gmd = GetNPCModData()
             npcclient_mergeQueuedBrain(gmd, id, args)
         end
     end
+    return nil, nil
 end
 
 local function npcclient_orderQueue()
@@ -300,20 +411,141 @@ local function npcclient_queueMercenaryOrderPart(args)
 end
 
 function NPCClientCommandBridge.UpdateNPCPart(args)
-    if type(args) == "table" and args.mercenaryOrderAsync == true then
+    if type(args) == "table" and args.mercenaryOrderAsync == true and args.urgentMercenaryOrder ~= true then
         npcclient_queueMercenaryOrderPart(args)
         return
     end
     npcclient_applyNPCPart(args)
 end
 
-function NPCClientCommandBridge.MercenaryOrderBatch(args)
+local function npcclient_applyMercenaryDirectOrderPart(args, options)
+    if type(args) ~= "table" then return nil, nil end
+    options = options or {}
+    args.directMercenaryOrder = true
+    args.orderSystem = "mercenary_direct"
+    if type(args.order) == "table" then
+        args.order.source = "mercenary_direct"
+        args.order.commandAuthority = "player"
+        args.order.playerCommand = true
+        args.order.playerCommandMode = "mercenary_direct"
+        args.order.mercenaryDirect = true
+        args.order.directMercenaryOrder = true
+        args.order.dispatchMode = "mercenary_direct"
+        args.order.forceImmediate = true
+    end
+
+    local ids = npcclient_idCandidatesFromPayload(args)
+    local id = args.id or ids[1]
+    if not id then return nil, nil end
+
+    local bandit = npcclient_getNPCByPayload(args)
+    if not bandit then
+        local gmd = GetNPCModData()
+        npcclient_mergeQueuedBrain(gmd, id, args)
+        return nil, nil
+    end
+
+    local brain = NPCBrainData and NPCBrainData.Get and NPCBrainData.Get(bandit) or nil
+    if type(brain) ~= "table" then return nil, nil end
+    local previousTask = brain.tasks and brain.tasks[1] or nil
+    for k, v in pairs(args) do
+        if k ~= "id" then brain[k] = v end
+    end
+    brain.mercenaryDirectOrders = true
+    brain.orderSystem = "mercenary_direct"
+    brain.commandAuthority = "player"
+    brain.playerCommandAuthority = true
+    if type(brain.order) == "table" then
+        brain.order.source = "mercenary_direct"
+        brain.order.commandAuthority = "player"
+        brain.order.playerCommand = true
+        brain.order.playerCommandMode = "mercenary_direct"
+        brain.order.mercenaryDirect = true
+        brain.order.directMercenaryOrder = true
+        brain.order.dispatchMode = "mercenary_direct"
+        brain.order.forceImmediate = true
+    end
+
+    if NPCUpdateBridge and NPCUpdateBridge.ApplyMercenaryFireModeEquipment and type(brain.order) == "table" then
+        pcall(function() NPCUpdateBridge.ApplyMercenaryFireModeEquipment(bandit, brain, brain.order) end)
+    end
+
+    npcclient_interruptMercenaryOrder(bandit, brain, args, previousTask)
+    if options.deferImmediate ~= true then
+        npcclient_queueImmediateMercenaryOrderTask(bandit, brain, args, "mercenary_direct_order")
+    end
+    NPCBrainData.Update(bandit, brain)
+    return bandit, brain
+end
+
+function NPCClientCommandBridge.MercenaryDirectOrderBatch(args)
     if type(args) ~= "table" or type(args.entries) ~= "table" then return end
+    local receivedMs = npcclient_nowMs()
+    if args.clientTraceId ~= nil or args.serverReceiveMs ~= nil then
+        print("[NPCMercenaryTelemetry] client batch received entries=" .. tostring(#args.entries) .. npcclient_mercTelemetryText(args, receivedMs))
+    end
+    local immediate = {}
     for _, entry in ipairs(args.entries) do
         if type(entry) == "table" then
-            entry.mercenaryOrderAsync = true
-            npcclient_queueMercenaryOrderPart(entry)
+            if args.applyTogether == true then entry.applyTogether = true end
+            if args.orderRevision and not entry.orderRevision then entry.orderRevision = args.orderRevision end
+            if args.groupOrderRevision and not entry.groupOrderRevision then entry.groupOrderRevision = args.groupOrderRevision end
+            if args.orderBatchId and not entry.orderBatchId then entry.orderBatchId = args.orderBatchId end
+            if args.groupOrderBatchId and not entry.groupOrderBatchId then entry.groupOrderBatchId = args.groupOrderBatchId end
+            if args.clientTraceId and not entry.clientTraceId then entry.clientTraceId = args.clientTraceId end
+            if args.clientSendMs and not entry.clientSendMs then entry.clientSendMs = args.clientSendMs end
+            if args.clientOrderSeq and not entry.clientOrderSeq then entry.clientOrderSeq = args.clientOrderSeq end
+            if args.clientEvent and not entry.clientEvent then entry.clientEvent = args.clientEvent end
+            if args.serverReceiveMs and not entry.serverReceiveMs then entry.serverReceiveMs = args.serverReceiveMs end
+            if args.orderAcceptedMs and not entry.orderAcceptedMs then entry.orderAcceptedMs = args.orderAcceptedMs end
+            if args.serverFlushMs and not entry.serverFlushMs then entry.serverFlushMs = args.serverFlushMs end
+            entry.urgentMercenaryOrder = true
+            entry.mercenaryOrderAsync = false
+            entry.forceImmediateOrder = true
+            entry.directMercenaryOrder = true
+            entry.orderSystem = "mercenary_direct"
+            local bandit, brain = npcclient_applyMercenaryDirectOrderPart(entry, {deferImmediate=true})
+            if bandit and brain then immediate[#immediate + 1] = {bandit=bandit, brain=brain, args=entry} end
         end
+    end
+    for _, item in ipairs(immediate) do
+        npcclient_queueImmediateMercenaryOrderTask(item.bandit, item.brain, item.args, "mercenary_direct_order_batch")
+    end
+end
+
+function NPCClientCommandBridge.MercenaryOrderBatch(args)
+    if type(args) == "table" and (args.directMercenaryOrder == true or args.orderSystem == "mercenary_direct") then
+        return NPCClientCommandBridge.MercenaryDirectOrderBatch(args)
+    end
+    if type(args) ~= "table" or type(args.entries) ~= "table" then return end
+    local immediate = {}
+    for _, entry in ipairs(args.entries) do
+        if type(entry) == "table" then
+            if args.applyTogether == true then entry.applyTogether = true end
+            if args.orderRevision and not entry.orderRevision then entry.orderRevision = args.orderRevision end
+            if args.groupOrderRevision and not entry.groupOrderRevision then entry.groupOrderRevision = args.groupOrderRevision end
+            if args.orderBatchId and not entry.orderBatchId then entry.orderBatchId = args.orderBatchId end
+            if args.groupOrderBatchId and not entry.groupOrderBatchId then entry.groupOrderBatchId = args.groupOrderBatchId end
+            if args.clientTraceId and not entry.clientTraceId then entry.clientTraceId = args.clientTraceId end
+            if args.clientSendMs and not entry.clientSendMs then entry.clientSendMs = args.clientSendMs end
+            if args.clientOrderSeq and not entry.clientOrderSeq then entry.clientOrderSeq = args.clientOrderSeq end
+            if args.clientEvent and not entry.clientEvent then entry.clientEvent = args.clientEvent end
+            if args.serverReceiveMs and not entry.serverReceiveMs then entry.serverReceiveMs = args.serverReceiveMs end
+            if args.orderAcceptedMs and not entry.orderAcceptedMs then entry.orderAcceptedMs = args.orderAcceptedMs end
+            if args.serverFlushMs and not entry.serverFlushMs then entry.serverFlushMs = args.serverFlushMs end
+            if entry.urgentMercenaryOrder == true or entry.mercenaryOrderAsync == false or args.urgentMercenaryOrder == true then
+                entry.urgentMercenaryOrder = true
+                entry.mercenaryOrderAsync = false
+                local bandit, brain = npcclient_applyNPCPart(entry, {deferImmediate = true})
+                if bandit and brain then immediate[#immediate + 1] = {bandit=bandit, brain=brain, args=entry} end
+            else
+                entry.mercenaryOrderAsync = true
+                npcclient_queueMercenaryOrderPart(entry)
+            end
+        end
+    end
+    for _, item in ipairs(immediate) do
+        npcclient_queueImmediateMercenaryOrderTask(item.bandit, item.brain, item.args, "client_order_batch")
     end
 end
 
@@ -454,8 +686,23 @@ local function npcclient_matchesCleanupScope(zombie, args, runtimeId, runtimeIdS
     return true
 end
 
-local function npcclient_removeZombieObject(zombie)
+local function npcclient_shouldKeepDeadNPCCorpse(zombie, args)
     if not zombie then return false end
+    local md = zombie.getModData and zombie:getModData() or nil
+    if not md then return false end
+    if not (md.NPCKeepCorpse == true or md.NPCLootableCorpse == true or md.NPCCorpseFromNPCCombat == true) then return false end
+    if args and (args.forceCorpseCleanup == true or args.forceRemoveCorpse == true or args.blackMarketStaticCleanup == true) then return false end
+    local isDead = false
+    local okDead, deadValue = pcall(function() return zombie:isDead() end)
+    if okDead and deadValue == true then isDead = true end
+    local okAlive, aliveValue = pcall(function() return zombie:isAlive() end)
+    if okAlive and aliveValue == false then isDead = true end
+    return isDead == true
+end
+
+local function npcclient_removeZombieObject(zombie, args)
+    if not zombie then return false end
+    if npcclient_shouldKeepDeadNPCCorpse(zombie, args) then return false end
 
     if NPCBrainData and NPCBrainData.Remove then
         pcall(function() NPCBrainData.Remove(zombie) end)
@@ -510,7 +757,7 @@ local function npcclient_removeNPCObjectsNow(args)
                 remove = true
             end
 
-            if remove and npcclient_removeZombieObject(zombie) and runtimeId then
+            if remove and npcclient_removeZombieObject(zombie, args) and runtimeId then
                 table.insert(removed, tostring(runtimeId))
             end
         end
@@ -931,6 +1178,9 @@ end
 function NPCClientCommandBridge.MercenaryHireResult(args)
     args = args or {}
     local player = getPlayer and getPlayer() or nil
+    if args.clientTraceId ~= nil or args.serverReceiveMs ~= nil then
+        print("[NPCMercenaryTelemetry] client hire result ok=" .. tostring(args.ok == true) .. npcclient_mercTelemetryText(args, npcclient_nowMs()))
+    end
     if args.message and player and player.Say then pcall(function() player:Say(tostring(args.message)) end) end
     if args.ok ~= true then return end
     npcclient_takeMercenaryPayment(args, player)
@@ -1000,7 +1250,7 @@ local function npcclient_flushMercenaryOrderQueue()
     if type(queue) ~= "table" or #queue == 0 then return end
     if not ZSClient.MercenaryOrderQueueById then ZSClient.MercenaryOrderQueueById = {} end
 
-    local limit = 2
+    local limit = 4
     local budgetMs = 4
     local started = getTimestampMs and getTimestampMs() or 0
     local processed = 0
@@ -1052,6 +1302,7 @@ ZSClient.NPCCommands = ZSClient.Commands
     ZSClient.Commands.UpdateVehicle = NPCClientCommandBridge.UpdateVehicle
     ZSClient.Commands[NPCLegacyContractBridge.Commands.updatePart] = NPCClientCommandBridge.UpdateNPCPart
     ZSClient.Commands.MercenaryOrderBatch = NPCClientCommandBridge.MercenaryOrderBatch
+    ZSClient.Commands.MercenaryDirectOrderBatch = NPCClientCommandBridge.MercenaryDirectOrderBatch
     ZSClient.Commands.RemoveSpyPayment = NPCClientCommandBridge.RemoveSpyPayment
     ZSClient.Commands[NPCLegacyContractBridge.Commands.removeObjects] = NPCClientCommandBridge.RemoveNPCObjects
     ZSClient.Commands[NPCLegacyContractBridge.Commands.teleportObjects] = NPCClientCommandBridge.TeleportNPCObjects

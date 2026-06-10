@@ -175,6 +175,21 @@ local function npcc_isBadSkinTexture(name)
     return not npcc_isKnownHumanSkinTexture(name)
 end
 
+local function npcc_isBadSkinColor(color)
+    if type(color) ~= "table" then return true end
+    local r = tonumber(color.r)
+    local g = tonumber(color.g)
+    local b = tonumber(color.b)
+    if not r or not g or not b then return true end
+    if r < 0.18 or g < 0.12 or b < 0.08 or r > 1.0 or g > 1.0 or b > 1.0 then return true end
+    if g > r + 0.08 and g > b + 0.06 then return true end
+    if b > r + 0.12 then return true end
+    local maxc = math.max(r, math.max(g, b))
+    local minc = math.min(r, math.min(g, b))
+    if maxc < 0.55 and (maxc - minc) < 0.055 then return true end
+    return false
+end
+
 local function npcc_skinTextureFor(seed, female)
     seed = math.abs(math.floor(tonumber(seed) or 0))
     if female == true then
@@ -263,7 +278,7 @@ function NPCCreatorBridge.ApplyHumanFacePresetToMember(member, zombie, force)
     member.faceProfile = preset.faceProfile
     if member.female == nil then member.female = preset.female end
     if needsPreset or npcc_isBadSkinTexture(member.skinTexture) then member.skinTexture = preset.skinTexture end
-    if needsPreset or type(member.skinColor) ~= "table" then member.skinColor = preset.skinColor end
+    if needsPreset or npcc_isBadSkinColor(member.skinColor) then member.skinColor = preset.skinColor end
     if needsPreset or not member.hairStyle or member.hairStyle == "" then member.hairStyle = preset.hairStyle end
     if needsPreset or type(member.hairColor) ~= "table" then member.hairColor = preset.hairColor end
     if needsPreset or member.beardStyle == nil then member.beardStyle = preset.beardStyle end
@@ -295,7 +310,7 @@ function NPCCreatorBridge.ApplyHumanFacePresetToBrain(brain, zombie, member, for
     brain.faceProfile = preset.faceProfile
     brain.female = source.female == true
     if needsPreset or npcc_isBadSkinTexture(brain.skinTexture) then brain.skinTexture = preset.skinTexture end
-    if needsPreset or type(brain.skinColor) ~= "table" then brain.skinColor = preset.skinColor end
+    if needsPreset or npcc_isBadSkinColor(brain.skinColor) then brain.skinColor = preset.skinColor end
     if needsPreset or not brain.hairStyle or brain.hairStyle == "" then brain.hairStyle = preset.hairStyle end
     if needsPreset or type(brain.hairColor) ~= "table" then brain.hairColor = preset.hairColor end
     if needsPreset or brain.beardStyle == nil then brain.beardStyle = preset.beardStyle end
@@ -611,7 +626,8 @@ function NPCCreatorBridge.GetFirearmWeightedWave(wave)
     local rifleChance = tonumber(wave.hasRifleChance) or 0
     local pistolChance = tonumber(wave.hasPistolChance) or 0
 
-    -- Respect explicit melee-only scenes/configs, but make armed waves much more firearm-heavy.
+    -- Respect explicit melee-only scenes/configs. Firearms integrations should widen the
+    -- weapon pool, not turn every low-tier civilian/neutral wave into an LMG squad.
     if rifleChance <= 0 and pistolChance <= 0 then return wave end
 
     local weighted = {}
@@ -619,12 +635,138 @@ function NPCCreatorBridge.GetFirearmWeightedWave(wave)
         weighted[k] = v
     end
 
-    weighted.hasRifleChance = math.max(rifleChance, 78)
-    weighted.hasPistolChance = math.max(pistolChance, 72)
-    weighted.rifleMagCount = math.max(tonumber(wave.rifleMagCount) or 0, 4)
-    weighted.pistolMagCount = math.max(tonumber(wave.pistolMagCount) or 0, 4)
+    local elite = wave.eliteLoadout == true or wave.mercenaryElite == true or rifleChance >= 90 or (tonumber(wave.rifleMagCount) or 0) >= 5
+    if elite then
+        weighted.hasRifleChance = math.max(rifleChance, 88)
+        weighted.hasPistolChance = math.max(pistolChance, 68)
+        weighted.rifleMagCount = math.max(tonumber(wave.rifleMagCount) or 0, 4)
+        weighted.pistolMagCount = math.max(tonumber(wave.pistolMagCount) or 0, 3)
+    elseif rifleChance >= 35 or pistolChance >= 55 then
+        weighted.hasRifleChance = math.max(rifleChance, 52)
+        weighted.hasPistolChance = math.max(pistolChance, 58)
+        weighted.rifleMagCount = math.max(tonumber(wave.rifleMagCount) or 0, 2)
+        weighted.pistolMagCount = math.max(tonumber(wave.pistolMagCount) or 0, 3)
+    else
+        weighted.hasRifleChance = math.max(rifleChance, 18)
+        weighted.hasPistolChance = math.max(pistolChance, 38)
+        weighted.rifleMagCount = math.max(tonumber(wave.rifleMagCount) or 0, 1)
+        weighted.pistolMagCount = math.max(tonumber(wave.pistolMagCount) or 0, 2)
+    end
 
     return weighted
+end
+
+local function npcc_weaponName(weapon)
+    if type(weapon) == "table" then return tostring(weapon.name or "") end
+    return tostring(weapon or "")
+end
+
+local function npcc_weaponMagName(weapon)
+    if type(weapon) ~= "table" then return "" end
+    return tostring(weapon.magName or weapon.magazine or weapon.mag or "")
+end
+
+local function npcc_weaponMagSize(weapon)
+    if type(weapon) ~= "table" then return 0 end
+    return tonumber(weapon.magSize or weapon.clipSize or weapon.maxAmmo) or 0
+end
+
+function NPCCreatorBridge.FirearmSpawnTier(weapon)
+    local name = string.lower(npcc_weaponName(weapon))
+    local magName = string.lower(npcc_weaponMagName(weapon))
+    local magSize = npcc_weaponMagSize(weapon)
+    if name == "" then return "common" end
+
+    if magSize >= 75
+        or string.find(name, "lmg", 1, true)
+        or string.find(name, "m249", 1, true)
+        or string.find(name, "m240", 1, true)
+        or string.find(name, "mg42", 1, true)
+        or string.find(name, "m60", 1, true)
+        or string.find(name, "mk43", 1, true)
+        or string.find(name, "pkm", 1, true)
+        or string.find(name, "rpd", 1, true)
+        or string.find(name, "shrike", 1, true)
+        or string.find(magName, "belt", 1, true) then
+        return "heavy"
+    end
+
+    if string.find(name, "m40", 1, true)
+        or string.find(name, "psg", 1, true)
+        or string.find(name, "msg", 1, true)
+        or string.find(name, "sniper", 1, true)
+        or string.find(name, "338", 1, true)
+        or string.find(magName, "308", 1, true)
+        or string.find(magName, "762x54", 1, true) then
+        return "marksman"
+    end
+
+    if string.find(name, "shotgun", 1, true)
+        or string.find(name, "moss", 1, true)
+        or string.find(name, "sxs", 1, true)
+        or string.find(magName, "shotgun", 1, true) then
+        return "shotgun"
+    end
+
+    if string.find(name, "22", 1, true)
+        or string.find(magName, "22", 1, true)
+        or string.find(name, "pcc", 1, true)
+        or string.find(name, "carbine", 1, true) then
+        return "civilian"
+    end
+
+    if magSize >= 35 then return "highcap" end
+    return "common"
+end
+
+local function npcc_firearmSpawnWeight(weapon, wave, slot)
+    local tier = NPCCreatorBridge.FirearmSpawnTier(weapon)
+    local rifleChance = tonumber(wave and wave.hasRifleChance) or 0
+    local elite = wave and (wave.eliteLoadout == true or wave.mercenaryElite == true or rifleChance >= 90 or (tonumber(wave.rifleMagCount) or 0) >= 5)
+
+    if slot == "secondary" then
+        if tier == "heavy" then return elite and 2 or 0 end
+        if tier == "marksman" then return elite and 4 or 1 end
+        if tier == "highcap" then return elite and 12 or 6 end
+        return 18
+    end
+
+    if tier == "heavy" then return elite and 4 or 1 end
+    if tier == "marksman" then return elite and 8 or 3 end
+    if tier == "highcap" then return elite and 12 or 5 end
+    if tier == "shotgun" then return elite and 10 or 13 end
+    if tier == "civilian" then return elite and 8 or 26 end
+    return elite and 18 or 14
+end
+
+function NPCCreatorBridge.PickBalancedFirearm(pool, wave, slot)
+    if type(pool) ~= "table" or #pool <= 0 then return nil end
+
+    local total = 0
+    local weights = {}
+    for i = 1, #pool do
+        local weight = tonumber(npcc_firearmSpawnWeight(pool[i], wave, slot)) or 0
+        if weight > 0 then
+            total = total + weight
+            weights[i] = weight
+        end
+    end
+
+    if total <= 0 then
+        return NPCUtils and NPCUtils.Choice and NPCUtils.Choice(pool) or pool[1]
+    end
+
+    local roll = ZombRand(total) + 1
+    local cursor = 0
+    for i = 1, #pool do
+        local weight = weights[i]
+        if weight and weight > 0 then
+            cursor = cursor + weight
+            if roll <= cursor then return pool[i] end
+        end
+    end
+
+    return pool[#pool]
 end
 
 function NPCCreatorBridge.MakeWeapons(wave, clan)
@@ -656,7 +798,7 @@ function NPCCreatorBridge.MakeWeapons(wave, clan)
     weapons.primary.magCount = 0
     local rifleRandom = ZombRandFloat(0, 101)
     if primaryPool and #primaryPool > 0 and rifleRandom < (wave.hasRifleChance or 0) then
-        weapons.primary = NPCCreatorBridge.CopyWeapon(NPCUtils.Choice(primaryPool))
+        weapons.primary = NPCCreatorBridge.CopyWeapon(NPCCreatorBridge.PickBalancedFirearm(primaryPool, wave, "primary"))
         weapons.primary.magCount = wave.rifleMagCount or 0
     end
 
@@ -668,7 +810,7 @@ function NPCCreatorBridge.MakeWeapons(wave, clan)
     weapons.secondary.magCount = 0
     local pistolRandom = ZombRandFloat(0, 101)
     if secondaryPool and #secondaryPool > 0 and pistolRandom < (wave.hasPistolChance or 0) then
-        weapons.secondary = NPCCreatorBridge.CopyWeapon(NPCUtils.Choice(secondaryPool))
+        weapons.secondary = NPCCreatorBridge.CopyWeapon(NPCCreatorBridge.PickBalancedFirearm(secondaryPool, wave, "secondary"))
         weapons.secondary.magCount = wave.pistolMagCount or 0
     end
 

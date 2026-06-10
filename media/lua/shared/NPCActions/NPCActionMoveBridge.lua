@@ -137,7 +137,14 @@ end
 NPCActionMoveBridge.OnStart = function(zombie, task)
     if not IsMoveTaskValid(zombie, task) then return true end
     if NPCMovementStabilityBridge and NPCMovementStabilityBridge.Prepare then
-        NPCMovementStabilityBridge.Prepare(zombie, task, "Move")
+        if NPCMovementStabilityBridge.Prepare(zombie, task, "Move") == false then
+            if NPCMovementStabilityBridge.CancelPreparedTask then
+                NPCMovementStabilityBridge.CancelPreparedTask(zombie, task, task._bms and task._bms.cancelReason or "movement intent denied")
+            elseif NPCEntity and NPCEntity.RemoveTask then
+                NPCEntity.RemoveTask(zombie)
+            end
+            return false
+        end
     end
     NormalizeWalkType(zombie, task)
     BeginMotion(zombie, task)

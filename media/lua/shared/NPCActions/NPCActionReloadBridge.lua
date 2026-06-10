@@ -1,5 +1,6 @@
 NPCActionReloadBridge = NPCActionReloadBridge or {}
 require "NPCCore/NPCLegacyGlobalsBridge"
+require "NPCCore/NPCPersistentNPCBridge"
 
 local NPC_ACTION_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
 NPCEntity = NPCEntity or NPC_ACTION_LEGACY_GLOBALS.Get("Entity")
@@ -56,9 +57,35 @@ function NPCActionReloadBridge.OnComplete(zombie, task)
     local weapon = getWeaponForSlot(brain, task)
 
     if weapon then
-        weapon.bulletsLeft = weapon.magSize
-        weapon.magCount = (weapon.magCount or 0) - 1
+        local magSize = tonumber(weapon.magSize) or 0
+        if magSize <= 0 then magSize = (task and task.slot == "secondary") and 15 or 30; weapon.magSize = magSize end
+        local magCount = tonumber(weapon.magCount) or 0
+        if magCount <= 0 and weapon.stage448AmmoBoost == true then
+            weapon.magCount = (task and task.slot == "secondary") and 8 or 12
+            magCount = tonumber(weapon.magCount) or 0
+        end
+        weapon.bulletsLeft = magSize
+        weapon.magCount = math.max(0, magCount - 1)
         refreshDeathItems(zombie)
+
+        if NPCEntity and NPCEntity.ForceSyncPart and brain and brain.id then
+            local payload = {id=brain.id, weapons=brain.weapons}
+            if NPCPersistentNPCBridge and NPCPersistentNPCBridge.BuildAmmoLite then
+                local okAmmo, ammo = pcall(function() return NPCPersistentNPCBridge.BuildAmmoLite(zombie, brain) end)
+                if okAmmo then
+                    brain.ammo = ammo
+                    payload.ammo = ammo
+                end
+            end
+            if NPCPersistentNPCBridge and NPCPersistentNPCBridge.BuildCurrentWeapon then
+                local okWeapon, currentWeapon = pcall(function() return NPCPersistentNPCBridge.BuildCurrentWeapon(zombie, brain) end)
+                if okWeapon then
+                    brain.currentWeapon = currentWeapon
+                    payload.currentWeapon = currentWeapon
+                end
+            end
+            NPCEntity.ForceSyncPart(zombie, payload)
+        end
     end
 
     return true

@@ -85,6 +85,36 @@ local function bcv_dist(x1, y1, x2, y2)
     return math.sqrt(dx * dx + dy * dy)
 end
 
+local function bcv_clamp(value, minValue, maxValue)
+    value = tonumber(value) or 0
+    if minValue ~= nil and value < minValue then value = minValue end
+    if maxValue ~= nil and value > maxValue then value = maxValue end
+    return value
+end
+
+local function bcv_moveToward(x, y, tx, ty, step)
+    x = tonumber(x) or 0
+    y = tonumber(y) or 0
+    tx = tonumber(tx) or x
+    ty = tonumber(ty) or y
+    step = math.max(0, tonumber(step) or 0)
+    local dx = tx - x
+    local dy = ty - y
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist <= 0.001 or step <= 0 then return x, y, dist end
+    if dist <= step then return tx, ty, 0 end
+    local p = step / dist
+    return x + dx * p, y + dy * p, dist - step
+end
+
+local function bcv_roadRoutingEnabled()
+    return bcv_bool("Convoy_RoadRoutingEnabled", true)
+end
+
+local function bcv_physicalEnabled()
+    return bcv_bool("Convoy_PhysicalEnabled", true)
+end
+
 local function bcv_side(value)
     if NPCFactionBridge and NPCFactionBridge.NormalizeSide then
         local side = NPCFactionBridge.NormalizeSide(value)
@@ -187,6 +217,25 @@ end
 
 function NPCConvoysBridge.IsEnabled()
     return bcv_bool("Convoy_Enabled", true)
+end
+
+function NPCConvoysBridge.IsPhysicalEnabled()
+    return bcv_physicalEnabled()
+end
+
+function NPCConvoysBridge.RoadRoutingEnabled()
+    return bcv_roadRoutingEnabled()
+end
+
+function NPCConvoysBridge.PhysicalSpawnDistance()
+    return bcv_num("Convoy_PhysicalSpawnDistance", 96, 24, 420)
+end
+
+function NPCConvoysBridge.PhysicalGuardRange()
+    local minCount = math.floor(bcv_num("Convoy_PhysicalGuardMin", 2, 0, 16))
+    local maxCount = math.floor(bcv_num("Convoy_PhysicalGuardMax", 5, minCount, 24))
+    if maxCount < minCount then maxCount = minCount end
+    return minCount, maxCount
 end
 
 function NPCConvoysBridge.NowHours()
@@ -391,7 +440,13 @@ function NPCConvoysBridge.CreateFromBase(gmd, player, base, objective)
         createdAt = now,
         updatedAt = now,
         expiresAt = now + bcv_num("Convoy_ExpireHours", 18, 1, 168),
-        speedTilesPerHour = bcv_num("Convoy_MoveSpeedTilesPerHour", 92, 5, 600)
+        speedTilesPerHour = bcv_num("Convoy_MoveSpeedTilesPerHour", 92, 5, 600),
+        routeMode = bcv_roadRoutingEnabled() and "road_corridor" or "direct",
+        routeX = startX,
+        routeY = startY,
+        lastRoadStepAt = now,
+        physicalEnabled = bcv_physicalEnabled(),
+        physicalState = "virtual"
     }
 
     if objective == "escort" then
@@ -408,6 +463,72 @@ function NPCConvoysBridge.CreateFromBase(gmd, player, base, objective)
     return convoy, nil
 end
 
+local function bcv_updateConvoyProgress(convoy)
+    local distance = tonumber(convoy.distance) or bcv_dist(convoy.originX, convoy.originY, convoy.destX, convoy.destY)
+    if distance < 1 then distance = 1 end
+    local remaining = bcv_dist(convoy.x, convoy.y, convoy.destX, convoy.destY)
+    convoy.progress = bcv_clamp(1.0 - (remaining / distance), 0, 1)
+end
+
+local function bcv_advanceConvoy(convoy, dt)
+    if type(convoy) ~= "table" then return end
+    local distance = tonumber(convoy.distance) or bcv_dist(convoy.originX, convoy.originY, convoy.destX, convoy.destY)
+    if distance < 1 then distance = 1 end
+    local speed = tonumber(convoy.speedTilesPerHour) or bcv_num("Convoy_MoveSpeedTilesPerHour", 92, 5, 600)
+    local step = math.max(0, speed * (tonumber(dt) or 0))
+    if step <= 0 then
+        bcv_updateConvoyProgress(convoy)
+        return
+    end
+
+    local x = tonumber(convoy.x) or tonumber(convoy.originX) or 0
+    local y = tonumber(convoy.y) or tonumber(convoy.originY) or 0
+    local destX = tonumber(convoy.destX) or x
+    local destY = tonumber(convoy.destY) or y
+    local remaining = bcv_dist(x, y, destX, destY)
+    if remaining <= step or remaining <= bcv_num("Convoy_InteractionRadius", 28, 2, 200) * 0.35 then
+        convoy.x = destX
+        convoy.y = destY
+        convoy.z = tonumber(convoy.destZ) or tonumber(convoy.z) or 0
+        convoy.progress = 1
+        return
+    end
+
+    local targetX, targetY = destX, destY
+    local usedRoadStep = false
+    if bcv_roadRoutingEnabled() and NPCRoadNavBridge and NPCRoadNavBridge.FindNearbyWorldRoadStepToward then
+        local radius = math.max(80, math.min(260, step * 8.0))
+        local attempts = math.floor(bcv_num("Convoy_RoadStepAttempts", 38, 4, 160))
+        local road = nil
+        local okRoad, gotRoad = pcall(function()
+            return NPCRoadNavBridge.FindNearbyWorldRoadStepToward(x, y, destX, destY, radius, attempts)
+        end)
+        if okRoad and gotRoad and gotRoad.x and gotRoad.y then
+            local roadDistToDest = bcv_dist(gotRoad.x, gotRoad.y, destX, destY)
+            if roadDistToDest <= remaining + 72 then
+                targetX = tonumber(gotRoad.x) or targetX
+                targetY = tonumber(gotRoad.y) or targetY
+                usedRoadStep = true
+            end
+        elseif NPCRoadNavBridge.IsRoadCorridorSegment then
+            local okCorridor, corridor = pcall(function() return NPCRoadNavBridge.IsRoadCorridorSegment(x, y, destX, destY, 11) end)
+            if okCorridor and corridor == true then
+                usedRoadStep = true
+            end
+        end
+    end
+
+    local nx, ny = bcv_moveToward(x, y, targetX, targetY, step)
+    convoy.x = nx
+    convoy.y = ny
+    convoy.z = tonumber(convoy.z) or tonumber(convoy.originZ) or 0
+    convoy.routeX = targetX
+    convoy.routeY = targetY
+    convoy.routeMode = usedRoadStep and "road_corridor" or "direct_fallback"
+    convoy.lastRoadStepAt = bcv_now()
+    bcv_updateConvoyProgress(convoy)
+end
+
 function NPCConvoysBridge.Tick(gmd)
     local data = NPCConvoysBridge.EnsureData(gmd)
     if not data then return {} end
@@ -421,16 +542,7 @@ function NPCConvoysBridge.Tick(gmd)
             if dt < 0 then dt = 0 end
             convoy.updatedAt = now
 
-            local distance = tonumber(convoy.distance) or bcv_dist(convoy.originX, convoy.originY, convoy.destX, convoy.destY)
-            if distance < 1 then distance = 1 end
-            local speed = tonumber(convoy.speedTilesPerHour) or bcv_num("Convoy_MoveSpeedTilesPerHour", 92, 5, 600)
-            convoy.progress = (tonumber(convoy.progress) or 0) + ((speed * dt) / distance)
-            if convoy.progress > 1 then convoy.progress = 1 end
-
-            local p = convoy.progress
-            convoy.x = (tonumber(convoy.originX) or 0) + ((tonumber(convoy.destX) or 0) - (tonumber(convoy.originX) or 0)) * p
-            convoy.y = (tonumber(convoy.originY) or 0) + ((tonumber(convoy.destY) or 0) - (tonumber(convoy.originY) or 0)) * p
-            convoy.z = tonumber(convoy.originZ) or tonumber(convoy.destZ) or 0
+            bcv_advanceConvoy(convoy, dt)
 
             if now >= (tonumber(convoy.expiresAt) or (now + 1)) then
                 convoy.status = "expired"
@@ -541,33 +653,136 @@ function NPCConvoysBridge.CompleteEscort(gmd, player)
     return convoy, nil
 end
 
+local BCV_ITEM_POOLS = {
+    food = {"Base.CannedChili", "Base.CannedCorn", "Base.CannedCornedBeef"},
+    medical = {"Base.Bandage", "Base.AlcoholWipes", "Base.Disinfectant", "Base.PillsPainkillers"},
+    ammo = {"Base.Bullets9mmBox", "Base.ShotgunShellsBox", "Base.Bullets45Box"},
+    fuel = {"Base.PetrolCan"},
+    materials = {"Base.Nails", "Base.NailsBox", "Base.Plank"},
+    weapons = {"Base.KitchenKnife", "Base.Axe", "Base.Pistol"},
+    armor = {"Base.Vest_BulletPolice"},
+    magazines = {"Base.9mmClip", "Base.45Clip"}
+}
+
+local BCV_CARGO_CONTAINERS = {
+    medical = {"Base.FirstAidKit", "Base.Bag_Satchel", "Base.Plasticbag"},
+    ammo = {"Base.Bag_DuffelBag", "Base.Bag_Satchel", "Base.Plasticbag"},
+    weapons = {"Base.Bag_DuffelBag", "Base.Bag_Satchel", "Base.Plasticbag"},
+    armor = {"Base.Bag_DuffelBag", "Base.Bag_Satchel", "Base.Plasticbag"},
+    fuel = {"Base.Bag_DuffelBag", "Base.Plasticbag"},
+    default = {"Base.Bag_DuffelBag", "Base.Bag_Satchel", "Base.Plasticbag"}
+}
+
+local function bcv_inventoryItem(fullType)
+    if not (InventoryItemFactory and InventoryItemFactory.CreateItem and fullType) then return nil end
+    local ok, item = pcall(function() return InventoryItemFactory.CreateItem(fullType) end)
+    if ok then return item end
+    return nil
+end
+
+local function bcv_addItemToInventory(inv, fullType)
+    if not (inv and inv.AddItem and fullType) then return false end
+    local ok = pcall(function() inv:AddItem(fullType) end)
+    return ok == true
+end
+
+local function bcv_addCargoItems(inv, resource, amount, maxSetting)
+    if not inv then return 0 end
+    local pool = BCV_ITEM_POOLS[tostring(resource or "")] or BCV_ITEM_POOLS.food
+    local maxItems = bcv_num(maxSetting or "Convoy_MaxLootItems", 8, 1, 80)
+    local count = math.max(1, math.min(tonumber(amount) or 1, maxItems))
+    local added = 0
+    for _ = 1, count do
+        local fullType = pool[1 + bcv_rand(#pool)] or pool[1]
+        if bcv_addItemToInventory(inv, fullType) then added = added + 1 end
+    end
+    return added
+end
+
+local function bcv_playerSquare(player)
+    if not (player and getCell) then return nil end
+    local z = player.getZ and player:getZ() or 0
+    local x = player.getX and player:getX() or 0
+    local y = player.getY and player:getY() or 0
+    local cell = getCell()
+    if not cell or not cell.getGridSquare then return nil end
+    local ok, square = pcall(function() return cell:getGridSquare(math.floor(x), math.floor(y), math.floor(z)) end)
+    if ok then return square end
+    return nil
+end
+
+local function bcv_markCargoItem(item, convoy, reason)
+    if not (item and item.getModData and convoy) then return end
+    local ok, md = pcall(function() return item:getModData() end)
+    if not (ok and type(md) == "table") then return end
+    md.convoyCargo = true
+    md.convoyId = tostring(convoy.id or "")
+    md.convoyObjective = convoy.objective
+    md.convoySide = convoy.side
+    md.convoyCargoResource = convoy.cargoResource
+    md.convoyCargoAmount = convoy.cargoAmount
+    md.convoyCargoReason = reason or "cargo"
+    md.factionSide = convoy.side
+    md.worldNameplate = true
+    if item.setName then pcall(function() item:setName("Convoy " .. tostring(convoy.cargoLabel or convoy.cargoResource or "Cargo")) end) end
+    if item.transmitModData then pcall(function() item:transmitModData() end) end
+end
+
+function NPCConvoysBridge.PlaceCargoDropForPlayer(gmd, player, convoy, reason)
+    if not (player and convoy and bcv_bool("Convoy_PhysicalCargoOnRaid", true)) then return 0 end
+    local square = bcv_playerSquare(player)
+    if not (square and square.AddWorldInventoryItem) then return 0 end
+    local containers = BCV_CARGO_CONTAINERS[tostring(convoy.cargoResource or "")] or BCV_CARGO_CONTAINERS.default
+    local container = nil
+    for _, fullType in ipairs(containers) do
+        container = bcv_inventoryItem(fullType)
+        if container then break end
+    end
+    if not container then return 0 end
+
+    local inv = nil
+    if container.getInventory then
+        local okInv, gotInv = pcall(function() return container:getInventory() end)
+        if okInv then inv = gotInv end
+    end
+    local added = bcv_addCargoItems(inv, convoy.cargoResource, convoy.cargoAmount, "Convoy_PhysicalCargoMaxItems")
+    bcv_markCargoItem(container, convoy, reason)
+
+    local ox = 0.30 + (bcv_rand(35) / 100.0)
+    local oy = 0.30 + (bcv_rand(35) / 100.0)
+    local okWorld, worldItem = pcall(function() return square:AddWorldInventoryItem(container, ox, oy, 0) end)
+    if not okWorld or not worldItem then return 0 end
+    convoy.physicalCargo = true
+    convoy.physicalCargoReason = reason or "cargo"
+    convoy.physicalCargoAt = bcv_now()
+    convoy.physicalCargoX = player.getX and player:getX() or convoy.x
+    convoy.physicalCargoY = player.getY and player:getY() or convoy.y
+    convoy.physicalCargoItems = added
+    if gmd then
+        local data = NPCConvoysBridge.EnsureData(gmd)
+        if data then
+            data.physicalCargo = data.physicalCargo or {}
+            data.physicalCargo[tostring(convoy.id or "")] = {
+                convoyId = tostring(convoy.id or ""),
+                reason = reason or "cargo",
+                x = convoy.physicalCargoX,
+                y = convoy.physicalCargoY,
+                z = player.getZ and player:getZ() or 0,
+                items = added,
+                createdAt = convoy.physicalCargoAt
+            }
+        end
+    end
+    return added
+end
+
 local function bcv_givePlayerLoot(player, resource, amount)
     if not player or not player.getInventory then return 0 end
     local inv = nil
     local okInv, got = pcall(function() return player:getInventory() end)
     if okInv then inv = got end
     if not inv or not inv.AddItem then return 0 end
-
-    local itemPools = {
-        food = {"Base.CannedChili", "Base.CannedCorn", "Base.CannedCornedBeef"},
-        medical = {"Base.Bandage", "Base.AlcoholWipes"},
-        ammo = {"Base.Bullets9mmBox", "Base.ShotgunShellsBox", "Base.Bullets45Box"},
-        fuel = {"Base.PetrolCan"},
-        materials = {"Base.Nails", "Base.NailsBox", "Base.Plank"},
-        weapons = {"Base.KitchenKnife", "Base.Axe", "Base.Pistol"},
-        armor = {"Base.Vest_BulletPolice"},
-        magazines = {"Base.9mmClip", "Base.45Clip"}
-    }
-
-    local pool = itemPools[tostring(resource or "")] or itemPools.food
-    local added = 0
-    local count = math.max(1, math.min(tonumber(amount) or 1, bcv_num("Convoy_MaxLootItems", 8, 1, 80)))
-    for i = 1, count do
-        local fullType = pool[1 + bcv_rand(#pool)] or pool[1]
-        local ok = pcall(function() inv:AddItem(fullType) end)
-        if ok then added = added + 1 end
-    end
-    return added
+    return bcv_addCargoItems(inv, resource, amount, "Convoy_MaxLootItems")
 end
 
 function NPCConvoysBridge.RaidConvoy(gmd, player, convoyId)
@@ -591,7 +806,13 @@ function NPCConvoysBridge.RaidConvoy(gmd, player, convoyId)
         return convoy, "failed"
     end
 
-    local lootCount = bcv_givePlayerLoot(player, convoy.cargoResource, convoy.cargoAmount)
+    local lootCount = 0
+    if bcv_bool("Convoy_PhysicalCargoOnRaid", true) then
+        lootCount = NPCConvoysBridge.PlaceCargoDropForPlayer(gmd, player, convoy, "raided")
+    end
+    if lootCount <= 0 then
+        lootCount = bcv_givePlayerLoot(player, convoy.cargoResource, convoy.cargoAmount)
+    end
     convoy.status = "raided"
     convoy.completedAt = bcv_now()
     convoy.raidedBy = tostring(bcv_playerId(player) or "")
@@ -624,6 +845,10 @@ function NPCConvoysBridge.MakeMarker(convoy)
         cargoLabel = convoy.cargoLabel,
         cargoAmount = convoy.cargoAmount,
         progress = convoy.progress,
+        routeMode = convoy.routeMode,
+        physicalState = convoy.physicalState,
+        physicalGuardGroupId = convoy.physicalGuardGroupId,
+        physicalCargo = convoy.physicalCargo == true,
         targetName = convoy.targetName,
         originName = convoy.originName,
         playerId = convoy.playerId,

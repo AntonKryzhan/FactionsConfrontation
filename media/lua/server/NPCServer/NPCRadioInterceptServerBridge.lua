@@ -2,11 +2,13 @@
 -- Neutral server backend for player-facing radio scan commands and passive monitoring.
 -- Server command layer for player-facing radio scans.
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCLegacyGlobalsBridge"
 require "NPCCore/NPCRadioInterceptBridge"
+require "NPCCore/NPCIntelDossierBridge"
+require "NPCCore/NPCHeatWantedBridge"
 
 NPCRadioInterceptServerBridge = NPCRadioInterceptServerBridge or {}
 
@@ -55,6 +57,13 @@ local function bris_finishScan(player, gmd, data, msg, metrics)
     if NPCRadioInterceptBridge.RegisterCounterIntelExposure then
         counterIntel = NPCRadioInterceptBridge.RegisterCounterIntelExposure(gmd, player, msg, metrics, "scan")
     end
+    local heatWanted = nil
+    if NPCHeatWantedBridge and NPCHeatWantedBridge.ReportRadioScan then
+        heatWanted = NPCHeatWantedBridge.ReportRadioScan(gmd, player, msg, metrics, "radio_scan")
+        if heatWanted and NPCHeatWantedServerBridge and NPCHeatWantedServerBridge.AfterHeatChanged then
+            NPCHeatWantedServerBridge.AfterHeatChanged(player, heatWanted)
+        end
+    end
     NPCRadioInterceptBridge.AddHistory(gmd, player, msg)
     data.stats.scans = (tonumber(data.stats.scans) or 0) + 1
     if msg and msg.encrypted then data.stats.encrypted = (tonumber(data.stats.encrypted) or 0) + 1 end
@@ -68,6 +77,11 @@ local function bris_finishScan(player, gmd, data, msg, metrics)
         end
     end
 
+    local dossierResult = nil
+    if msg and msg.decoded ~= false and not msg.falseSignal and NPCIntelDossierBridge and NPCIntelDossierBridge.GrantFromRadio then
+        dossierResult = NPCIntelDossierBridge.GrantFromRadio(gmd, player, msg, metrics, "radio_scan")
+    end
+
     local markerAdded = false
     if msg and msg.decoded ~= false and NPCRadioInterceptBridge.AddIntelMarker then
         markerAdded = NPCRadioInterceptBridge.AddIntelMarker(gmd, player, msg, metrics) == true
@@ -79,6 +93,8 @@ local function bris_finishScan(player, gmd, data, msg, metrics)
     end
     local text = msg and msg.text or "Only static on this frequency."
     if markerAdded then text = text .. " Map marker added." end
+    if dossierResult and dossierResult.text then text = text .. " " .. tostring(dossierResult.text) end
+    if heatWanted and heatWanted.levelChanged and heatWanted.level > heatWanted.oldLevel then text = text .. " Heat L" .. tostring(heatWanted.level) .. "." end
     if counterIntel and counterIntel.text then text = text .. " " .. tostring(counterIntel.text) end
     bris_halo(player, prefix .. ": " .. tostring(text), 180, 230, 255)
     TransmitNPCModData()
@@ -252,12 +268,17 @@ local function bris_monitorTick()
                     local rec = factionDocs.GrantPassword(gmd, player, msg.side, "radio_monitor", 8)
                     if rec then data.stats.passwordLeaks = (tonumber(data.stats.passwordLeaks) or 0) + 1 end
                 end
+                local dossierResult = nil
+                if msg.decoded ~= false and not msg.falseSignal and NPCIntelDossierBridge and NPCIntelDossierBridge.GrantFromRadio then
+                    dossierResult = NPCIntelDossierBridge.GrantFromRadio(gmd, player, msg, metrics, "radio_monitor")
+                end
                 local markerAdded = false
                 if msg.decoded ~= false and NPCRadioInterceptBridge.AddIntelMarker then
                     markerAdded = NPCRadioInterceptBridge.AddIntelMarker(gmd, player, msg, metrics) == true
                 end
                 local text = "Radio monitor " .. string.format("%.2f MHz", tonumber(metrics.frequency) or 0) .. " S" .. tostring(metrics.signal or 0) .. " N" .. tostring(metrics.noise or 0) .. " L" .. tostring(metrics.lock or 0) .. ": " .. tostring(msg.text or "transmission")
                 if markerAdded then text = text .. " Map marker added." end
+                if dossierResult and dossierResult.text then text = text .. " " .. tostring(dossierResult.text) end
                 if counterIntel and counterIntel.text then text = text .. " " .. tostring(counterIntel.text) end
                 bris_halo(player, text, 180, 230, 255)
                 changed = true

@@ -82,8 +82,16 @@ function NPCActionZombifyBridge.OnComplete(zombie, task)
 
     local brain = getBrain(zombie)
     local persistentId, worldGroupId = getPersistentNpcIds(zombie, brain)
-    if persistentId or worldGroupId then
-        removePersistentNpc(zombie)
+    if persistentId or worldGroupId or (brain and (brain.uid or brain.wounded == true or brain.mercenaryHired == true)) then
+        if brain then
+            brain.infection = 0
+            brain.zombifyBlocked = true
+            if NPCBrainData and NPCBrainData.Update then pcall(function() NPCBrainData.Update(zombie, brain) end) end
+        end
+        pcall(function() zombie:setVariable(NPC_ACTION_ZOMBIFY_LEGACY_KEYS.liveFlag, true) end)
+        pcall(function() zombie:setVariable(NPC_ACTION_ZOMBIFY_LEGACY_KEYS.formerNPCZombie, false) end)
+        pcall(function() zombie:setReanim(false) end)
+        pcall(function() zombie:setNoTeeth(false) end)
         return true
     end
 

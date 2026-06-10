@@ -410,6 +410,50 @@ function NPCContractsBridge.BuildReconContract(gmd, player, base)
     return contract
 end
 
+function NPCContractsBridge.BuildRecoverContract(gmd, player, base)
+    if not gmd or not player or not base then return nil end
+    if not bc_bool("Contract_RecoverEnabled", true) then return nil end
+    local candidates = bc_collectReconCandidates(gmd, player, base)
+    local target = bc_pickCandidate(candidates)
+    if not target then return nil end
+
+    local id = bc_nextId(gmd)
+    local pid = bc_playerId(player)
+    local radius = bc_num("Contract_PhysicalCompleteRadius", 18, 5, 80)
+    local title = "Recover: intel package"
+    local contract = {
+        id = "CONTRACT_" .. tostring(id),
+        markerId = "CONTRACT_MARKER_" .. tostring(id),
+        type = "recover",
+        status = "active",
+        playerId = pid,
+        playerName = bc_playerName(player),
+        side = bc_baseSide(base) or bc_playerSide(player),
+        baseId = tostring(base.id or base.baseId),
+        baseName = bc_baseName(base),
+        baseX = math.floor(tonumber(base.x) or 0),
+        baseY = math.floor(tonumber(base.y) or 0),
+        baseZ = tonumber(base.z) or 0,
+        x = math.floor(tonumber(target.x) or 0),
+        y = math.floor(tonumber(target.y) or 0),
+        z = tonumber(target.z) or 0,
+        targetKind = target.kind,
+        targetName = target.name,
+        targetSide = target.side,
+        targetSourceId = target.sourceId,
+        objectiveKind = "intel_package",
+        physicalObjective = true,
+        physicalObjectiveState = "virtual",
+        completeRadius = radius,
+        rewardFavor = math.floor(bc_num("Contract_RewardFavor", 3, 0, 1000)),
+        createdAt = bc_now(),
+        expiresAt = bc_now() + bc_num("Contract_ExpireHours", 24, 1, 240),
+        title = title,
+        text = "Recover an intelligence package near suspected " .. tostring(target.kind) .. " of " .. bc_sideLabel(target.side) .. "."
+    }
+    return contract
+end
+
 function NPCContractsBridge.CreateContract(gmd, player, base, preferredType)
     if not NPCContractsBridge.CanUseBase(base, player) then return nil, "base_unavailable" end
 
@@ -420,12 +464,19 @@ function NPCContractsBridge.CreateContract(gmd, player, base, preferredType)
         contract = NPCContractsBridge.BuildSupplyContract(gmd, player, base)
     elseif preferredType == "recon" then
         contract = NPCContractsBridge.BuildReconContract(gmd, player, base)
+    elseif preferredType == "recover" or preferredType == "physical" then
+        contract = NPCContractsBridge.BuildRecoverContract(gmd, player, base)
     else
+        local recoverChance = bc_num("Contract_RecoverChance", 25, 0, 100)
+        if recoverChance > 0 and ZombRand and ZombRand(100) < recoverChance then
+            contract = NPCContractsBridge.BuildRecoverContract(gmd, player, base)
+        end
         local supplyChance = bc_num("Contract_SupplyChance", 60, 0, 100)
-        if (not ZombRand) or ZombRand(100) < supplyChance then
+        if not contract and ((not ZombRand) or ZombRand(100) < supplyChance) then
             contract = NPCContractsBridge.BuildSupplyContract(gmd, player, base)
         end
         if not contract then contract = NPCContractsBridge.BuildReconContract(gmd, player, base) end
+        if not contract then contract = NPCContractsBridge.BuildRecoverContract(gmd, player, base) end
         if not contract then contract = NPCContractsBridge.BuildSupplyContract(gmd, player, base) end
     end
 
@@ -458,6 +509,10 @@ function NPCContractsBridge.MakeMarker(contract)
         deliveredAmount = contract.deliveredAmount,
         targetKind = contract.targetKind,
         targetSide = contract.targetSide,
+        objectiveKind = contract.objectiveKind,
+        physicalObjective = contract.physicalObjective == true,
+        physicalObjectiveState = contract.physicalObjectiveState,
+        physicalObjectivePlaced = contract.physicalObjectivePlaced == true,
         completeRadius = contract.completeRadius,
         friendly = true,
         hostile = false,
@@ -530,6 +585,13 @@ function NPCContractsBridge.CanCompleteRecon(contract, player)
     return bc_dist(player:getX(), player:getY(), contract.x, contract.y) <= radius
 end
 
+function NPCContractsBridge.CanCompleteRecover(contract, player)
+    if not contract or contract.type ~= "recover" or not player then return false end
+    if not player.getX or not player.getY then return false end
+    local radius = tonumber(contract.completeRadius) or bc_num("Contract_PhysicalCompleteRadius", 18, 5, 80)
+    return bc_dist(player:getX(), player:getY(), contract.x, contract.y) <= radius
+end
+
 function NPCContractsBridge.TryCompleteActive(gmd, player)
     local contract = NPCContractsBridge.GetActive(gmd, player)
     if not contract then return nil, "no_active_contract" end
@@ -549,6 +611,13 @@ function NPCContractsBridge.TryCompleteActive(gmd, player)
             contract.completedBySpyIntel = true
         end
         NPCContractsBridge.Complete(gmd, player, contract, contract.completedBySpyIntel and "spy_recon" or "recon")
+        return contract, nil
+    elseif contract.type == "recover" then
+        if not NPCContractsBridge.CanCompleteRecover(contract, player) then
+            return contract, "too_far"
+        end
+        contract.recoveredObjective = true
+        NPCContractsBridge.Complete(gmd, player, contract, "recover")
         return contract, nil
     elseif contract.type == "supply" then
         if (tonumber(contract.deliveredAmount) or 0) >= (tonumber(contract.requiredAmount) or 1) then

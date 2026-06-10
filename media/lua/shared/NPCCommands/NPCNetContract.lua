@@ -11,6 +11,7 @@ require "NPCCore/NPCLegacyContractBridge"
 
 local NPC_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
 require "NPCCore/NPCLegacySettingsBridge"
+require "NPCCore/NPCModeCompatBridge"
 require "NPCCore/NPCStreamingRuntimeBridge"
 require "NPCCore/NPCInterestManagerBridge"
 
@@ -20,23 +21,23 @@ NPCNetContract.Enabled = NPCNetContract.Enabled ~= false
 NPCNetContract.UseDebugMapCommands = true
 NPCNetContract.DisableGMDMarkers = true
 NPCNetContract.DisableGMDVirtualGroups = true
-NPCNetContract.MarkerChunkSize = NPCNetContract.MarkerChunkSize or 32
-NPCNetContract.MaxMarkerUpdatesPerTick = NPCNetContract.MaxMarkerUpdatesPerTick or 18
+NPCNetContract.MarkerChunkSize = NPCNetContract.MarkerChunkSize or 48
+NPCNetContract.MaxMarkerUpdatesPerTick = NPCNetContract.MaxMarkerUpdatesPerTick or 24
 NPCNetContract.MaxMarkerRemovesPerTick = NPCNetContract.MaxMarkerRemovesPerTick or 24
 NPCNetContract.MaxPendingMarkerUpdates = NPCNetContract.MaxPendingMarkerUpdates or 1200
 NPCNetContract.MaxPendingMarkerRemoves = NPCNetContract.MaxPendingMarkerRemoves or 400
-NPCNetContract.MaxSnapshotChunksPerTick = NPCNetContract.MaxSnapshotChunksPerTick or 2
+NPCNetContract.MaxSnapshotChunksPerTick = NPCNetContract.MaxSnapshotChunksPerTick or 4
 NPCNetContract.MaxSnapshotMarkers = NPCNetContract.MaxSnapshotMarkers or 5000
 NPCNetContract.MaxSimStateUpdatesPerTick = NPCNetContract.MaxSimStateUpdatesPerTick or 18
 NPCNetContract.SnapshotSortByImportance = NPCNetContract.SnapshotSortByImportance ~= false
 NPCNetContract.QueuedSnapshotSync = NPCNetContract.QueuedSnapshotSync ~= false
-NPCNetContract.SyncCooldownHours = NPCNetContract.SyncCooldownHours or (5 / 3600)
+NPCNetContract.SyncCooldownHours = NPCNetContract.SyncCooldownHours or (3 / 3600)
 NPCNetContract.PayloadSanitizer = NPCNetContract.PayloadSanitizer ~= false
 NPCNetContract.MaxMarkerStringBytes = NPCNetContract.MaxMarkerStringBytes or 96
 NPCNetContract.MaxMarkerTableEntries = NPCNetContract.MaxMarkerTableEntries or 24
-NPCNetContract.MinMarkerMoveDelta = NPCNetContract.MinMarkerMoveDelta or 4
-NPCNetContract.MinMarkerIntervalHours = NPCNetContract.MinMarkerIntervalHours or 0.0015
-NPCNetContract.FarMarkerIntervalHours = NPCNetContract.FarMarkerIntervalHours or 0.006
+NPCNetContract.MinMarkerMoveDelta = NPCNetContract.MinMarkerMoveDelta or 1.25
+NPCNetContract.MinMarkerIntervalHours = NPCNetContract.MinMarkerIntervalHours or 0.00085
+NPCNetContract.FarMarkerIntervalHours = NPCNetContract.FarMarkerIntervalHours or 0.0011
 NPCNetContract.PendingMarkerUpdates = NPCNetContract.PendingMarkerUpdates or {}
 NPCNetContract.PendingMarkerRemoves = NPCNetContract.PendingMarkerRemoves or {}
 NPCNetContract.PendingMarkerQueues = NPCNetContract.PendingMarkerQueues or {high={}, normal={}, low={}}
@@ -62,6 +63,7 @@ NPCNetContract.DIRTY_REMOVE = 64
 
 local bnet_pendingQueueCount
 local bnet_dropOneQueuedMarker
+local bnet_onServerCommand
 
 local function bnet_debugMapNPCMarkers()
     return NPCDebugMapNPCMarkersBridge or NPC_LEGACY_GLOBALS.Get("DebugMapNPCMarkers")
@@ -76,12 +78,16 @@ local function bnet_priorityForMarker(lite)
     if lite.dead or lite.inBattle or lite.virtualBattle or lite.battleId then return "high" end
     if lite.wounded or lite.woundedDowned then return "high" end
     if lite.leader or lite.isFactionLeader or lite.markerType == "leader" then return "high" end
+    if lite.blackMarketDrop or lite.markerType == "black_market_drop" then return "normal" end
     if lite.blackMarket or lite.markerType == "black_market" then return "normal" end
     if lite.bounty or lite.bountyHunter or lite.markerType == "bounty" then return "high" end
+    if lite.heatWanted or lite.markerType == "heat_wanted" then return "high" end
+    if lite.counterIntelHunter then return "high" end
     if lite.spy or (tonumber(lite.spyCount) and tonumber(lite.spyCount) > 0) or lite.spyDefected then return "high" end
     if lite.mercenaryHired or lite.hired or lite.isPlayerGuard then return "high" end
     if lite.markerType == "base" and (lite.captureActive or lite.contested or lite.captureStatus == "capturing" or lite.captureStatus == "decapturing") then return "high" end
     if lite.markerType == "economy_mission" and (lite.missionState == "assaulting" or lite.missionType == "raid" or lite.missionType == "capture" or lite.missionType == "retake") then return "high" end
+    if lite.markerType == "group" and lite.virtual and not lite.active then return "normal" end
     if lite.markerType == "base_zone" or (lite.virtual and not lite.active) then return "low" end
     return "normal"
 end
@@ -104,6 +110,9 @@ local function bnet_markerImportance(lite, player)
     if lite.wounded or lite.woundedDowned then score = score + 8600 end
     if lite.leader or lite.isFactionLeader or lite.markerType == "leader" then score = score + 8500 end
     if lite.bounty or lite.bountyHunter or lite.markerType == "bounty" then score = score + 8400 end
+    if lite.heatWanted or lite.markerType == "heat_wanted" then score = score + 8380 end
+    if lite.counterIntelHunter then score = score + 8350 end
+    if lite.blackMarketDrop or lite.markerType == "black_market_drop" then score = score + 7700 end
     if lite.blackMarket or lite.markerType == "black_market" then score = score + 7600 end
     if lite.spy or (tonumber(lite.spyCount) and tonumber(lite.spyCount) > 0) or lite.spyDefected then score = score + 8200 end
     if lite.mercenaryHired or lite.hired or lite.isPlayerGuard then score = score + 7600 end
@@ -117,6 +126,8 @@ local function bnet_markerImportance(lite, player)
         score = score + 1800
         if lite.active then score = score + 1000 end
         score = score + math.min(800, (tonumber(lite.count) or 0) * 40)
+    elseif lite.markerType == "black_market_drop" then
+        score = score + 1800
     elseif lite.markerType == "base_zone" then
         score = score + 900
         if lite.zoneType == "command" then score = score + 500 end
@@ -167,6 +178,25 @@ local function bnet_nowHours()
         end
     end
     return 0
+end
+
+local function bnet_isServerRuntime()
+    if NPCModeCompatBridge and NPCModeCompatBridge.IsServerRuntime then
+        return NPCModeCompatBridge.IsServerRuntime()
+    end
+    if isClient then
+        local ok, value = pcall(function() return isClient() end)
+        if ok and value == true then return false end
+    end
+    if isServer then
+        local ok, value = pcall(function() return isServer() end)
+        if ok and value == true then return true end
+    end
+    return true
+end
+
+local function bnet_isSinglePlayerRuntime()
+    return NPCModeCompatBridge and NPCModeCompatBridge.IsSinglePlayerRuntime and NPCModeCompatBridge.IsSinglePlayerRuntime() == true
 end
 
 local function bnet_safeString(value, maxLen)
@@ -340,6 +370,29 @@ function NPCNetContract.LiteMarker(marker)
         targetId = marker.targetId,
         targetX = marker.targetX,
         targetY = marker.targetY,
+        preciseX = marker.preciseX,
+        preciseY = marker.preciseY,
+        mapMotion = marker.mapMotion,
+        mapSourceX = marker.mapSourceX,
+        mapSourceY = marker.mapSourceY,
+        mapTargetX = marker.mapTargetX,
+        mapTargetY = marker.mapTargetY,
+        mapMoveSpeed = marker.mapMoveSpeed,
+        mapUpdatedAt = marker.mapUpdatedAt,
+        mapPathKey = marker.mapPathKey,
+        mapPathCount = marker.mapPathCount,
+        mapPathX1 = marker.mapPathX1,
+        mapPathY1 = marker.mapPathY1,
+        mapPathX2 = marker.mapPathX2,
+        mapPathY2 = marker.mapPathY2,
+        mapPathX3 = marker.mapPathX3,
+        mapPathY3 = marker.mapPathY3,
+        mapPathX4 = marker.mapPathX4,
+        mapPathY4 = marker.mapPathY4,
+        mapPathX5 = marker.mapPathX5,
+        mapPathY5 = marker.mapPathY5,
+        mapPathX6 = marker.mapPathX6,
+        mapPathY6 = marker.mapPathY6,
         spawnFailed = marker.spawnFailed,
         spawnFailCount = marker.spawnFailCount,
         spawnFailReason = marker.spawnFailReason,
@@ -444,6 +497,27 @@ function NPCNetContract.LiteMarker(marker)
         bountyExpiresAt = marker.bountyExpiresAt,
         bountyTargetPlayerId = marker.bountyTargetPlayerId,
         bountyTargetPlayerName = marker.bountyTargetPlayerName,
+        heatWanted = marker.heatWanted,
+        heatWantedLevel = marker.heatWantedLevel,
+        heatWantedState = marker.heatWantedState,
+        heatWantedValue = marker.heatWantedValue,
+        heatWantedReason = marker.heatWantedReason,
+        heatWantedSide = marker.heatWantedSide,
+        heatWantedPlayerId = marker.heatWantedPlayerId,
+        heatWantedPlayerName = marker.heatWantedPlayerName,
+        counterIntelHunter = marker.counterIntelHunter,
+        counterIntelWave = marker.counterIntelWave,
+        counterIntelState = marker.counterIntelState,
+        counterIntelSide = marker.counterIntelSide,
+        counterIntelHeat = marker.counterIntelHeat,
+        counterIntelElite = marker.counterIntelElite,
+        counterIntelTargetPlayerId = marker.counterIntelTargetPlayerId,
+        counterIntelTargetPlayerName = marker.counterIntelTargetPlayerName,
+        unitLevel = marker.unitLevel,
+        unitStars = marker.unitStars,
+        eliteUnit = marker.eliteUnit,
+        worldNameplate = marker.worldNameplate,
+        displayTitle = marker.displayTitle,
         leader = marker.leader,
         isFactionLeader = marker.isFactionLeader,
         leaderId = marker.leaderId,
@@ -453,6 +527,20 @@ function NPCNetContract.LiteMarker(marker)
         leaderSide = marker.leaderSide,
         leaderState = marker.leaderState,
         leaderInfluence = marker.leaderInfluence,
+        homeBaseId = marker.homeBaseId,
+        strategicPower = marker.strategicPower,
+        combatReadiness = marker.combatReadiness,
+        supplyReadiness = marker.supplyReadiness,
+        ammoReadiness = marker.ammoReadiness,
+        moraleReadiness = marker.moraleReadiness,
+        strategicActivityType = marker.strategicActivityType,
+        strategicActivityState = marker.strategicActivityState,
+        strategicActivityTargetBaseId = marker.strategicActivityTargetBaseId,
+        strategicActivityTargetGroupId = marker.strategicActivityTargetGroupId,
+        strategicActivityLogisticsSupply = marker.strategicActivityLogisticsSupply,
+        strategicActivityLogisticsAmmo = marker.strategicActivityLogisticsAmmo,
+        strategicActivityLogisticsMorale = marker.strategicActivityLogisticsMorale,
+        directorRetargetReason = marker.directorRetargetReason,
         commanderId = marker.commanderId,
         commanderName = marker.commanderName,
         commanderSide = marker.commanderSide,
@@ -465,6 +553,29 @@ function NPCNetContract.LiteMarker(marker)
         blackMarketServices = marker.blackMarketServices,
         blackMarketSourceId = marker.blackMarketSourceId,
         blackMarketSourceType = marker.blackMarketSourceType,
+        blackMarketDrop = marker.blackMarketDrop,
+        blackMarketDeadDrop = marker.blackMarketDeadDrop,
+        blackMarketDropId = marker.blackMarketDropId,
+        blackMarketDropType = marker.blackMarketDropType,
+        blackMarketDropStatus = marker.blackMarketDropStatus,
+        blackMarketDropLabel = marker.blackMarketDropLabel,
+        blackMarketContactId = marker.blackMarketContactId,
+        blackMarketPlayerId = marker.blackMarketPlayerId,
+        blackMarketPlayerName = marker.blackMarketPlayerName,
+        blackMarketCompromised = marker.blackMarketCompromised,
+        radioIntel = marker.radioIntel,
+        intelType = marker.intelType,
+        intelFalse = marker.intelFalse,
+        radioWorldEvent = marker.radioWorldEvent,
+        radioSourceKind = marker.radioSourceKind,
+        supplyCache = marker.supplyCache,
+        physicalStash = marker.physicalStash,
+        stashRevealDistance = marker.stashRevealDistance,
+        stashMarkerOverhead = marker.stashMarkerOverhead,
+        stashCacheId = marker.stashCacheId,
+        supplyCacheStatus = marker.supplyCacheStatus,
+        supplyCacheTier = marker.supplyCacheTier,
+        supplyCacheItems = marker.supplyCacheItems,
         updatedAt = marker.updatedAt
     }
 
@@ -472,13 +583,26 @@ function NPCNetContract.LiteMarker(marker)
 end
 
 local function bnet_sendNow(player, module, command, args)
+    args = args or {}
+    if bnet_isSinglePlayerRuntime() then
+        if NPCModeCompatBridge and NPCModeCompatBridge.DispatchServerCommand then
+            local ok, delivered = pcall(function() return NPCModeCompatBridge.DispatchServerCommand(module, command, args) end)
+            if ok and delivered then return end
+        end
+        if bnet_onServerCommand and NPCLegacyContractBridge.IsModule(module, 'NPCDebugMap', 'debugMap') then
+            local ok = pcall(function() bnet_onServerCommand(module, command, args) end)
+            if ok then return end
+        end
+    end
     if isServer and isServer() and player then
         local ok = pcall(function()
-            sendServerCommand(player, module, command, args or {})
+            sendServerCommand(player, module, command, args)
         end)
         if ok then return end
     end
-    sendServerCommand(module, command, args or {})
+    if sendServerCommand then
+        sendServerCommand(module, command, args)
+    end
 end
 
 local function bnet_shouldSendMarker(lite)
@@ -514,6 +638,27 @@ local function bnet_shouldSendMarker(lite)
         if math.abs((tonumber(last.stockSupplies) or 0) - (tonumber(lite.stockSupplies) or 0)) >= 1 then return true end
         if math.abs((tonumber(last.foodReadiness) or 0) - (tonumber(lite.foodReadiness) or 0)) >= 1 then return true end
         if math.abs((tonumber(last.ammoReadiness) or 0) - (tonumber(lite.ammoReadiness) or 0)) >= 1 then return true end
+    elseif lite.markerType == "group" then
+        if last.groupId ~= lite.groupId then return true end
+        if last.roadPatrol ~= lite.roadPatrol then return true end
+        if last.patrolColor ~= lite.patrolColor then return true end
+        if last.homeBaseId ~= lite.homeBaseId then return true end
+        if last.targetBaseId ~= lite.targetBaseId then return true end
+        if last.targetX ~= lite.targetX then return true end
+        if last.targetY ~= lite.targetY then return true end
+        if last.mapTargetX ~= lite.mapTargetX then return true end
+        if last.mapTargetY ~= lite.mapTargetY then return true end
+        if last.mapPathKey ~= lite.mapPathKey then return true end
+        if last.strategicActivityType ~= lite.strategicActivityType then return true end
+        if last.strategicActivityState ~= lite.strategicActivityState then return true end
+        if last.strategicActivityTargetBaseId ~= lite.strategicActivityTargetBaseId then return true end
+        if last.strategicActivityTargetGroupId ~= lite.strategicActivityTargetGroupId then return true end
+        if last.directorRetargetReason ~= lite.directorRetargetReason then return true end
+        if math.abs((tonumber(last.strategicPower) or 0) - (tonumber(lite.strategicPower) or 0)) >= 1 then return true end
+        if math.abs((tonumber(last.combatReadiness) or 0) - (tonumber(lite.combatReadiness) or 0)) >= 1 then return true end
+        if math.abs((tonumber(last.supplyReadiness) or 0) - (tonumber(lite.supplyReadiness) or 0)) >= 1 then return true end
+        if math.abs((tonumber(last.ammoReadiness) or 0) - (tonumber(lite.ammoReadiness) or 0)) >= 1 then return true end
+        if math.abs((tonumber(last.moraleReadiness) or 0) - (tonumber(lite.moraleReadiness) or 0)) >= 1 then return true end
     elseif lite.markerType == "base_zone" then
         if last.owner ~= lite.owner then return true end
         if last.captureStatus ~= lite.captureStatus then return true end
@@ -543,6 +688,10 @@ local function bnet_shouldSendMarker(lite)
         if last.bountyState ~= lite.bountyState then return true end
         if last.bountyAmount ~= lite.bountyAmount then return true end
         if last.bountyExpiresAt ~= lite.bountyExpiresAt then return true end
+    elseif lite.markerType == "heat_wanted" then
+        if last.heatWantedLevel ~= lite.heatWantedLevel then return true end
+        if last.heatWantedValue ~= lite.heatWantedValue then return true end
+        if last.heatWantedState ~= lite.heatWantedState then return true end
     elseif lite.markerType == "leader" then
         if last.leaderState ~= lite.leaderState then return true end
         if last.leaderInfluence ~= lite.leaderInfluence then return true end
@@ -551,6 +700,23 @@ local function bnet_shouldSendMarker(lite)
         if last.blackMarketStatus ~= lite.blackMarketStatus then return true end
         if last.blackMarketSide ~= lite.blackMarketSide then return true end
         if last.blackMarketServices ~= lite.blackMarketServices then return true end
+    elseif lite.markerType == "black_market_drop" then
+        if last.blackMarketDropStatus ~= lite.blackMarketDropStatus then return true end
+        if last.blackMarketDropType ~= lite.blackMarketDropType then return true end
+        if last.blackMarketCompromised ~= lite.blackMarketCompromised then return true end
+    elseif lite.counterIntelHunter or last.counterIntelHunter then
+        if last.counterIntelState ~= lite.counterIntelState then return true end
+        if last.counterIntelWave ~= lite.counterIntelWave then return true end
+        if last.counterIntelHeat ~= lite.counterIntelHeat then return true end
+        if last.counterIntelTargetPlayerId ~= lite.counterIntelTargetPlayerId then return true end
+    elseif lite.radioIntel or last.radioIntel then
+        if last.intelType ~= lite.intelType then return true end
+        if last.intelFalse ~= lite.intelFalse then return true end
+        if last.supplyCache ~= lite.supplyCache then return true end
+        if last.physicalStash ~= lite.physicalStash then return true end
+        if last.supplyCacheStatus ~= lite.supplyCacheStatus then return true end
+        if last.supplyCacheTier ~= lite.supplyCacheTier then return true end
+        if last.supplyCacheItems ~= lite.supplyCacheItems then return true end
     elseif lite.wounded or last.wounded then
         if last.wounded ~= lite.wounded then return true end
         if last.woundedState ~= lite.woundedState then return true end
@@ -567,6 +733,10 @@ local function bnet_shouldSendMarker(lite)
     if last.mercenaryLoyalty ~= lite.mercenaryLoyalty then return true end
     if last.loyaltyState ~= lite.loyaltyState then return true end
     if last.bountyHunter ~= lite.bountyHunter then return true end
+    if last.heatWanted ~= lite.heatWanted then return true end
+    if last.heatWantedLevel ~= lite.heatWantedLevel then return true end
+    if last.counterIntelHunter ~= lite.counterIntelHunter then return true end
+    if last.counterIntelState ~= lite.counterIntelState then return true end
     if last.bountyState ~= lite.bountyState then return true end
     if last.bountyAmount ~= lite.bountyAmount then return true end
     if last.leader ~= lite.leader then return true end
@@ -584,6 +754,9 @@ local function bnet_shouldSendMarker(lite)
     local dx = math.abs((tonumber(last.x) or 0) - (tonumber(lite.x) or 0))
     local dy = math.abs((tonumber(last.y) or 0) - (tonumber(lite.y) or 0))
     local moveDelta = NPCNetContract.MinMarkerMoveDelta
+    if lite.markerType == "group" and lite.virtual and not lite.active then
+        moveDelta = math.min(tonumber(moveDelta) or 1.25, 0.5)
+    end
     if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.AdjustMarkerMoveDelta then
         moveDelta = NPCStreamingRuntimeBridge.AdjustMarkerMoveDelta(moveDelta)
     end
@@ -601,13 +774,14 @@ local function bnet_shouldSendMarker(lite)
 end
 
 function NPCNetContract.SendDebugMapUpdate(marker, player)
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
     if NPCNetContract.Enabled == false or NPCNetContract.UseDebugMapCommands == false then return end
 
     local lite = NPCNetContract.LiteMarker(marker)
     if not lite or not lite.id then return end
 
-    if NPCInterestManagerBridge and NPCInterestManagerBridge.ShouldSendMarker then
+    local forceGlobalMapMarker = lite.markerType == "group" and lite.virtual and not lite.active
+    if not forceGlobalMapMarker and NPCInterestManagerBridge and NPCInterestManagerBridge.ShouldSendMarker then
         local okInterest, allowed = pcall(function() return NPCInterestManagerBridge.ShouldSendMarker(lite, player, "world") end)
         if okInterest and allowed == false then return end
     end
@@ -626,7 +800,7 @@ function NPCNetContract.SendDebugMapUpdate(marker, player)
 end
 
 function NPCNetContract.SendDebugMapRemove(id, player)
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
     if not id then return end
 
     id = tostring(id)
@@ -644,7 +818,7 @@ function NPCNetContract.SendDebugMapRemove(id, player)
 end
 
 function NPCNetContract.SendDebugMapClear(player)
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
     NPCNetContract.PendingMarkerUpdates = {}
     NPCNetContract.PendingMarkerQueues = {high={}, normal={}, low={}}
     NPCNetContract.PendingMarkerRemoves = {}
@@ -711,6 +885,24 @@ function NPCNetContract.StoreLastSentMarker(id, marker)
         targetBaseId = marker.targetBaseId,
         convoyFaction = marker.convoyFaction,
         groupId = marker.groupId,
+        homeBaseId = marker.homeBaseId,
+        strategicPower = marker.strategicPower,
+        combatReadiness = marker.combatReadiness,
+        supplyReadiness = marker.supplyReadiness,
+        ammoReadiness = marker.ammoReadiness,
+        moraleReadiness = marker.moraleReadiness,
+        strategicActivityType = marker.strategicActivityType,
+        strategicActivityState = marker.strategicActivityState,
+        strategicActivityTargetBaseId = marker.strategicActivityTargetBaseId,
+        strategicActivityTargetGroupId = marker.strategicActivityTargetGroupId,
+        directorRetargetReason = marker.directorRetargetReason,
+        targetX = marker.targetX,
+        targetY = marker.targetY,
+        mapTargetX = marker.mapTargetX,
+        mapTargetY = marker.mapTargetY,
+        mapPathKey = marker.mapPathKey,
+        roadPatrol = marker.roadPatrol,
+        patrolColor = marker.patrolColor,
         spy = marker.spy,
         spyCount = marker.spyCount,
         spyDefected = marker.spyDefected,
@@ -745,7 +937,7 @@ local function bnet_flushUpdateQueue(queue, sent, maxUpdates)
 end
 
 function NPCNetContract.FlushDebugMapQueue()
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
 
     local sent = 0
     local removeSent = 0
@@ -775,7 +967,7 @@ function NPCNetContract.FlushDebugMapQueue()
 end
 
 function NPCNetContract.SendDebugMapSync(player, gmdOrMarkers)
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
     if NPCNetContract.Enabled == false or NPCNetContract.UseDebugMapCommands == false then return end
     if not bnet_canStartSync(player) then return end
 
@@ -801,7 +993,8 @@ function NPCNetContract.SendDebugMapSync(player, gmdOrMarkers)
         local lite = NPCNetContract.LiteMarker(marker)
         if lite and not lite.dead then
             local allowed = true
-            if NPCInterestManagerBridge and NPCInterestManagerBridge.ShouldSendMarker then
+            local forceGlobalMapMarker = lite.markerType == "group" and lite.virtual and not lite.active
+            if not forceGlobalMapMarker and NPCInterestManagerBridge and NPCInterestManagerBridge.ShouldSendMarker then
                 local okInterest, ret = pcall(function() return NPCInterestManagerBridge.ShouldSendMarker(lite, player, "sync") end)
                 if okInterest then allowed = ret ~= false end
             end
@@ -862,7 +1055,7 @@ function NPCNetContract.SendDebugMapSync(player, gmdOrMarkers)
 end
 
 function NPCNetContract.FlushSyncSessions()
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
     local budget = tonumber(NPCNetContract.MaxSnapshotChunksPerTick) or 2
     if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.AdjustSnapshotBudget then
         local ok, adjusted = pcall(function() return NPCStreamingRuntimeBridge.AdjustSnapshotBudget(budget) end)
@@ -891,7 +1084,7 @@ function NPCNetContract.FlushSyncSessions()
 end
 
 function NPCNetContract.SendSimStateUpdate(args, player)
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
     if type(args) ~= "table" then return end
 
     if player then
@@ -913,7 +1106,7 @@ function NPCNetContract.SendSimStateUpdate(args, player)
 end
 
 function NPCNetContract.FlushSimStateQueue()
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
 
     local budget = tonumber(NPCNetContract.MaxSimStateUpdatesPerTick) or 18
     if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.AdjustSimStateBudget then
@@ -952,7 +1145,7 @@ function NPCNetContract.FlushSimStateQueue()
 end
 
 function NPCNetContract.SendDebugMap(command, args, player, gmd)
-    if not (isServer and isServer()) then return end
+    if not bnet_isServerRuntime() then return end
 
     if command == 'Update' or command == 'UpdateCompact' then
         NPCNetContract.SendDebugMapUpdate(args, player)
@@ -1007,7 +1200,7 @@ local function bnet_clientRemoveMarker(id)
     end
 end
 
-local function bnet_onServerCommand(module, command, args)
+bnet_onServerCommand = function(module, command, args)
     if not NPCLegacyContractBridge.IsModule(module, 'NPCDebugMap', 'debugMap') then return end
     args = args or {}
 
@@ -1069,8 +1262,12 @@ local function bnet_onServerCommand(module, command, args)
     end
 end
 
+function NPCNetContract.DispatchServerCommand(module, command, args)
+    return bnet_onServerCommand(module, command, args or {})
+end
+
 local function bnet_onTick()
-    if isServer and isServer() then
+    if bnet_isServerRuntime() then
         NPCNetContract._tick = (NPCNetContract._tick or 0) + 1
         if NPCNetContract._tick % 60 == 1 and NPCLegacySettingsBridge and NPCLegacySettingsBridge.ApplyNet then
             NPCLegacySettingsBridge.ApplyNet(NPCNetContract)

@@ -4,7 +4,7 @@
 require "NPCCore/NPCLegacyGlobalsBridge"
 
 local NPC_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
-if not isServer() then return end
+if isClient and isClient() then return end
 
 NPCSpawnQueueBridge = NPCSpawnQueueBridge or {}
 NPCSpawnQueueBridge.Queue = NPCSpawnQueueBridge.Queue or {}

@@ -1,0 +1,7 @@
+UI_JP = {
+    /***** Factions Confrontation localization: Japanese *****/
+
+    UI_optionscreen_binding_FactionsConfrontation = "Factions Confrontation",
+    UI_optionscreen_binding_POSTS = "警備拠点を管理",
+
+}

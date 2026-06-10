@@ -1,7 +1,7 @@
 -- NPCDisguiseServerBridge.lua
 -- Neutral server-side persistence/sync for faction disguise state.
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCDisguiseBridge"

@@ -1,7 +1,7 @@
 -- NPCRadioInterceptBridge.lua
 -- Neutral shared backend for radio intercept state, scanning and intel markers.
 -- Lightweight player-facing radio intercepts for convoys, checkpoints, bases and daily passwords.
--- Uses existing virtual systems; does not add physical radio items or heavy tick logic.
+-- Uses existing virtual systems; physical supply caches are created only for decoded stash leads.
 
 require "NPCCore/NPCLegacyContractBridge"
 
@@ -12,7 +12,9 @@ local BRI_SUPPLY_CACHE_LEGACY_KEYS = {
     enabled = NPCLegacyContractBridge.Key("RADIO_SUPPLY_CACHE"),
     tier = NPCLegacyContractBridge.Key("RADIO_SUPPLY_CACHE_TIER"),
     items = NPCLegacyContractBridge.Key("RADIO_SUPPLY_CACHE_ITEMS"),
-    timestamp = NPCLegacyContractBridge.Key("RADIO_SUPPLY_CACHE_AT")
+    timestamp = NPCLegacyContractBridge.Key("RADIO_SUPPLY_CACHE_AT"),
+    cacheId = NPCLegacyContractBridge.Key("RADIO_SUPPLY_CACHE_ID"),
+    physical = NPCLegacyContractBridge.Key("RADIO_SUPPLY_CACHE_PHYSICAL")
 }
 
 local function bri_bool(name, defaultValue)
@@ -298,6 +300,18 @@ end
 
 function NPCRadioInterceptBridge.SupplyCacheMaxItems()
     return math.floor(bri_num("RadioIntercept_SupplyCacheMaxItems", 24, 4, 80))
+end
+
+function NPCRadioInterceptBridge.PhysicalStashesEnabled()
+    return bri_bool("RadioIntercept_PhysicalStashesEnabled", true)
+end
+
+function NPCRadioInterceptBridge.StashRevealDistance()
+    return bri_num("RadioIntercept_StashRevealDistance", 18, 3, 80)
+end
+
+function NPCRadioInterceptBridge.StashMarkerOverhead()
+    return bri_bool("RadioIntercept_StashMarkerOverhead", true)
 end
 
 function NPCRadioInterceptBridge.MonitorEnabled()
@@ -1177,22 +1191,85 @@ local function bri_supplyCacheFindContainers(player)
     return out
 end
 
+local function bri_supplyCacheSquareIsUsable(square)
+    if not square then return false end
+    if square.Is then
+        local okSolid, solid = pcall(function() return square:Is(IsoFlagType.solid) end)
+        if okSolid and solid == true then return false end
+        local okSolidTrans, solidTrans = pcall(function() return square:Is(IsoFlagType.solidtrans) end)
+        if okSolidTrans and solidTrans == true then return false end
+        local okWater, water = pcall(function() return square:Is(IsoFlagType.water) end)
+        if okWater and water == true then return false end
+    end
+    if square.isBlockedTo then
+        local okBlocked, blocked = pcall(function() return square:isBlockedTo(square) end)
+        if okBlocked and blocked == true then return false end
+    end
+    return true
+end
+
+local function bri_supplyCacheFindPhysicalPoint(player)
+    if not (NPCRadioInterceptBridge.PhysicalStashesEnabled() and player and getCell) then return nil end
+    local px, py = bri_playerXY(player)
+    if not (px and py) then return nil end
+    local cell = getCell()
+    if not (cell and cell.getGridSquare) then return nil end
+    local z = 0
+    if player.getZ then
+        local okZ, value = pcall(function() return player:getZ() end)
+        if okZ and value then z = math.floor(tonumber(value) or 0) end
+    end
+    local radius = math.floor(NPCRadioInterceptBridge.SupplyCacheSearchRadius())
+    local minRadius = math.min(radius, math.max(8, math.floor(NPCRadioInterceptBridge.StashRevealDistance())))
+    local attempts = math.max(80, math.min(260, radius * 3))
+    local best = nil
+    for _ = 1, attempts do
+        local angle = bri_rand(6284) / 1000.0
+        local dist = minRadius + bri_rand(math.max(1, radius - minRadius + 1))
+        local x = math.floor(px + math.cos(angle) * dist + 0.5)
+        local y = math.floor(py + math.sin(angle) * dist + 0.5)
+        local okSq, square = pcall(function() return cell:getGridSquare(x, y, z) end)
+        if okSq and bri_supplyCacheSquareIsUsable(square) then
+            best = {x=x, y=y, z=z, label="field drop", physical=true, distance=bri_dist(px, py, x, y)}
+            if best.distance >= minRadius then return best end
+        end
+    end
+    return best
+end
+
 local function bri_collectSupplyCaches(gmd, candidates, player)
     if not (NPCRadioInterceptBridge.SupplyCacheEnabled() and player) then return end
     if bri_rand(100) >= NPCRadioInterceptBridge.SupplyCacheSignalChance() then return end
     local containers = bri_supplyCacheFindContainers(player)
-    if #containers <= 0 then return end
-    local limit = math.min(#containers, 12)
-    local picked = containers[1 + bri_rand(limit)] or containers[1]
+    local picked = nil
+    local mode = "existing_container"
+    if #containers > 0 then
+        local limit = math.min(#containers, 12)
+        picked = containers[1 + bri_rand(limit)] or containers[1]
+    else
+        picked = bri_supplyCacheFindPhysicalPoint(player)
+        mode = "world_item"
+    end
     if not (picked and picked.x and picked.y) then return end
     local side = BRI_SIDES[1 + bri_rand(#BRI_SIDES)] or "red"
-    local text = "Supply cache signal: hidden stash in an existing " .. tostring(picked.label or "container") .. " near " .. tostring(math.floor(picked.x)) .. "," .. tostring(math.floor(picked.y)) .. "."
+    local cacheId = "cache_" .. tostring(math.floor(bri_now() * 1000)) .. "_" .. tostring(bri_rand(100000))
+    local text
+    if mode == "world_item" then
+        text = "Supply cache signal: field dead drop near " .. tostring(math.floor(picked.x)) .. "," .. tostring(math.floor(picked.y)) .. ". Look for a marked bag or kit."
+    else
+        text = "Supply cache signal: hidden stash in an existing " .. tostring(picked.label or "container") .. " near " .. tostring(math.floor(picked.x)) .. "," .. tostring(math.floor(picked.y)) .. "."
+    end
     bri_push(candidates, "supply_cache", side, picked.x, picked.y, text, 6, {
+        cacheId = cacheId,
+        cacheMode = mode,
+        physical = mode == "world_item",
         cacheX = picked.x,
         cacheY = picked.y,
         cacheZ = picked.z or 0,
         objectIndex = picked.objectIndex,
-        containerLabel = picked.label
+        containerLabel = picked.label,
+        revealDistance = NPCRadioInterceptBridge.StashRevealDistance(),
+        overheadMarker = NPCRadioInterceptBridge.StashMarkerOverhead()
     })
 end
 
@@ -1231,34 +1308,130 @@ local function bri_supplyCacheTier()
     return "medical"
 end
 
-local function bri_supplyCacheGetObject(player, msg)
-    if not (getCell and msg and msg.data) then return nil, nil end
+
+local BRI_SUPPLY_CACHE_WORLD_ITEMS = {
+    weapons = {"Base.Bag_ALICEpack", "Base.Bag_DuffelBag", "Base.Bag_NormalHikingBag"},
+    armor = {"Base.Bag_ALICEpack", "Base.Bag_DuffelBag", "Base.Bag_NormalHikingBag"},
+    medical = {"Base.FirstAidKit", "Base.Bag_DuffelBag", "Base.Bag_Schoolbag"},
+    gold = {"Base.Bag_DuffelBag", "Base.Bag_Schoolbag", "Base.Plasticbag"},
+    silver = {"Base.Bag_DuffelBag", "Base.Bag_Schoolbag", "Base.Plasticbag"},
+    default = {"Base.Bag_DuffelBag", "Base.Bag_Schoolbag", "Base.Plasticbag"}
+}
+
+local function bri_supplyCacheWorldItemModData(item)
+    if item and item.getModData then
+        local ok, md = pcall(function() return item:getModData() end)
+        if ok and type(md) == "table" then return md end
+    end
+    return nil
+end
+
+local function bri_supplyCacheFindWorldItemOnSquare(square, cacheId)
+    if not (square and square.getWorldObjects) then return nil, nil end
+    local okObjects, objects = pcall(function() return square:getWorldObjects() end)
+    if not (okObjects and objects and objects.size and objects.get) then return nil, nil end
+    for i = 0, objects:size() - 1 do
+        local okObj, worldObject = pcall(function() return objects:get(i) end)
+        if okObj and worldObject and worldObject.getItem then
+            local okItem, item = pcall(function() return worldObject:getItem() end)
+            local md = okItem and bri_supplyCacheWorldItemModData(item) or nil
+            if md and md[BRI_SUPPLY_CACHE_LEGACY_KEYS.enabled] == true then
+                if not cacheId or tostring(md[BRI_SUPPLY_CACHE_LEGACY_KEYS.cacheId] or "") == tostring(cacheId) then
+                    return worldObject, item
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function bri_supplyCacheCreateWorldItem(square, cacheId, tier)
+    if not (square and InventoryItemFactory and InventoryItemFactory.CreateItem) then return nil, nil end
+    local pool = BRI_SUPPLY_CACHE_WORLD_ITEMS[tostring(tier or "")] or BRI_SUPPLY_CACHE_WORLD_ITEMS.default
+    for _, fullType in ipairs(pool) do
+        local okItem, item = pcall(function() return InventoryItemFactory.CreateItem(fullType) end)
+        if okItem and item then
+            local inventory = nil
+            if item.getInventory then
+                local okInv, gotInv = pcall(function() return item:getInventory() end)
+                if okInv then inventory = gotInv end
+            end
+            if inventory then
+                local worldObject = nil
+                if square.AddWorldInventoryItem then
+                    local okWorld, gotWorld = pcall(function() return square:AddWorldInventoryItem(item, 0.35 + (bri_rand(30) / 100.0), 0.35 + (bri_rand(30) / 100.0), 0) end)
+                    if okWorld then worldObject = gotWorld end
+                end
+                if worldObject then
+                    local md = bri_supplyCacheWorldItemModData(item)
+                    if md then
+                        md[BRI_SUPPLY_CACHE_LEGACY_KEYS.cacheId] = cacheId
+                        md[BRI_SUPPLY_CACHE_LEGACY_KEYS.physical] = true
+                        md[BRI_SUPPLY_CACHE_LEGACY_KEYS.timestamp] = bri_now()
+                    end
+                    if item.setName then pcall(function() item:setName("Radio Supply Cache") end) end
+                    if item.setFavorite then pcall(function() item:setFavorite(false) end) end
+                    if item.transmitModData then pcall(function() item:transmitModData() end) end
+                    return worldObject, item
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+local function bri_supplyCacheGetOrCreateWorldItem(msg, tier)
+    if not (getCell and msg and msg.data and msg.data.cacheMode == "world_item") then return nil, nil, nil end
     local cell = getCell()
-    if not cell or not cell.getGridSquare then return nil, nil end
+    if not (cell and cell.getGridSquare) then return nil, nil, nil end
     local x = math.floor(tonumber(msg.data.cacheX or msg.x) or 0)
     local y = math.floor(tonumber(msg.data.cacheY or msg.y) or 0)
     local z = math.floor(tonumber(msg.data.cacheZ) or 0)
     local okSq, square = pcall(function() return cell:getGridSquare(x, y, z) end)
-    if not (okSq and square and square.getObjects) then return nil, nil end
+    if not (okSq and square) then return nil, nil, nil end
+    local cacheId = tostring(msg.data.cacheId or msg.id or "")
+    local worldObject, item = bri_supplyCacheFindWorldItemOnSquare(square, cacheId)
+    if not item then worldObject, item = bri_supplyCacheCreateWorldItem(square, cacheId, tier) end
+    if not item then return nil, nil, nil end
+    local inventory = nil
+    if item.getInventory then
+        local okInv, gotInv = pcall(function() return item:getInventory() end)
+        if okInv then inventory = gotInv end
+    end
+    return worldObject or item, inventory, item
+end
+
+local function bri_supplyCacheGetObject(player, msg, tier)
+    if not (getCell and msg and msg.data) then return nil, nil, nil end
+    if msg.data.cacheMode == "world_item" then
+        return bri_supplyCacheGetOrCreateWorldItem(msg, tier)
+    end
+    local cell = getCell()
+    if not cell or not cell.getGridSquare then return nil, nil, nil end
+    local x = math.floor(tonumber(msg.data.cacheX or msg.x) or 0)
+    local y = math.floor(tonumber(msg.data.cacheY or msg.y) or 0)
+    local z = math.floor(tonumber(msg.data.cacheZ) or 0)
+    local okSq, square = pcall(function() return cell:getGridSquare(x, y, z) end)
+    if not (okSq and square and square.getObjects) then return nil, nil, nil end
     local okObjects, objects = pcall(function() return square:getObjects() end)
-    if not (okObjects and objects and objects.size and objects.get) then return nil, nil end
+    if not (okObjects and objects and objects.size and objects.get) then return nil, nil, nil end
     local preferred = tonumber(msg.data.objectIndex)
     local function tryIndex(index)
-        if index == nil or index < 0 or index >= objects:size() then return nil, nil end
+        if index == nil or index < 0 or index >= objects:size() then return nil, nil, nil end
         local okObj, object = pcall(function() return objects:get(index) end)
         if okObj and object and object.getContainer then
             local okCont, container = pcall(function() return object:getContainer() end)
-            if okCont and container and bri_supplyCacheAllowedContainer(container, object) then return object, container end
+            if okCont and container and bri_supplyCacheAllowedContainer(container, object) then return object, container, nil end
         end
-        return nil, nil
+        return nil, nil, nil
     end
-    local object, container = tryIndex(preferred)
-    if object and container then return object, container end
+    local object, container, item = tryIndex(preferred)
+    if object and container then return object, container, item end
     for i = 0, objects:size() - 1 do
-        object, container = tryIndex(i)
-        if object and container then return object, container end
+        object, container, item = tryIndex(i)
+        if object and container then return object, container, item end
     end
-    return nil, nil
+    return nil, nil, nil
 end
 
 local function bri_supplyCacheClear(container)
@@ -1314,9 +1487,10 @@ end
 
 function NPCRadioInterceptBridge.ActivateSupplyCache(gmd, player, msg, marker)
     if not (NPCRadioInterceptBridge.SupplyCacheEnabled() and msg and msg.kind == "supply_cache") then return false, "disabled" end
-    local object, container = bri_supplyCacheGetObject(player, msg)
+    local tier = bri_supplyCacheTier()
+    local object, container, item = bri_supplyCacheGetObject(player, msg, tier)
     if not (object and container) then return false, "missing" end
-    local md = bri_supplyCacheModData(object, container)
+    local md = item and bri_supplyCacheWorldItemModData(item) or bri_supplyCacheModData(object, container)
     if md and md[BRI_SUPPLY_CACHE_LEGACY_KEYS.enabled] == true then
         return false, "already", tostring(md[BRI_SUPPLY_CACHE_LEGACY_KEYS.tier] or "cache"), tonumber(md[BRI_SUPPLY_CACHE_LEGACY_KEYS.items]) or 0
     end
@@ -1326,12 +1500,14 @@ function NPCRadioInterceptBridge.ActivateSupplyCache(gmd, player, msg, marker)
             md[BRI_SUPPLY_CACHE_LEGACY_KEYS.tier] = "old"
             md[BRI_SUPPLY_CACHE_LEGACY_KEYS.items] = 0
             md[BRI_SUPPLY_CACHE_LEGACY_KEYS.timestamp] = bri_now()
+            if msg.data and msg.data.cacheId then md[BRI_SUPPLY_CACHE_LEGACY_KEYS.cacheId] = tostring(msg.data.cacheId) end
+            if msg.data and msg.data.cacheMode == "world_item" then md[BRI_SUPPLY_CACHE_LEGACY_KEYS.physical] = true end
         end
+        if item and item.transmitModData then pcall(function() item:transmitModData() end) end
         if object and object.transmitModData then pcall(function() object:transmitModData() end) end
         return false, "old", "old cache", 0
     end
 
-    local tier = bri_supplyCacheTier()
     bri_supplyCacheClear(container)
     local added = bri_supplyCacheFill(container, tier)
     if added <= 0 then return false, "empty", tier, 0 end
@@ -1341,13 +1517,20 @@ function NPCRadioInterceptBridge.ActivateSupplyCache(gmd, player, msg, marker)
         md[BRI_SUPPLY_CACHE_LEGACY_KEYS.tier] = tier
         md[BRI_SUPPLY_CACHE_LEGACY_KEYS.items] = added
         md[BRI_SUPPLY_CACHE_LEGACY_KEYS.timestamp] = bri_now()
+        if msg.data and msg.data.cacheId then md[BRI_SUPPLY_CACHE_LEGACY_KEYS.cacheId] = tostring(msg.data.cacheId) end
+        if msg.data and msg.data.cacheMode == "world_item" then md[BRI_SUPPLY_CACHE_LEGACY_KEYS.physical] = true end
     end
+    if item and item.transmitModData then pcall(function() item:transmitModData() end) end
     if object and object.transmitModData then pcall(function() object:transmitModData() end) end
     if object and object.transmitUpdatedSpriteToClients then pcall(function() object:transmitUpdatedSpriteToClients() end) end
     if marker then
         marker.supplyCacheActivated = true
         marker.supplyCacheTier = tier
         marker.supplyCacheItems = added
+        marker.physicalStash = msg.data and msg.data.cacheMode == "world_item" or false
+        marker.stashRevealDistance = msg.data and msg.data.revealDistance or NPCRadioInterceptBridge.StashRevealDistance()
+        marker.stashMarkerOverhead = msg.data and msg.data.overheadMarker ~= false
+        marker.stashCacheId = msg.data and msg.data.cacheId or nil
     end
     return true, "filled", tier, added
 end
@@ -1787,6 +1970,10 @@ function NPCRadioInterceptBridge.AddIntelMarker(gmd, player, msg, metrics)
         intelFalse = (not isSupplyCache) and (msg.unreliable == true or msg.falseSignal == true) or false,
         radioIntel = true,
         supplyCache = isSupplyCache,
+        physicalStash = isSupplyCache and msg.data and msg.data.cacheMode == "world_item" or false,
+        stashRevealDistance = isSupplyCache and msg.data and msg.data.revealDistance or nil,
+        stashMarkerOverhead = isSupplyCache and msg.data and msg.data.overheadMarker ~= false or nil,
+        stashCacheId = isSupplyCache and msg.data and msg.data.cacheId or nil,
         radioWorldEvent = msg.eventTraffic == true,
         radioSourceKind = msg.sourceKind,
         signal = metrics.signal or msg.signal,

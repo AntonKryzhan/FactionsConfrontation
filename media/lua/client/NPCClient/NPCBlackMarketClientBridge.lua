@@ -3,6 +3,7 @@
 -- The black market is intentionally not an IsoZombie/IsoGameCharacter.
 
 require "NPCCore/NPCLegacyContractBridge"
+require "NPCCore/NPCIntelDossierBridge"
 pcall(require, "ISUI/ISPanel")
 pcall(require, "ISUI/ISUIElement")
 
@@ -16,10 +17,21 @@ local BBMC_LEGACY_KEYS = {
 local function bbmc_text(key)
     return getText(BBMC_LEGACY_TEXT_PREFIX .. tostring(key or ""))
 end
+
+local function bbmc_textOr(key, fallback)
+    local text = bbmc_text(key)
+    if text == BBMC_LEGACY_TEXT_PREFIX .. tostring(key or "") then return tostring(fallback or key or "") end
+    return text
+end
 NPCBlackMarketClientBridge.contacts = NPCBlackMarketClientBridge.contacts or {}
 NPCBlackMarketClientBridge.overlay = NPCBlackMarketClientBridge.overlay or nil
 NPCBlackMarketClientBridge.lastKnownContact = NPCBlackMarketClientBridge.lastKnownContact or nil
 NPCBlackMarketClientBridge.worldProps = NPCBlackMarketClientBridge.worldProps or {}
+NPCBlackMarketClientBridge.dropMarkers = NPCBlackMarketClientBridge.dropMarkers or {}
+NPCBlackMarketClientBridge.fetchQuest = NPCBlackMarketClientBridge.fetchQuest or nil
+NPCBlackMarketClientBridge.fetchQuestHasItem = NPCBlackMarketClientBridge.fetchQuestHasItem == true
+NPCBlackMarketClientBridge.defenseQuest = NPCBlackMarketClientBridge.defenseQuest or nil
+NPCBlackMarketClientBridge._fetchQuestZoneOverlayHookInstalled = NPCBlackMarketClientBridge._fetchQuestZoneOverlayHookInstalled or false
 
 local BBMC_STATIC_SPRITE = "media/ui/black_market_service.png"
 local BBMC_WORLD_PROP_SPRITE_PREFIX = "media/ui/black_market_world_prop"
@@ -127,7 +139,21 @@ local function bbmc_eachContact(callback)
         if marker.markerType ~= "black_market" and marker.blackMarket ~= true then return end
         if marker.blackMarketStatus == "closed" then return end
         local key = bbmc_contactKey(marker, id)
-        if key == "" or seen[key] then return end
+        if key == "" then return end
+        if seen[key] then
+            if marker.blackMarketHasPendingReward == true or marker.blackMarketRewardHighlight == true or marker.blackMarketQuestTurnInHighlight == true then
+                local stored = NPCBlackMarketClientBridge.contacts and NPCBlackMarketClientBridge.contacts[key] or nil
+                if type(stored) == "table" then
+                    stored.blackMarketHasPendingReward = marker.blackMarketHasPendingReward == true or nil
+                    stored.blackMarketRewardHighlight = marker.blackMarketRewardHighlight == true or nil
+                    stored.blackMarketQuestTurnInHighlight = marker.blackMarketQuestTurnInHighlight == true or nil
+                    stored.blackMarketRewardX = marker.blackMarketRewardX
+                    stored.blackMarketRewardY = marker.blackMarketRewardY
+                    stored.blackMarketRewardZ = marker.blackMarketRewardZ
+                end
+            end
+            return
+        end
         seen[key] = true
         callback(marker, key)
     end
@@ -292,9 +318,50 @@ local function bbmc_priceLabel(action)
     return bbmc_text("Menu_Trade")
 end
 
+local function bbmc_paymentSnapshot(player)
+    local out = { gold = 0, silver = 0 }
+    if not (player and NPCBlackMarketBridge and NPCBlackMarketBridge.CountItems) then return out end
+    local okGold, gold = pcall(function() return NPCBlackMarketBridge.CountItems(player, "gold") end)
+    if okGold then out.gold = math.floor(tonumber(gold) or 0) end
+    local okSilver, silver = pcall(function() return NPCBlackMarketBridge.CountItems(player, "silver") end)
+    if okSilver then out.silver = math.floor(tonumber(silver) or 0) end
+    return out
+end
+
 local function bbmc_deal(player, contact, action, side)
     if not player then return end
-    sendClientCommand(player, 'NPCBlackMarket', 'Deal', {contactId=contact and (contact.blackMarketId or contact.id), action=action, side=side})
+    local args = {contactId=contact and (contact.blackMarketId or contact.id), action=action, side=side}
+    if NPCBlackMarketBridge and NPCBlackMarketBridge.DealCost then
+        local okCost, resource, amount = pcall(function() return NPCBlackMarketBridge.DealCost(action) end)
+        if okCost and resource then
+            local counts = bbmc_paymentSnapshot(player)
+            args.clientPaymentResource = tostring(resource)
+            args.clientPaymentAmount = math.floor(tonumber(amount) or 0)
+            args.clientPaymentGoldCount = counts.gold
+            args.clientPaymentSilverCount = counts.silver
+            args.clientPaymentOk = (resource == "gold" and counts.gold >= args.clientPaymentAmount) or (resource == "silver" and counts.silver >= args.clientPaymentAmount) or args.clientPaymentAmount <= 0
+        end
+    end
+    local active = nil
+    if player.getPrimaryHandItem then
+        local ok, item = pcall(function() return player:getPrimaryHandItem() end)
+        if ok then active = item end
+    end
+    if active and active.getFullType then
+        local ok, ft = pcall(function() return active:getFullType() end)
+        if ok and ft then args.activeWeaponFullType = tostring(ft) end
+    end
+    sendClientCommand(player, 'NPCBlackMarket', 'Deal', args)
+end
+
+local function bbmc_takeClientPayment(args)
+    local player = getPlayer() or getSpecificPlayer(0)
+    if not (player and args and NPCBlackMarketBridge and NPCBlackMarketBridge.TakeItems) then return end
+    local resource = tostring(args.resource or args.clientPaymentResource or "")
+    local amount = math.floor(tonumber(args.amount or args.clientPaymentAmount) or 0)
+    if amount <= 0 then return end
+    local okCall, okPaid = pcall(function() return NPCBlackMarketBridge.TakeItems(player, resource, amount) end)
+    print("[NPCBlackMarket] client payment removal ok=" .. tostring(okCall and okPaid == true) .. " resource=" .. tostring(resource) .. " amount=" .. tostring(amount) .. " context=" .. tostring(args.context))
 end
 
 local function bbmc_addSideDeals(menu, player, contact, label, action)
@@ -303,6 +370,290 @@ local function bbmc_addSideDeals(menu, player, contact, label, action)
     menu:addSubMenu(root, sub)
     for _, side in ipairs({"red", "green", "blue"}) do
         sub:addOption(bbmc_sideLabel(side) .. " — " .. bbmc_priceLabel(action), player, function(p) bbmc_deal(p, contact, action, side) end)
+    end
+end
+
+local function bbmc_addDropDeals(menu, player, contact)
+    if not bbmc_bool("BlackMarket_DeadDropEnabled", true) then return end
+    local root = menu:addOption(bbmc_text("Menu_OrderDeadDrop"))
+    local sub = menu:getNew(menu)
+    menu:addSubMenu(root, sub)
+    local side = contact and (contact.blackMarketSide or contact.sourceSide) or nil
+    sub:addOption(bbmc_text("Menu_OrderAmmoDrop") .. " — " .. bbmc_priceLabel("ammo_drop"), player, function(p) bbmc_deal(p, contact, "ammo_drop", side) end)
+    sub:addOption(bbmc_text("Menu_OrderMedicalDrop") .. " — " .. bbmc_priceLabel("medical_drop"), player, function(p) bbmc_deal(p, contact, "medical_drop", side) end)
+    sub:addOption(bbmc_text("Menu_OrderWeaponDrop") .. " — " .. bbmc_priceLabel("weapon_drop"), player, function(p) bbmc_deal(p, contact, "weapon_drop", side) end)
+    sub:addOption(bbmc_text("Menu_OrderArmorDrop") .. " — " .. bbmc_priceLabel("armor_drop"), player, function(p) bbmc_deal(p, contact, "armor_drop", side) end)
+end
+
+local function bbmc_addIntelDossierSale(menu, player, contact)
+    if not bbmc_bool("IntelDossier_Enabled", true) then return end
+    if not bbmc_bool("IntelDossier_SellEnabled", true) then return end
+    menu:addOption(bbmc_text("Menu_SellIntelDossiers"), player, function(p) bbmc_deal(p, contact, "sell_intel", nil) end)
+end
+
+local function bbmc_fetchQuestActive()
+    local quest = NPCBlackMarketClientBridge.fetchQuest
+    return type(quest) == "table" and tostring(quest.status or "active") == "active" and tostring(quest.id or "") ~= ""
+end
+
+local function bbmc_fetchQuestId()
+    local quest = NPCBlackMarketClientBridge.fetchQuest
+    if type(quest) == "table" then return tostring(quest.id or "") end
+    return ""
+end
+
+local function bbmc_fetchQuestContactId()
+    local quest = NPCBlackMarketClientBridge.fetchQuest
+    if type(quest) == "table" then return tostring(quest.contactId or "") end
+    return ""
+end
+
+local function bbmc_fetchQuestZoneRadius()
+    local quest = NPCBlackMarketClientBridge.fetchQuest
+    local value = type(quest) == "table" and tonumber(quest.zoneRadius) or nil
+    if value and value > 0 then return value end
+    if NPCBlackMarketBridge and NPCBlackMarketBridge.FetchQuestZoneRadius then
+        local ok, got = pcall(function() return NPCBlackMarketBridge.FetchQuestZoneRadius() end)
+        if ok and tonumber(got) then return tonumber(got) end
+    end
+    return 24
+end
+
+local function bbmc_defenseQuestActive()
+    local quest = NPCBlackMarketClientBridge.defenseQuest
+    return type(quest) == "table" and tostring(quest.status or "active") == "active" and tostring(quest.id or "") ~= ""
+end
+
+local function bbmc_defenseQuestId()
+    local quest = NPCBlackMarketClientBridge.defenseQuest
+    if type(quest) == "table" then return tostring(quest.id or "") end
+    return ""
+end
+
+local function bbmc_defenseQuestZoneRadius()
+    local quest = NPCBlackMarketClientBridge.defenseQuest
+    local value = type(quest) == "table" and tonumber(quest.zoneRadius) or nil
+    if value and value > 0 then return value end
+    if NPCBlackMarketBridge and NPCBlackMarketBridge.DefenseQuestZoneRadius then
+        local ok, got = pcall(function() return NPCBlackMarketBridge.DefenseQuestZoneRadius() end)
+        if ok and tonumber(got) then return tonumber(got) end
+    end
+    return 28
+end
+
+local function bbmc_anyContractActive()
+    return bbmc_fetchQuestActive() or bbmc_defenseQuestActive()
+end
+
+local function bbmc_itemModData(item)
+    if not (item and item.getModData) then return nil end
+    local ok, md = pcall(function() return item:getModData() end)
+    if ok and type(md) == "table" then return md end
+    return nil
+end
+
+local function bbmc_truthy(value)
+    if value == true then return true end
+    if tonumber(tostring(value or "")) == 1 then return true end
+    local text = string.lower(tostring(value or ""))
+    return text == "true" or text == "yes" or text == "y"
+end
+
+local function bbmc_itemFullType(item)
+    if not item then return nil end
+    local ok, fullType = pcall(function() return item:getFullType() end)
+    if ok and fullType and tostring(fullType) ~= "" then return tostring(fullType) end
+    ok, fullType = pcall(function() return item:getType() end)
+    if ok and fullType and tostring(fullType) ~= "" then
+        fullType = tostring(fullType)
+        if not string.find(fullType, ".", 1, true) then fullType = "Base." .. fullType end
+        return fullType
+    end
+    return nil
+end
+
+local function bbmc_fetchQuestItemNameLooksQuest(item)
+    if not item then return false end
+    local methods = {"getName", "getDisplayName"}
+    for _, method in ipairs(methods) do
+        if item[method] then
+            local ok, name = pcall(function() return item[method](item) end)
+            if ok and name then
+                local text = string.lower(tostring(name))
+                if string.sub(text, 1, 6) == "quest:" then return true end
+            end
+        end
+    end
+    return false
+end
+
+local function bbmc_fetchQuestItemMatches(item, questId)
+    local quest = NPCBlackMarketClientBridge.fetchQuest
+    local md = bbmc_itemModData(item)
+    local wantedQuestId = tostring(questId or (type(quest) == "table" and quest.id) or "")
+    local itemFullType = bbmc_itemFullType(item)
+    local questFullType = type(quest) == "table" and tostring(quest.itemFullType or "") or ""
+    local nameLooksQuest = bbmc_fetchQuestItemNameLooksQuest(item)
+    if md then
+        local mdId = tostring(md.blackMarketFetchQuestId or md.blackMarketDropId or md.blackMarketQuestId or "")
+        local markedItem = bbmc_truthy(md.blackMarketFetchQuestItem) or tostring(md.blackMarketFetchQuestRole or "") == "item" or tostring(md.blackMarketDropRole or "") == "content"
+        if wantedQuestId ~= "" and mdId == wantedQuestId then return true end
+        if markedItem and (nameLooksQuest or questFullType == "" or itemFullType == questFullType) then return true end
+    end
+    if nameLooksQuest then return true end
+    if questFullType ~= "" and itemFullType == questFullType then return true end
+    return false
+end
+
+local function bbmc_findFetchQuestItemInContainer(container, questId, depth, seen)
+    if not container or tostring(questId or "") == "" or (tonumber(depth) or 0) > 6 then return nil end
+    seen = seen or {}
+    if seen[container] then return nil end
+    seen[container] = true
+    if not container.getItems then return nil end
+    local okItems, items = pcall(function() return container:getItems() end)
+    if not (okItems and items and items.size and items.get) then return nil end
+    local okSize, size = pcall(function() return items:size() end)
+    size = okSize and (tonumber(size) or 0) or 0
+    for i = 0, size - 1 do
+        local okItem, item = pcall(function() return items:get(i) end)
+        if okItem and item then
+            if bbmc_fetchQuestItemMatches(item, questId) then return item end
+            local child = nil
+            if item.getInventory then
+                local okChild, gotChild = pcall(function() return item:getInventory() end)
+                if okChild then child = gotChild end
+            end
+            if child then
+                local found = bbmc_findFetchQuestItemInContainer(child, questId, (tonumber(depth) or 0) + 1, seen)
+                if found then return found end
+            end
+        end
+    end
+    return nil
+end
+
+local function bbmc_findFetchQuestItemInWornItems(player, questId)
+    if not (player and player.getWornItems and tostring(questId or "") ~= "") then return nil end
+    local okWorn, worn = pcall(function() return player:getWornItems() end)
+    if not (okWorn and worn) then return nil end
+    local size = 0
+    if worn.size then
+        local okSize, gotSize = pcall(function() return worn:size() end)
+        if okSize then size = tonumber(gotSize) or 0 end
+    end
+    for i = 0, size - 1 do
+        local item = nil
+        if worn.getItemByIndex then
+            local okItem, gotItem = pcall(function() return worn:getItemByIndex(i) end)
+            if okItem then item = gotItem end
+        end
+        if not item and worn.get then
+            local okRow, row = pcall(function() return worn:get(i) end)
+            if okRow and row then
+                if row.getItem then
+                    local okItem, gotItem = pcall(function() return row:getItem() end)
+                    if okItem then item = gotItem end
+                else
+                    item = row
+                end
+            end
+        end
+        if item and bbmc_fetchQuestItemMatches(item, questId) then return item end
+    end
+    return nil
+end
+
+local function bbmc_findFetchQuestItemInHands(player, questId)
+    if not (player and tostring(questId or "") ~= "") then return nil end
+    for _, method in ipairs({"getPrimaryHandItem", "getSecondaryHandItem"}) do
+        if player[method] then
+            local okItem, item = pcall(function() return player[method](player) end)
+            if okItem and item and bbmc_fetchQuestItemMatches(item, questId) then return item end
+        end
+    end
+    return nil
+end
+
+local function bbmc_playerHasFetchQuestItem(player)
+    if not (player and bbmc_fetchQuestActive()) then return false end
+    local questId = bbmc_fetchQuestId()
+    if player.getInventory then
+        local okInv, inv = pcall(function() return player:getInventory() end)
+        if okInv and inv and bbmc_findFetchQuestItemInContainer(inv, questId, 0, {}) then return true end
+    end
+    if bbmc_findFetchQuestItemInWornItems(player, questId) then return true end
+    return bbmc_findFetchQuestItemInHands(player, questId) ~= nil
+end
+
+local function bbmc_fetchQuestCommand(player, contact, action)
+    if not player then return end
+    local args = {action=action, contactId=contact and (contact.blackMarketId or contact.id)}
+    sendClientCommand(player, 'NPCBlackMarket', 'FetchQuest', args)
+end
+
+local function bbmc_defenseQuestCommand(player, contact, action)
+    if not player then return end
+    local args = {action=action, contactId=contact and (contact.blackMarketId or contact.id)}
+    sendClientCommand(player, 'NPCBlackMarket', 'DefenseQuest', args)
+end
+
+local function bbmc_clearFetchQuestWorldMarker(questId)
+    local id = tostring(questId or "")
+    if id == "" then return end
+    if NPCDebugMapNPCMarkersBridge and NPCDebugMapNPCMarkersBridge.Remove then pcall(function() NPCDebugMapNPCMarkersBridge.Remove(id) end) end
+    if NPCDebugMapMarkersBridge and NPCDebugMapMarkersBridge.markers then NPCDebugMapMarkersBridge.markers[id] = nil end
+    if NPCWorldMarkerClientBridge and NPCWorldMarkerClientBridge.Refresh then pcall(function() NPCWorldMarkerClientBridge.Refresh(true) end) end
+end
+
+local function bbmc_addDisabled(option, disabled)
+    if option and disabled then option.notAvailable = true end
+    return option
+end
+
+local function bbmc_addFetchQuestMenu(menu, player, contact)
+    local root = menu:addOption(bbmc_textOr("Menu_BlackMarketContracts", "Contracts"))
+    local sub = menu:getNew(menu)
+    menu:addSubMenu(root, sub)
+
+    local active = bbmc_fetchQuestActive()
+    local defenseActive = bbmc_defenseQuestActive()
+    local anyActive = active or defenseActive
+    local hasItem = active and bbmc_playerHasFetchQuestItem(player)
+    local activeContactId = bbmc_fetchQuestContactId()
+    local thisContactId = tostring(contact and (contact.blackMarketId or contact.id) or "")
+    local sameContact = active and activeContactId ~= "" and activeContactId == thisContactId
+    NPCBlackMarketClientBridge.fetchQuestHasItem = hasItem == true
+
+    local take = sub:addOption(bbmc_textOr("Menu_TakeFetchQuest", "Take steal contract"), player, function(p) bbmc_fetchQuestCommand(p, contact, "take") end)
+    bbmc_addDisabled(take, anyActive)
+
+    local defend = sub:addOption(bbmc_textOr("Menu_TakeDefenseQuest", "Take defense contract"), player, function(p) bbmc_defenseQuestCommand(p, contact, "take") end)
+    bbmc_addDisabled(defend, anyActive)
+
+    local turnIn = sub:addOption(bbmc_textOr("Menu_TurnInFetchQuest", "Turn in stolen QUEST item"), player, function(p) bbmc_fetchQuestCommand(p, contact, "turn_in") end)
+    bbmc_addDisabled(turnIn, not (active and sameContact))
+
+    if active then
+        local quest = NPCBlackMarketClientBridge.fetchQuest
+        local label = tostring(quest and quest.itemLabel or "QUEST item")
+        sub:addOption(bbmc_textOr("Menu_ActiveFetchQuest", "Active") .. ": " .. label, player, function() bbmc_halo(bbmc_textOr("Menu_FetchQuestHint", "Steal the guarded QUEST item and put it in your inventory or the black-market turn-in box."), 235, 160, 255) end)
+    elseif defenseActive then
+        local quest = NPCBlackMarketClientBridge.defenseQuest
+        local wave = tostring(quest and quest.currentWave or 0) .. "/" .. tostring(quest and quest.totalWaves or 3)
+        local stage = tostring(quest and quest.stage or "")
+        local remaining = tonumber(quest and quest.remaining) or 0
+        local currentWave = tonumber(quest and quest.currentWave) or 0
+        local totalWaves = tonumber(quest and quest.totalWaves) or 3
+        local rewardPending = stage == "reward_pending" or stage == "reward_failed" or (currentWave >= totalWaves and remaining <= 0)
+        if rewardPending then
+            sub:addOption(bbmc_textOr("Menu_ClaimDefenseReward", "Claim defense reward"), player, function(p) bbmc_defenseQuestCommand(p, contact, "claim_reward") end)
+            sub:addOption(bbmc_textOr("Menu_ActiveDefenseQuest", "Active defense") .. ": reward pending", player, function() bbmc_halo(bbmc_textOr("Menu_DefenseRewardHint", "Defense cleared. Claim the reward at this black market."), 120, 255, 120) end)
+        else
+            sub:addOption(bbmc_textOr("Menu_ActiveDefenseQuest", "Active defense") .. ": wave " .. wave, player, function() bbmc_halo(bbmc_textOr("Menu_DefenseQuestHint", "Enter and hold the marked zone. Kill all marked attackers."), 255, 90, 180) end)
+        end
+    else
+        sub:addOption(bbmc_textOr("Menu_NoActiveFetchQuest", "No active contract"), player, function() bbmc_halo(bbmc_textOr("Menu_NoActiveFetchQuest", "No active contract"), 210, 210, 210) end)
     end
 end
 
@@ -351,6 +702,9 @@ local function bbmc_addBlackMarketMenu(context, player, contact, forceAdd)
     bbmc_addSideDeals(menu, player, contact, bbmc_text("Menu_BuyDailyPassword"), "password")
     bbmc_addSideDeals(menu, player, contact, bbmc_text("Menu_PayOffBounty"), "bounty_payoff")
     bbmc_addSideDeals(menu, player, contact, bbmc_text("Menu_BuyLeaderRumor"), "leader_tip")
+    bbmc_addIntelDossierSale(menu, player, contact)
+    bbmc_addDropDeals(menu, player, contact)
+    bbmc_addFetchQuestMenu(menu, player, contact)
     NPCBlackMarketClientBridge.lastContextMenuMs = bbmc_nowMs()
     return true
 end
@@ -555,6 +909,229 @@ local function bbmc_objectModData(obj)
     return nil
 end
 
+local function bbmc_isDirectCacheDropType(dropType)
+    dropType = tostring(dropType or "")
+    return dropType == "weapons" or dropType == "ammo" or dropType == "medical" or dropType == "armor"
+end
+
+local function bbmc_cacheItemName(item)
+    if not item then return "" end
+    for _, method in ipairs({"getName", "getDisplayName", "getFullType", "getType"}) do
+        local fn = item[method]
+        if type(fn) == "function" then
+            local ok, value = pcall(function() return fn(item) end)
+            if ok and value ~= nil then return tostring(value) end
+        end
+    end
+    return ""
+end
+
+local function bbmc_cacheItemCount(item)
+    if not item then return nil end
+    for _, method in ipairs({"getCount", "getUses", "getCurrentUses", "getDrainableUsesInt"}) do
+        local fn = item[method]
+        if type(fn) == "function" then
+            local ok, value = pcall(function() return fn(item) end)
+            if ok and tonumber(value) ~= nil then return tonumber(value) end
+        end
+    end
+    return nil
+end
+
+local function bbmc_cacheItemStillUseful(item)
+    if not item then return false end
+    local count = bbmc_cacheItemCount(item)
+    if count ~= nil and count <= 0 then return false end
+    return true
+end
+
+local function bbmc_cacheInventoryEmpty(item, depth)
+    if not item then return true end
+    depth = tonumber(depth) or 0
+    if depth > 5 then return false end
+
+    local inv = nil
+    if item.getInventory then
+        local okInv, gotInv = pcall(function() return item:getInventory() end)
+        if okInv then inv = gotInv end
+    end
+    if not inv then return not bbmc_cacheItemStillUseful(item) end
+
+    if inv.isEmpty then
+        local okEmpty, empty = pcall(function() return inv:isEmpty() end)
+        if okEmpty and empty == true then return true end
+    end
+    if not inv.getItems then return false end
+
+    local okItems, items = pcall(function() return inv:getItems() end)
+    if not (okItems and items and items.size and items.get) then return false end
+    local okSize, size = pcall(function() return items:size() end)
+    size = okSize and (tonumber(size) or 0) or 0
+    if size <= 0 then return true end
+
+    for i = 0, size - 1 do
+        local okGet, child = pcall(function() return items:get(i) end)
+        if okGet and child then
+            local childInv = nil
+            if child.getInventory then
+                local okChildInv, gotChildInv = pcall(function() return child:getInventory() end)
+                if okChildInv then childInv = gotChildInv end
+            end
+            if childInv then
+                if not bbmc_cacheInventoryEmpty(child, depth + 1) then return false end
+            elseif bbmc_cacheItemStillUseful(child) then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+local function bbmc_cacheObjectMatches(item, md, args)
+    if not item then return false end
+    local id = tostring(args and (args.id or args.dropId) or "")
+    if id ~= "" and type(md) == "table" and tostring(md.blackMarketDropId or "") == id then return true end
+    local label = tostring(args and args.label or ""):lower()
+    local name = tostring(bbmc_cacheItemName(item)):lower()
+    if label ~= "" and name == label then return true end
+    local dropType = tostring(args and args.dropType or "")
+    if dropType == "ammo" and (name == "ammo cache" or name == "ammunition cache") then return true end
+    return false
+end
+
+local bbmc_removeWorldInventoryObject
+
+local function bbmc_forceRemoveCache(args)
+    if type(args) ~= "table" or not getCell then return 0 end
+    local cell = getCell()
+    if not (cell and cell.getGridSquare) then return 0 end
+    local x = math.floor((tonumber(args.x) or 0) + 0.5)
+    local y = math.floor((tonumber(args.y) or 0) + 0.5)
+    local z = math.floor(tonumber(args.z) or 0)
+    local radius = 10
+    local removed = 0
+    for dx = -radius, radius do
+        for dy = -radius, radius do
+            local okSquare, square = pcall(function() return cell:getGridSquare(x + dx, y + dy, z) end)
+            if okSquare and square and square.getWorldObjects then
+                local okObjects, worldObjects = pcall(function() return square:getWorldObjects() end)
+                if okObjects and worldObjects and worldObjects.size and worldObjects.get then
+                    local okSize, size = pcall(function() return worldObjects:size() end)
+                    size = okSize and (tonumber(size) or 0) or 0
+                    for i = size - 1, 0, -1 do
+                        local okObj, worldObject = pcall(function() return worldObjects:get(i) end)
+                        if okObj and worldObject and worldObject.getItem then
+                            local okItem, item = pcall(function() return worldObject:getItem() end)
+                            if okItem and item then
+                                local md = nil
+                                if item.getModData then
+                                    local okMd, gotMd = pcall(function() return item:getModData() end)
+                                    if okMd and type(gotMd) == "table" then md = gotMd end
+                                end
+                                if bbmc_cacheObjectMatches(item, md, args) then
+                                    if bbmc_removeWorldInventoryObject(square, worldObject) then removed = removed + 1 end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    local id = tostring(args.id or args.dropId or "")
+    if id ~= "" then
+        NPCBlackMarketClientBridge.dropMarkers[id] = nil
+        if NPCDebugMapMarkersBridge and NPCDebugMapMarkersBridge.markers then NPCDebugMapMarkersBridge.markers[id] = nil end
+        if NPCDebugMapNPCMarkersBridge and NPCDebugMapNPCMarkersBridge.markers then NPCDebugMapNPCMarkersBridge.markers[id] = nil end
+    end
+    return removed
+end
+
+bbmc_removeWorldInventoryObject = function(square, worldObject)
+    if not (square and worldObject) then return false end
+    local removed = false
+    if square.transmitRemoveItemFromSquare then
+        local ok = pcall(function() square:transmitRemoveItemFromSquare(worldObject) end)
+        removed = removed or ok == true
+    end
+    if square.removeWorldObject then
+        local ok = pcall(function() square:removeWorldObject(worldObject) end)
+        removed = removed or ok == true
+    end
+    if worldObject.removeFromSquare then
+        local ok = pcall(function() worldObject:removeFromSquare() end)
+        removed = removed or ok == true
+    end
+    if worldObject.removeFromWorld then
+        local ok = pcall(function() worldObject:removeFromWorld() end)
+        removed = removed or ok == true
+    end
+    return removed
+end
+
+local function bbmc_reportEmptyCacheObject(player, square, worldObject, item, md)
+    if not (player and square and worldObject and item and type(md) == "table") then return false end
+    local dropType = tostring(md.blackMarketDropType or "")
+    if not bbmc_isDirectCacheDropType(dropType) then return false end
+    local dropId = tostring(md.blackMarketDropId or "")
+    if dropId == "" then return false end
+    if md.blackMarketDropContainer ~= true then return false end
+    if not bbmc_cacheInventoryEmpty(item, 0) then return false end
+
+    NPCBlackMarketClientBridge.emptyCacheReports = NPCBlackMarketClientBridge.emptyCacheReports or {}
+    local now = bbmc_nowMs()
+    local last = tonumber(NPCBlackMarketClientBridge.emptyCacheReports[dropId]) or 0
+    if now - last < 3000 then return false end
+    NPCBlackMarketClientBridge.emptyCacheReports[dropId] = now
+
+    -- Remove locally for instant visual cleanup, then ask the server to mark the
+    -- purchased cache as looted and remove the authoritative map marker/world item.
+    bbmc_removeWorldInventoryObject(square, worldObject)
+    sendClientCommand(player, 'NPCBlackMarket', 'DropEmptied', {id=dropId, dropType=dropType, clientEmpty=true})
+    return true
+end
+
+local function bbmc_scanNearbyEmptyCaches(player)
+    if not (player and player.getX and player.getY and getCell) then return 0 end
+    local now = bbmc_nowMs()
+    if NPCBlackMarketClientBridge.lastEmptyCacheScanMs and now - NPCBlackMarketClientBridge.lastEmptyCacheScanMs < 600 then return 0 end
+    NPCBlackMarketClientBridge.lastEmptyCacheScanMs = now
+
+    local cell = getCell()
+    if not (cell and cell.getGridSquare) then return 0 end
+    local px = math.floor((tonumber(player:getX()) or 0) + 0.5)
+    local py = math.floor((tonumber(player:getY()) or 0) + 0.5)
+    local pz = math.floor((player.getZ and tonumber(player:getZ()) or 0) or 0)
+    local reported = 0
+    for dx = -8, 8 do
+        for dy = -8, 8 do
+            local square = nil
+            local okSquare, gotSquare = pcall(function() return cell:getGridSquare(px + dx, py + dy, pz) end)
+            if okSquare then square = gotSquare end
+            if square and square.getWorldObjects then
+                local okObjects, worldObjects = pcall(function() return square:getWorldObjects() end)
+                if okObjects and worldObjects and worldObjects.size and worldObjects.get then
+                    local okSize, size = pcall(function() return worldObjects:size() end)
+                    size = okSize and (tonumber(size) or 0) or 0
+                    for i = size - 1, 0, -1 do
+                        local okObj, worldObject = pcall(function() return worldObjects:get(i) end)
+                        if okObj and worldObject and worldObject.getItem then
+                            local okItem, item = pcall(function() return worldObject:getItem() end)
+                            if okItem and item and item.getModData then
+                                local okMd, md = pcall(function() return item:getModData() end)
+                                if okMd and bbmc_reportEmptyCacheObject(player, square, worldObject, item, md) then
+                                    reported = reported + 1
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return reported
+end
+
 local function bbmc_markWorldProp(obj, contact, key, spritePath)
     local md = bbmc_objectModData(obj)
     if type(md) ~= "table" then return end
@@ -697,12 +1274,16 @@ function NPCBlackMarketClientBridge.SyncWorldProps(force)
     local player = getPlayer() or getSpecificPlayer(0)
     if not (player and player.getX and player.getY) then return end
     local maxDrawDist = bbmc_num("BlackMarket_StaticDrawRadius", 70, 8, 180)
+    local maxDrawDist2 = maxDrawDist * maxDrawDist
+    local px, py = player:getX(), player:getY()
     local wanted = {}
 
     bbmc_eachContact(function(contact, key)
         local x, y, z = tonumber(contact.x), tonumber(contact.y), tonumber(contact.z) or 0
         if not x or not y then return end
-        if bbmc_dist(x, y, player:getX(), player:getY()) > maxDrawDist then return end
+        local dx = x - px
+        local dy = y - py
+        if dx * dx + dy * dy > maxDrawDist2 then return end
         local square, gx, gy, gz = bbmc_gridSquare(x, y, z)
         if not square then return end
         local spritePath = bbmc_worldPropSpritePath(contact)
@@ -720,6 +1301,223 @@ function NPCBlackMarketClientBridge.SyncWorldProps(force)
 
     for key, _ in pairs(NPCBlackMarketClientBridge.worldProps or {}) do
         if not wanted[key] then bbmc_removeWorldPropByKey(key) end
+    end
+end
+
+local function bbmc_uiVisible(ui)
+    if not ui then return false end
+    if ui.isReallyVisible then
+        local ok, value = pcall(function() return ui:isReallyVisible() end)
+        if ok and value ~= nil then return value == true end
+    end
+    if ui.isVisible then
+        local ok, value = pcall(function() return ui:isVisible() end)
+        if ok and value ~= nil then return value == true end
+    end
+    if ui.getIsVisible then
+        local ok, value = pcall(function() return ui:getIsVisible() end)
+        if ok and value ~= nil then return value == true end
+    end
+    if ui.javaObject and ui.javaObject.isVisible then
+        local ok, value = pcall(function() return ui.javaObject:isVisible() end)
+        if ok and value ~= nil then return value == true end
+    end
+    return ui.visible == true and ui.javaObject ~= nil
+end
+
+local function bbmc_isWorldMapUI(ui)
+    if not ui then return false end
+    local t = tostring(ui.Type or ui.type or ui.className or "")
+    if t == "ISWorldMap" then return true end
+    local mt = getmetatable(ui)
+    local idx = mt and mt.__index or nil
+    local mtName = tostring((type(idx) == "table" and (idx.Type or idx.type or idx.className)) or "")
+    if mtName == "ISWorldMap" then return true end
+    if ui.mapAPI and ui.character and ui.symbolsUI then return true end
+    return false
+end
+
+local function bbmc_isWorldMapOpen()
+    local direct = nil
+    if type(_G) == "table" then direct = rawget(_G, "ISWorldMap_instance") or rawget(_G, "ISWorldMapInstance") end
+    if direct and bbmc_isWorldMapUI(direct) and direct.javaObject and bbmc_uiVisible(direct) then return true end
+    if UIManager and UIManager.getUI then
+        local ok, list = pcall(function() return UIManager.getUI() end)
+        if ok and list then
+            local size = nil
+            if list.size then
+                local sOk, sVal = pcall(function() return list:size() end)
+                if sOk then size = tonumber(sVal) end
+            end
+            if size and list.get then
+                for i = 0, size - 1 do
+                    local gOk, ui = pcall(function() return list:get(i) end)
+                    if gOk and bbmc_isWorldMapUI(ui) and bbmc_uiVisible(ui) then return true end
+                end
+            elseif type(list) == "table" then
+                for _, ui in pairs(list) do
+                    if bbmc_isWorldMapUI(ui) and bbmc_uiVisible(ui) then return true end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function bbmc_textManager()
+    if getTextManager then
+        local ok, tm = pcall(function() return getTextManager() end)
+        if ok and tm then return tm end
+    end
+    if TextManager and TextManager.instance then return TextManager.instance end
+    return nil
+end
+
+local function bbmc_drawTextCentre(ui, text, x, y, r, g, b, a, font)
+    text = tostring(text or "")
+    if text == "" then return false end
+    x = tonumber(x) or 0
+    y = tonumber(y) or 0
+    r = tonumber(r) or 1.0
+    g = tonumber(g) or 1.0
+    b = tonumber(b) or 1.0
+    a = tonumber(a) or 1.0
+    font = font or UIFont.Small
+
+    local tm = bbmc_textManager()
+    if tm then
+        if tm.DrawStringCentre then
+            local ok = pcall(function() tm:DrawStringCentre(font, x, y, text, r, g, b, a) end)
+            if ok then return true end
+            ok = pcall(function() tm:DrawStringCentre(text, x, y, r, g, b, a, font) end)
+            if ok then return true end
+        end
+        if tm.DrawString then
+            local tw = 0
+            if tm.MeasureStringX then
+                local ok, measured = pcall(function() return tm:MeasureStringX(font, text) end)
+                if ok then tw = tonumber(measured) or 0 end
+            end
+            local ok = pcall(function() tm:DrawString(font, x - (tw / 2), y, text, r, g, b, a) end)
+            if ok then return true end
+            ok = pcall(function() tm:DrawString(x - (tw / 2), y, text, r, g, b, a, font) end)
+            if ok then return true end
+        end
+    end
+
+    if ui and ui.drawTextCentre then
+        local ok = pcall(function() ui:drawTextCentre(text, x, y, r, g, b, a, font) end)
+        if ok then return true end
+    end
+    return false
+end
+
+local function bbmc_drawZonePoint(ui, x, y, alpha, r, g, b)
+    x = math.floor(tonumber(x) or 0)
+    y = math.floor(tonumber(y) or 0)
+    alpha = tonumber(alpha) or 0.60
+    bbmc_drawTextCentre(ui, "•", x, y - 5, r or 0.70, g or 0.25, b or 1.0, alpha, UIFont.Small)
+    return true
+end
+
+local function bbmc_zoneDrawProxy()
+    local proxy = NPCBlackMarketClientBridge._fetchQuestZoneDrawProxy
+    if proxy and proxy.drawRect then return proxy end
+    if ISPanel and ISPanel.new then
+        proxy = ISPanel:new(0, 0, 1, 1)
+    elseif ISUIElement and ISUIElement.new then
+        proxy = ISUIElement:new(0, 0, 1, 1)
+    end
+    if proxy then
+        pcall(function() proxy.background = false end)
+        pcall(function() proxy.moveWithMouse = false end)
+        pcall(function() proxy.bConsumeMouseEvents = false end)
+        pcall(function() proxy.consumeMouseEvents = false end)
+        pcall(function() proxy.capture = false end)
+        if proxy.initialise then pcall(function() proxy:initialise() end) end
+        NPCBlackMarketClientBridge._fetchQuestZoneDrawProxy = proxy
+    end
+    return proxy
+end
+
+function NPCBlackMarketClientBridge.RenderFetchQuestZoneOverlay()
+    if bbmc_isWorldMapOpen() then return end
+    if not bbmc_bool("BlackMarket_Enabled", true) then return end
+
+    local quest = NPCBlackMarketClientBridge.fetchQuest
+    local defense = false
+    if type(quest) ~= "table" or tostring(quest.status or "active") ~= "active" or quest.cacheEscaped == true or quest.guardsDematerialized == true then
+        quest = NPCBlackMarketClientBridge.defenseQuest
+        defense = true
+    end
+    if type(quest) ~= "table" or tostring(quest.status or "active") ~= "active" then return end
+
+    local player = getPlayer() or getSpecificPlayer(0)
+    if not (player and player.getX and player.getY) then return end
+    local cx = defense and tonumber(quest.x) or tonumber(quest.originalCacheX or quest.x)
+    local cy = defense and tonumber(quest.y) or tonumber(quest.originalCacheY or quest.y)
+    local cz = defense and (tonumber(quest.z) or 0) or (tonumber(quest.originalCacheZ or quest.z) or 0)
+    if not (cx and cy) then return end
+    local radius = defense and bbmc_defenseQuestZoneRadius() or bbmc_fetchQuestZoneRadius()
+    local pd = bbmc_dist(player:getX(), player:getY(), cx, cy)
+    if pd > radius + 42 then return end
+
+    local proxy = bbmc_zoneDrawProxy()
+    if not proxy then return end
+    local core = getCore and getCore() or nil
+    local sw = core and core.getScreenWidth and core:getScreenWidth() or 1920
+    local sh = core and core.getScreenHeight and core:getScreenHeight() or 1080
+    local r, g, b = 0.70, 0.25, 1.0
+    local alpha = NPCBlackMarketClientBridge.fetchQuestHasItem and 0.78 or 0.58
+    if defense then
+        r, g, b = 1.0, 0.16, 0.50
+        alpha = 0.68
+    end
+    local lastX, lastY = nil, nil
+    for i = 0, 40 do
+        local a = (math.pi * 2) * (i / 40)
+        local wx = cx + math.cos(a) * radius
+        local wy = cy + math.sin(a) * radius
+        local sx, sy = bbmc_worldToScreen(wx, wy, cz)
+        if sx and sy then
+            if lastX and lastY then
+                local steps = math.max(1, math.floor(math.max(math.abs(sx - lastX), math.abs(sy - lastY)) / 5))
+                for step = 0, steps do
+                    local t = step / steps
+                    local x = math.floor(lastX + (sx - lastX) * t)
+                    local y = math.floor(lastY + (sy - lastY) * t)
+                    if x > -16 and y > -16 and x < sw + 16 and y < sh + 16 then
+                        bbmc_drawZonePoint(proxy, x, y, alpha, r, g, b)
+                    end
+                end
+            end
+            lastX, lastY = sx, sy
+        end
+    end
+    local sx, sy = bbmc_worldToScreen(cx, cy, cz)
+    if sx and sy then
+        local label = NPCBlackMarketClientBridge.fetchQuestHasItem and "ESCAPE QUEST ZONE" or "BLACK MARKET QUEST ZONE"
+        if defense then
+            label = "DEFENSE ZONE"
+            if tonumber(quest.currentWave or 0) and tonumber(quest.currentWave or 0) > 0 then
+                label = label .. " W" .. tostring(quest.currentWave or 0) .. "/" .. tostring(quest.totalWaves or 3) .. " LEFT " .. tostring(quest.remaining or 0)
+            end
+        end
+        bbmc_drawTextCentre(proxy, label, sx, sy - 70, r, g, b, 0.88, UIFont.Small)
+    end
+end
+
+function NPCBlackMarketClientBridge.EnsureFetchQuestZoneOverlay()
+    if NPCBlackMarketClientBridge._fetchQuestZoneOverlayHookInstalled then return end
+    NPCBlackMarketClientBridge._fetchQuestZoneOverlayHookInstalled = true
+    if Events and Events.OnPostUIDraw then
+        Events.OnPostUIDraw.Add(NPCBlackMarketClientBridge.RenderFetchQuestZoneOverlay)
+    elseif Events and Events.OnPreUIDraw then
+        Events.OnPreUIDraw.Add(NPCBlackMarketClientBridge.RenderFetchQuestZoneOverlay)
+    elseif Events and Events.OnRenderTick then
+        Events.OnRenderTick.Add(NPCBlackMarketClientBridge.RenderFetchQuestZoneOverlay)
+    else
+        NPCBlackMarketClientBridge._fetchQuestZoneOverlayHookInstalled = false
     end
 end
 
@@ -816,11 +1614,31 @@ function NPCBlackMarketStaticOverlayBridge:render()
         local dy = math.floor(sy - size + 4)
         if dx < -size or dy < -size or dx > sw + size or dy > sh + size then return end
         local alpha = math.max(0.35, math.min(1.0, 1.0 - (dist / maxDrawDist) * 0.55))
+        local reward = contact.blackMarketHasPendingReward == true or contact.blackMarketRewardHighlight == true
+        local turnIn = contact.blackMarketQuestTurnInHighlight == true
+        if reward or turnIn then
+            local pad = math.max(4, math.floor(size * 0.12))
+            if self.drawRectBorder then
+                self:drawRectBorder(dx - pad - 1, dy - pad - 1, size + pad * 2 + 2, size + pad * 2 + 2, alpha * 0.92, 0, 0, 0)
+                self:drawRectBorder(dx - pad, dy - pad, size + pad * 2, size + pad * 2, alpha * 0.96, 0.70, 0.25, 1.0)
+                self:drawRectBorder(dx - pad + 2, dy - pad + 2, size + pad * 2 - 4, size + pad * 2 - 4, alpha * 0.72, 1.0, 0.20, 0.82)
+            else
+                self:drawRect(dx - pad - 1, dy - pad - 1, size + pad * 2 + 2, 2, alpha * 0.92, 0, 0, 0)
+                self:drawRect(dx - pad - 1, dy + size + pad + 1, size + pad * 2 + 2, 2, alpha * 0.92, 0, 0, 0)
+                self:drawRect(dx - pad - 1, dy - pad - 1, 2, size + pad * 2 + 2, alpha * 0.92, 0, 0, 0)
+                self:drawRect(dx + size + pad + 1, dy - pad - 1, 2, size + pad * 2 + 2, alpha * 0.92, 0, 0, 0)
+            end
+        end
         if tex then
             self:drawTextureScaled(tex, dx, dy, size, size, alpha, 1, 1, 1)
         else
             self:drawRect(dx + 8, dy + 8, size - 16, size - 16, alpha, 0.10, 0.06, 0.12)
             self:drawTextCentre("BM", dx + size / 2, dy + size / 2 - 6, 0.95, 0.75, 1.0, alpha, UIFont.Small)
+        end
+        if reward then
+            self:drawTextCentre("QUEST REWARD", dx + size / 2, dy - 24, 1.0, 0.82, 1.0, alpha, UIFont.Small)
+        elseif turnIn then
+            self:drawTextCentre("QUEST TURN-IN", dx + size / 2, dy - 24, 1.0, 0.82, 1.0, alpha, UIFont.Small)
         end
         if dist <= 10 then
             local label = bbmc_text("Map_BlackMarket")
@@ -869,6 +1687,83 @@ function NPCBlackMarketClientBridge.OnServerCommand(module, command, args)
     if not NPCLegacyContractBridge.IsModule(module, "NPCBlackMarket", "blackMarket") then return end
     if command == "Result" and args and args.text then
         bbmc_halo(args.text, args.r, args.g, args.b)
+    elseif command == "TakeClientPayment" and args then
+        bbmc_takeClientPayment(args)
+    elseif command == "ForceRemoveCache" and args then
+        bbmc_forceRemoveCache(args)
+    elseif command == "DropCreated" and args then
+        local marker = type(args.marker) == "table" and args.marker or nil
+        if marker and marker.id then
+            NPCBlackMarketClientBridge.dropMarkers[tostring(marker.id)] = marker
+            if NPCDebugMapMarkersBridge then
+                NPCDebugMapMarkersBridge.markers = NPCDebugMapMarkersBridge.markers or {}
+                NPCDebugMapMarkersBridge.markers[tostring(marker.id)] = marker
+            end
+            if NPCDebugMapNPCMarkersBridge and NPCDebugMapNPCMarkersBridge.Set then
+                pcall(function() NPCDebugMapNPCMarkersBridge.Set(marker) end)
+            end
+            if NPCWorldMarkerClientBridge and NPCWorldMarkerClientBridge.Refresh then
+                pcall(function() NPCWorldMarkerClientBridge.Refresh(true) end)
+            end
+        end
+    elseif command == "DropRemoved" and args then
+        local id = tostring(args.id or args.dropId or "")
+        if id ~= "" then
+            NPCBlackMarketClientBridge.dropMarkers[id] = nil
+            if NPCDebugMapMarkersBridge and NPCDebugMapMarkersBridge.markers then NPCDebugMapMarkersBridge.markers[id] = nil end
+            if NPCDebugMapNPCMarkersBridge and NPCDebugMapNPCMarkersBridge.Remove then pcall(function() NPCDebugMapNPCMarkersBridge.Remove(id) end) end
+            if NPCWorldMarkerClientBridge and NPCWorldMarkerClientBridge.Refresh then pcall(function() NPCWorldMarkerClientBridge.Refresh(true) end) end
+        end
+    elseif command == "FetchQuestState" and args then
+        local previousQuestId = nil
+        local previousTurnInId = nil
+        if type(NPCBlackMarketClientBridge.fetchQuest) == "table" and NPCBlackMarketClientBridge.fetchQuest.id then
+            previousQuestId = tostring(NPCBlackMarketClientBridge.fetchQuest.id)
+            previousTurnInId = previousQuestId .. "_turnin"
+        end
+        NPCBlackMarketClientBridge.fetchQuest = type(args.quest) == "table" and args.quest or nil
+        NPCBlackMarketClientBridge.fetchQuestHasItem = args.hasItem == true
+        if NPCBlackMarketClientBridge.fetchQuest and (args.hasItem == true or NPCBlackMarketClientBridge.fetchQuest.carried == true or NPCBlackMarketClientBridge.fetchQuest.markerHidden == true) then
+            bbmc_clearFetchQuestWorldMarker(NPCBlackMarketClientBridge.fetchQuest.id)
+        end
+        if not NPCBlackMarketClientBridge.fetchQuest then
+            if previousQuestId then bbmc_clearFetchQuestWorldMarker(previousQuestId) end
+            if previousTurnInId then
+                if NPCDebugMapNPCMarkersBridge and NPCDebugMapNPCMarkersBridge.Remove then pcall(function() NPCDebugMapNPCMarkersBridge.Remove(previousTurnInId) end) end
+                if NPCDebugMapMarkersBridge and NPCDebugMapMarkersBridge.markers then NPCDebugMapMarkersBridge.markers[previousTurnInId] = nil end
+            end
+        end
+    elseif command == "DefenseQuestState" and args then
+        local previousQuestId = nil
+        if type(NPCBlackMarketClientBridge.defenseQuest) == "table" and NPCBlackMarketClientBridge.defenseQuest.id then
+            previousQuestId = tostring(NPCBlackMarketClientBridge.defenseQuest.id)
+        end
+        NPCBlackMarketClientBridge.defenseQuest = type(args.quest) == "table" and args.quest or nil
+        if not NPCBlackMarketClientBridge.defenseQuest and previousQuestId then bbmc_clearFetchQuestWorldMarker(previousQuestId) end
+        if args.message then
+            if args.completed == true then
+                bbmc_halo(tostring(args.message), 120, 255, 120)
+            elseif args.cancelled == true then
+                bbmc_halo(tostring(args.message), 255, 120, 90)
+            else
+                bbmc_halo(tostring(args.message), 255, 90, 180)
+            end
+        end
+    elseif command == "LeaderIntel" and args then
+        local marker = type(args.marker) == "table" and args.marker or nil
+        if marker and marker.id then
+            if NPCDebugMapNPCMarkersBridge and NPCDebugMapNPCMarkersBridge.Set then
+                pcall(function() NPCDebugMapNPCMarkersBridge.Set(marker) end)
+            elseif NPCDebugMapNPCMarkersBridge then
+                NPCDebugMapNPCMarkersBridge.markers = NPCDebugMapNPCMarkersBridge.markers or {}
+                NPCDebugMapNPCMarkersBridge.markers[tostring(marker.id)] = marker
+            end
+            if NPCDebugMapMarkersBridge then
+                NPCDebugMapMarkersBridge.markers = NPCDebugMapMarkersBridge.markers or {}
+                NPCDebugMapMarkersBridge.markers[tostring(marker.id)] = marker
+            end
+            bbmc_halo("Leader intel marker added to the global map.", 255, 230, 80)
+        end
     elseif command == "Contacts" and args then
         NPCBlackMarketClientBridge.contacts = {}
         for _, contact in pairs(args.contacts or {}) do
@@ -885,12 +1780,122 @@ function NPCBlackMarketClientBridge.OnServerCommand(module, command, args)
     end
 end
 
+local function bbmc_findFetchQuestWorldItem(player)
+    if not (player and player.getX and player.getY and getCell and bbmc_fetchQuestActive()) then return nil end
+    local questId = bbmc_fetchQuestId()
+    if questId == "" then return nil end
+    local cell = getCell()
+    if not (cell and cell.getGridSquare) then return nil end
+    local px = math.floor((tonumber(player:getX()) or 0) + 0.5)
+    local py = math.floor((tonumber(player:getY()) or 0) + 0.5)
+    local pz = math.floor((player.getZ and tonumber(player:getZ()) or 0) or 0)
+    for dx = -10, 10 do
+        for dy = -10, 10 do
+            local okSquare, square = pcall(function() return cell:getGridSquare(px + dx, py + dy, pz) end)
+            if okSquare and square and square.getWorldObjects then
+                local okObjects, worldObjects = pcall(function() return square:getWorldObjects() end)
+                if okObjects and worldObjects and worldObjects.size and worldObjects.get then
+                    local okSize, size = pcall(function() return worldObjects:size() end)
+                    size = okSize and (tonumber(size) or 0) or 0
+                    for i = 0, size - 1 do
+                        local okObj, worldObject = pcall(function() return worldObjects:get(i) end)
+                        if okObj and worldObject and worldObject.getItem then
+                            local okItem, item = pcall(function() return worldObject:getItem() end)
+                            if okItem and item then
+                                if bbmc_fetchQuestItemMatches(item, questId) then return square end
+                                local child = nil
+                                if item.getInventory then
+                                    local okChild, gotChild = pcall(function() return item:getInventory() end)
+                                    if okChild then child = gotChild end
+                                end
+                                if child and bbmc_findFetchQuestItemInContainer(child, questId, 0, {}) then return square end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function bbmc_reportFetchQuestState(player, now)
+    if not (player and bbmc_fetchQuestActive()) then return end
+    now = tonumber(now) or bbmc_nowMs()
+    if NPCBlackMarketClientBridge.lastFetchQuestReportMs and now - NPCBlackMarketClientBridge.lastFetchQuestReportMs < 1600 then return end
+    NPCBlackMarketClientBridge.lastFetchQuestReportMs = now
+
+    local questId = bbmc_fetchQuestId()
+    if bbmc_playerHasFetchQuestItem(player) then
+        NPCBlackMarketClientBridge.fetchQuestHasItem = true
+        bbmc_clearFetchQuestWorldMarker(questId)
+        local quest = NPCBlackMarketClientBridge.fetchQuest
+        local cx = type(quest) == "table" and tonumber(quest.originalCacheX or quest.x) or nil
+        local cy = type(quest) == "table" and tonumber(quest.originalCacheY or quest.y) or nil
+        local radius = bbmc_fetchQuestZoneRadius()
+        if type(quest) == "table" and quest.cacheEscaped ~= true and cx and cy and player.getX and player.getY then
+            local dx = (tonumber(player:getX()) or 0) - cx
+            local dy = (tonumber(player:getY()) or 0) - cy
+            if (dx * dx + dy * dy) > (radius * radius) then
+                if NPCBlackMarketClientBridge.lastFetchQuestReportState ~= "escaped" or not NPCBlackMarketClientBridge.lastFetchQuestReportAtMs or now - NPCBlackMarketClientBridge.lastFetchQuestReportAtMs > 5000 then
+                    NPCBlackMarketClientBridge.lastFetchQuestReportState = "escaped"
+                    NPCBlackMarketClientBridge.lastFetchQuestReportAtMs = now
+                    sendClientCommand(player, 'NPCBlackMarket', 'FetchQuest', {action="track", questId=questId, state="escaped", x=player:getX(), y=player:getY(), z=(player.getZ and player:getZ() or 0)})
+                end
+                return
+            end
+        end
+        if NPCBlackMarketClientBridge.lastFetchQuestReportState ~= "carried" or not NPCBlackMarketClientBridge.lastFetchQuestReportAtMs or now - NPCBlackMarketClientBridge.lastFetchQuestReportAtMs > 5000 then
+            NPCBlackMarketClientBridge.lastFetchQuestReportState = "carried"
+            NPCBlackMarketClientBridge.lastFetchQuestReportAtMs = now
+            sendClientCommand(player, 'NPCBlackMarket', 'FetchQuest', {action="track", questId=questId, state="carried"})
+        end
+        return
+    end
+
+    NPCBlackMarketClientBridge.fetchQuestHasItem = false
+    local square = bbmc_findFetchQuestWorldItem(player)
+    if square and square.getX and square.getY then
+        local x, y, z = square:getX(), square:getY(), square.getZ and square:getZ() or 0
+        local key = tostring(x) .. ":" .. tostring(y) .. ":" .. tostring(z)
+        if NPCBlackMarketClientBridge.lastFetchQuestReportState ~= key or not NPCBlackMarketClientBridge.lastFetchQuestReportAtMs or now - NPCBlackMarketClientBridge.lastFetchQuestReportAtMs > 5000 then
+            NPCBlackMarketClientBridge.lastFetchQuestReportState = key
+            NPCBlackMarketClientBridge.lastFetchQuestReportAtMs = now
+            sendClientCommand(player, 'NPCBlackMarket', 'FetchQuest', {action="track", questId=questId, state="world", x=x, y=y, z=z})
+        end
+    end
+end
+
+local function bbmc_reportDefenseQuestState(player, now)
+    if not (player and player.getX and player.getY and bbmc_defenseQuestActive()) then return end
+    now = tonumber(now) or bbmc_nowMs()
+    if NPCBlackMarketClientBridge.lastDefenseQuestReportMs and now - NPCBlackMarketClientBridge.lastDefenseQuestReportMs < 1200 then return end
+    NPCBlackMarketClientBridge.lastDefenseQuestReportMs = now
+    local quest = NPCBlackMarketClientBridge.defenseQuest
+    if type(quest) ~= "table" then return end
+    local stage = tostring(quest.stage or "travel")
+    if stage ~= "travel" then return end
+    local radius = bbmc_defenseQuestZoneRadius()
+    local dx = (tonumber(player:getX()) or 0) - (tonumber(quest.x) or 0)
+    local dy = (tonumber(player:getY()) or 0) - (tonumber(quest.y) or 0)
+    if (dx * dx + dy * dy) <= radius * radius then
+        if NPCBlackMarketClientBridge.lastDefenseQuestReportState ~= "entered" or not NPCBlackMarketClientBridge.lastDefenseQuestReportAtMs or now - NPCBlackMarketClientBridge.lastDefenseQuestReportAtMs > 4000 then
+            NPCBlackMarketClientBridge.lastDefenseQuestReportState = "entered"
+            NPCBlackMarketClientBridge.lastDefenseQuestReportAtMs = now
+            sendClientCommand(player, 'NPCBlackMarket', 'DefenseQuest', {action="track", questId=bbmc_defenseQuestId(), state="entered", x=player:getX(), y=player:getY(), z=(player.getZ and player:getZ() or 0)})
+        end
+    end
+end
+
 local bbmc_resetOverlay
 
 local function bbmc_onCreatePlayer()
     if bbmc_resetOverlay then bbmc_resetOverlay() end
     local player = getPlayer() or getSpecificPlayer(0)
-    if player then NPCBlackMarketClientBridge.Refresh(player) end
+    if player then
+        NPCBlackMarketClientBridge.Refresh(player)
+        sendClientCommand(player, 'NPCBlackMarket', 'DefenseQuest', {action="status"})
+    end
     NPCBlackMarketClientBridge.SyncWorldProps(true)
 end
 
@@ -902,6 +1907,22 @@ end
 
 local function bbmc_onRightMouseUp(x, y)
     bbmc_openManualContext(0, x, y)
+end
+
+local function bbmc_onPlayerDeath(player)
+    if type(player) == "number" then player = getSpecificPlayer(player) end
+    player = player or getPlayer() or getSpecificPlayer(0)
+    if player then
+        sendClientCommand(player, 'NPCBlackMarket', 'FetchQuest', {action="death", state="dead", questId=bbmc_fetchQuestId()})
+        sendClientCommand(player, 'NPCBlackMarket', 'DefenseQuest', {action="death", state="dead", questId=bbmc_defenseQuestId()})
+    end
+    NPCBlackMarketClientBridge.fetchQuest = nil
+    NPCBlackMarketClientBridge.fetchQuestHasItem = false
+    NPCBlackMarketClientBridge.defenseQuest = nil
+    NPCBlackMarketClientBridge.lastFetchQuestReportState = nil
+    NPCBlackMarketClientBridge.lastFetchQuestReportAtMs = nil
+    NPCBlackMarketClientBridge.lastDefenseQuestReportState = nil
+    NPCBlackMarketClientBridge.lastDefenseQuestReportAtMs = nil
 end
 
 bbmc_resetOverlay = function()
@@ -924,11 +1945,15 @@ end
 local function bbmc_onTick()
     local now = bbmc_nowMs()
     bbmc_applyWorldPropRepulsion(now)
+    local tickPlayer = getPlayer() or getSpecificPlayer(0)
+    if tickPlayer then bbmc_scanNearbyEmptyCaches(tickPlayer) end
     if NPCBlackMarketClientBridge.lastAccessCheckMs and now - NPCBlackMarketClientBridge.lastAccessCheckMs < 1000 then return end
     NPCBlackMarketClientBridge.lastAccessCheckMs = now
 
     local player = getPlayer() or getSpecificPlayer(0)
     if not player then return end
+    bbmc_reportFetchQuestState(player, now)
+    bbmc_reportDefenseQuestState(player, now)
     local access = bbmc_accessLevel(player)
     if NPCBlackMarketClientBridge.lastAccessLevel == nil then
         NPCBlackMarketClientBridge.lastAccessLevel = access
@@ -958,10 +1983,13 @@ Events.OnServerCommand.Add(NPCBlackMarketClientBridge.OnServerCommand)
 Events.OnCreatePlayer.Add(bbmc_onCreatePlayer)
 Events.OnGameStart.Add(function()
     bbmc_resetOverlay()
+    NPCBlackMarketClientBridge.EnsureFetchQuestZoneOverlay()
     NPCBlackMarketClientBridge.SyncWorldProps(true)
 end)
 if Events.OnRightMouseDown then Events.OnRightMouseDown.Add(bbmc_onRightMouseDown) end
 if Events.OnRightMouseUp then Events.OnRightMouseUp.Add(bbmc_onRightMouseUp) end
+if Events.OnPlayerDeath then Events.OnPlayerDeath.Add(bbmc_onPlayerDeath) end
 if Events.OnSave then Events.OnSave.Add(NPCBlackMarketClientBridge.CleanupWorldProps) end
 if Events.OnDisconnect then Events.OnDisconnect.Add(NPCBlackMarketClientBridge.CleanupWorldProps) end
+NPCBlackMarketClientBridge.EnsureFetchQuestZoneOverlay()
 if Events.OnTick then Events.OnTick.Add(bbmc_onTick) end

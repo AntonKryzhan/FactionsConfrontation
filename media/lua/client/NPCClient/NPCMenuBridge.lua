@@ -47,6 +47,20 @@ local function bm_menuIsNPCZombie(zombie)
     return ok and result == true
 end
 
+
+local function bm_menuSquareIsInsideBuilding(square)
+    if not square then return false end
+    if square.getRoom then
+        local ok, room = pcall(function() return square:getRoom() end)
+        if ok and room ~= nil then return true end
+    end
+    if square.getBuilding then
+        local ok, building = pcall(function() return square:getBuilding() end)
+        if ok and building ~= nil then return true end
+    end
+    return false
+end
+
 local function bm_menuSay(player, text)
     if player and player.Say and text then pcall(function() player:Say(text) end) end
 end
@@ -188,6 +202,13 @@ local function bm_text(key)
     return getText(NPC_MENU_LEGACY_TEXT_PREFIX .. key)
 end
 
+local function bm_menuLabel(key, fallback)
+    local text = bm_text(key)
+    local fullKey = NPC_MENU_LEGACY_TEXT_PREFIX .. tostring(key or "")
+    if not text or text == key or text == fullKey then return fallback or tostring(key or "") end
+    return text
+end
+
 local function bm_menuIsAdmin()
     return isAdmin and isAdmin()
 end
@@ -203,7 +224,10 @@ end
 local function bm_menuIsHiredByPlayer(brain, player)
     if not brain then return false end
     local pid = bm_menuPlayerId(player)
-    return pid ~= nil and brain.mercenaryHiredBy ~= nil and tostring(brain.mercenaryHiredBy) == tostring(pid)
+    if not pid then return false end
+    if brain.mercenaryHiredBy ~= nil and tostring(brain.mercenaryHiredBy) == tostring(pid) then return true end
+    if brain.master ~= nil and tostring(brain.master) == tostring(pid) and (brain.mercenaryHired == true or brain.relationshipToPlayer == "hired_bodyguard" or brain.factionState == "hired_blue_bodyguard") then return true end
+    return false
 end
 
 local function bm_menuObjectSquare(obj)
@@ -311,6 +335,53 @@ local function bm_menuBrainHiredByPlayer(brain, player)
     if brain.mercenaryHiredBy ~= nil and tostring(brain.mercenaryHiredBy) == tostring(pid) then return true end
     if brain.master ~= nil and tostring(brain.master) == tostring(pid) and (brain.mercenaryHired == true or brain.relationshipToPlayer == "hired_bodyguard" or brain.factionState == "hired_blue_bodyguard") then return true end
     return false
+end
+
+local function bm_menuMercenaryGroupHiredByPlayer(groupId, player)
+    if groupId == nil or tostring(groupId) == "" then return false end
+    local pid = bm_menuPlayerId(player)
+    if not pid then return false end
+    local sid = tostring(groupId)
+    local owner = tostring(pid)
+    local gmd = GetNPCModData and GetNPCModData() or nil
+    if not gmd then return false end
+
+    if gmd.VirtualGroups then
+        local group = gmd.VirtualGroups[sid] or gmd.VirtualGroups[tonumber(sid)]
+        if group and group.mercenaryHiredBy ~= nil and tostring(group.mercenaryHiredBy) == owner then return true end
+    end
+
+    if gmd.Queue then
+        for _, brain in pairs(gmd.Queue) do
+            if brain and bm_menuGroupId(brain) and tostring(bm_menuGroupId(brain)) == sid and bm_menuBrainHiredByPlayer(brain, player) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function bm_menuMercenaryGroupHiredByOther(groupId, player)
+    if groupId == nil or tostring(groupId) == "" then return false end
+    local pid = bm_menuPlayerId(player)
+    if not pid then return false end
+    local sid = tostring(groupId)
+    local owner = tostring(pid)
+    local gmd = GetNPCModData and GetNPCModData() or nil
+    if not (gmd and gmd.VirtualGroups) then return false end
+    local group = gmd.VirtualGroups[sid] or gmd.VirtualGroups[tonumber(sid)]
+    return group and group.mercenaryHiredBy ~= nil and tostring(group.mercenaryHiredBy) ~= owner
+end
+
+local function bm_menuMercenaryBrainHiredByOther(brain, player)
+    if not brain then return false end
+    local pid = bm_menuPlayerId(player)
+    if not pid then return false end
+    if brain.mercenaryHiredBy ~= nil and tostring(brain.mercenaryHiredBy) ~= tostring(pid) then return true end
+    if brain.master ~= nil and tostring(brain.master) ~= tostring(pid) and (brain.mercenaryHired == true or brain.relationshipToPlayer == "hired_bodyguard" or brain.factionState == "hired_blue_bodyguard") then return true end
+    local groupId = bm_menuGroupId(brain)
+    return bm_menuMercenaryGroupHiredByOther(groupId, player) == true
 end
 
 local function bm_menuFindNearbyHiredMercenary(player, square, worldobjects)
@@ -422,6 +493,29 @@ function NPCMenuBridge.BribeSpy(player, bandit)
 end
 
 
+local function bm_menuNowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and value then return tonumber(value) or 0 end
+    end
+    if getGameTime then
+        local ok, value = pcall(function() return getGameTime():getWorldAgeHours() end)
+        if ok and value then return math.floor((tonumber(value) or 0) * 3600000) end
+    end
+    return 0
+end
+
+local function bm_menuAttachMercenaryTelemetry(args, player, eventName)
+    if type(args) ~= "table" then return args end
+    NPCMenuBridge._mercenaryTelemetrySeq = (tonumber(NPCMenuBridge._mercenaryTelemetrySeq) or 0) + 1
+    local pid = player and player.getOnlineID and tostring(player:getOnlineID()) or "0"
+    args.clientSendMs = bm_menuNowMs()
+    args.clientOrderSeq = NPCMenuBridge._mercenaryTelemetrySeq
+    args.clientTraceId = tostring(pid) .. ":" .. tostring(args.clientOrderSeq)
+    args.clientEvent = eventName or "mercenary_command"
+    return args
+end
+
 local function bm_menuAttachMercenaryPaymentSnapshot(args, player)
     if not args then return args end
     if NPCMercenaryContract and NPCMercenaryContract.GetPaymentCounts then
@@ -464,8 +558,9 @@ function NPCMenuBridge.HireMercenaryGroup(player, banditOrArgs)
     end
 
     bm_menuAttachMercenaryPaymentSnapshot(args, player)
+    bm_menuAttachMercenaryTelemetry(args, player, "hire")
 
-    print("[NPCMercenary] hire click id=" .. tostring(args.id) .. " runtime=" .. tostring(args.runtimeId) .. " pid=" .. tostring(args.persistentId) .. " group=" .. tostring(args.groupId) .. " x=" .. tostring(args.x) .. " y=" .. tostring(args.y) .. " gold=" .. tostring(args.clientPaymentGoldCount) .. " silver=" .. tostring(args.clientPaymentSilverCount) .. " clientPayment=" .. tostring(args.clientPaymentOk))
+    print("[NPCMercenary] hire click trace=" .. tostring(args.clientTraceId) .. " sendMs=" .. tostring(args.clientSendMs) .. " id=" .. tostring(args.id) .. " runtime=" .. tostring(args.runtimeId) .. " pid=" .. tostring(args.persistentId) .. " group=" .. tostring(args.groupId) .. " x=" .. tostring(args.x) .. " y=" .. tostring(args.y) .. " gold=" .. tostring(args.clientPaymentGoldCount) .. " silver=" .. tostring(args.clientPaymentSilverCount) .. " clientPayment=" .. tostring(args.clientPaymentOk))
     if not bm_menuSendClientCommand(player, 'NPCCommands', 'HireMercenaryGroup', args) then
         bm_menuSay(player, "Mercenary hire command could not be sent.")
     end
@@ -501,49 +596,156 @@ function NPCMenuBridge.ReleasePrisoner(player, bandit)
     })
 end
 
+function NPCMenuBridge.MercenaryStatus(player, groupId)
+    local args = {groupId = groupId}
+    bm_menuAttachMercenaryTelemetry(args, player, "status")
+    print("[NPCMercenary] status click trace=" .. tostring(args.clientTraceId) .. " sendMs=" .. tostring(args.clientSendMs) .. " group=" .. tostring(groupId))
+    if not bm_menuSendClientCommand(player, 'NPCCommands', 'MercenaryOrderStatus', args) then
+        bm_menuSay(player, "Mercenary status command could not be sent.")
+    end
+end
+
+local function bm_menuNormalizeMercenaryOrderName(name)
+    name = tostring(name or "")
+    if name == "Follow" or name == "follow" or name == "FollowPlayer" then return "Follow" end
+    if name == "Hold" or name == "hold" or name == "HoldPosition" then return "Hold" end
+    if name == "Guard" or name == "guard" or name == "GuardArea" or name == "GuardPlayer" then return "Guard" end
+    if name == "Patrol" or name == "patrol" or name == "PatrolArea" then return "Patrol" end
+    if name == "Loot" or name == "loot" or name == "LootArea" then return "Loot" end
+    if name == "LootHouse" or name == "loot_house" or name == "search_house" then return "LootHouse" end
+    if name == "LootBodies" or name == "LootBodiesGear" or name == "LootBodiesClothing" or name == "LootBodiesWeapons" or name == "LootBodiesAmmo" or name == "LootBodiesMedical" or name == "LootBodiesSupplies" then return name end
+    if name == "RearmHere" or name == "rearm" or name == "rearm_here" then return "RearmHere" end
+    if name == "Flank" or name == "flank" or name == "flank_point" then return "Flank" end
+    if name == "Encircle" or name == "encircle" or name == "surround" then return "Encircle" end
+    if name == "BackToBack" or name == "back_to_back" or name == "all_around_defense" then return "BackToBack" end
+    if name == "TakeCover" or name == "take_cover" then return "TakeCover" end
+    if name == "Advance" or name == "advance" then return "Advance" end
+    if name == "FallBack" or name == "fall_back" or name == "fallback" then return "FallBack" end
+    if name == "WatchSector" or name == "watch_sector" then return "WatchSector" end
+    if name == "Return" or name == "ReturnToBase" or name == "return" then return "Return" end
+    return name
+end
+
+local function bm_menuIsMercenaryPointOrderName(name)
+    name = bm_menuNormalizeMercenaryOrderName(name)
+    return name == "Hold" or name == "Guard" or name == "Patrol" or name == "Loot" or name == "LootHouse"
+        or name == "LootBodies" or name == "LootBodiesGear" or name == "LootBodiesClothing" or name == "LootBodiesWeapons"
+        or name == "LootBodiesAmmo" or name == "LootBodiesMedical" or name == "LootBodiesSupplies" or name == "RearmHere"
+        or name == "Return" or name == "Flank" or name == "Encircle" or name == "BackToBack" or name == "TakeCover"
+        or name == "Advance" or name == "FallBack" or name == "WatchSector"
+end
+
 function NPCMenuBridge.MercenaryOrder(player, square, orderName, fireMode, formation, followDistance, groupId)
+    local normalizedOrder = orderName and bm_menuNormalizeMercenaryOrderName(orderName) or nil
+    if normalizedOrder == "LootHouse" and not bm_menuSquareIsInsideBuilding(square) then
+        bm_menuSay(player, "Search house works only when you click inside a building.")
+        return
+    end
+    local pointOrder = bm_menuIsMercenaryPointOrderName(normalizedOrder)
+    if groupId ~= nil and tostring(groupId) ~= "" and not bm_menuMercenaryGroupHiredByPlayer(groupId, player) then
+        bm_menuSay(player, "This mercenary squad is not under your command.")
+        return
+    end
+    if (groupId == nil or tostring(groupId) == "") and not NPCMenuBridge.HasHiredMercenaries(player) then
+        bm_menuSay(player, "No hired mercenaries found for this order.")
+        return
+    end
+
     local args = {
-        orderName = orderName,
+        orderName = normalizedOrder,
         fireMode = fireMode,
         formation = formation,
         followDistance = followDistance,
         groupId = groupId
     }
-    if square then
+
+    if normalizedOrder == "Follow" then
+        args.targetType = "player"
+        args.anchorMode = "player"
+    elseif pointOrder then
+        args.targetType = "point"
+        if not (square and square.getX and square.getY) then
+            bm_menuSay(player, "Mercenary order needs a world point. Right-click the target point and try again.")
+            return
+        end
         args.x = square:getX()
         args.y = square:getY()
-        args.z = square:getZ()
-    elseif player then
-        args.x = player:getX()
-        args.y = player:getY()
-        args.z = player:getZ()
+        args.z = square.getZ and square:getZ() or 0
+        args.anchorMode = "cursor"
+        args.cursorAnchor = true
+    else
+        args.targetType = "overlay"
+        args.anchorMode = "overlay"
     end
     if player and player.getDirectionAngle then
         local ok, angle = pcall(function() return player:getDirectionAngle() end)
         if ok and angle then args.facingAngle = tonumber(angle) end
     end
-    print("[NPCMercenary] order click group=" .. tostring(args.groupId) .. " order=" .. tostring(args.orderName) .. " fire=" .. tostring(args.fireMode) .. " formation=" .. tostring(args.formation) .. " x=" .. tostring(args.x) .. " y=" .. tostring(args.y))
+    bm_menuAttachMercenaryTelemetry(args, player, "order")
+    NPCMenuBridge._mercenaryOrderDebounce = NPCMenuBridge._mercenaryOrderDebounce or {}
+    local pid = player and player.getOnlineID and tostring(player:getOnlineID()) or "0"
+    local sig = table.concat({
+        tostring(args.groupId or ""),
+        tostring(args.orderName or ""),
+        tostring(args.fireMode or ""),
+        tostring(args.formation or ""),
+        tostring(args.followDistance or ""),
+        tostring(math.floor((tonumber(args.x) or 0) * 10 + 0.5)),
+        tostring(math.floor((tonumber(args.y) or 0) * 10 + 0.5)),
+        tostring(math.floor((tonumber(args.z) or 0) * 10 + 0.5))
+    }, "|")
+    local nowMs = getTimestampMs and getTimestampMs() or 0
+    local prev = NPCMenuBridge._mercenaryOrderDebounce[pid]
+    if prev and prev.sig == sig and nowMs > 0 and (nowMs - (tonumber(prev.ms) or 0)) < 450 then
+        return
+    end
+    NPCMenuBridge._mercenaryOrderDebounce[pid] = {sig=sig, ms=nowMs}
+    print("[NPCMercenary] order click trace=" .. tostring(args.clientTraceId) .. " sendMs=" .. tostring(args.clientSendMs) .. " group=" .. tostring(args.groupId) .. " order=" .. tostring(args.orderName) .. " fire=" .. tostring(args.fireMode) .. " formation=" .. tostring(args.formation) .. " target=" .. tostring(args.targetType or args.anchorMode) .. " x=" .. tostring(args.x) .. " y=" .. tostring(args.y))
     if not bm_menuSendClientCommand(player, 'NPCCommands', 'MercenaryGroupOrder', args) then
         bm_menuSay(player, "Mercenary order command could not be sent.")
     end
 end
 
+
+function NPCMenuBridge.AddMercenaryLootOrdersMenu(menu, player, square, groupId)
+    if not menu then return end
+    local lootRoot = menu:addOption(bm_menuLabel("Menu_LootAndRearm", "Loot / rearm / check corpses"))
+    local lootMenu = menu:getNew(menu)
+    menu:addSubMenu(lootRoot, lootMenu)
+
+    lootMenu:addOption(bm_text("Menu_LootThisArea"), player, NPCMenuBridge.MercenaryOrder, square, "Loot", nil, nil, nil, groupId)
+    if bm_menuSquareIsInsideBuilding(square) then
+        lootMenu:addOption(bm_text("Menu_LootThisHouse"), player, NPCMenuBridge.MercenaryOrder, square, "LootHouse", nil, nil, nil, groupId)
+    else
+        lootMenu:addOption(bm_text("Menu_LootThisHouse") .. " (inside only)", player, NPCMenuBridge.MercenaryOrder, square, "LootHouse", nil, nil, nil, groupId)
+    end
+    lootMenu:addOption(bm_menuLabel("Menu_LootBodiesAll", "Check corpses: everything"), player, NPCMenuBridge.MercenaryOrder, square, "LootBodies", nil, nil, nil, groupId)
+    lootMenu:addOption(bm_menuLabel("Menu_LootBodiesGear", "Check corpses: best gear"), player, NPCMenuBridge.MercenaryOrder, square, "LootBodiesGear", nil, nil, nil, groupId)
+    lootMenu:addOption(bm_menuLabel("Menu_LootBodiesClothing", "Check corpses: clothing / armor"), player, NPCMenuBridge.MercenaryOrder, square, "LootBodiesClothing", nil, nil, nil, groupId)
+    lootMenu:addOption(bm_menuLabel("Menu_LootBodiesWeapons", "Check corpses: weapons + ammo"), player, NPCMenuBridge.MercenaryOrder, square, "LootBodiesWeapons", nil, nil, nil, groupId)
+    lootMenu:addOption(bm_menuLabel("Menu_LootBodiesAmmo", "Check corpses: ammo / magazines"), player, NPCMenuBridge.MercenaryOrder, square, "LootBodiesAmmo", nil, nil, nil, groupId)
+    lootMenu:addOption(bm_menuLabel("Menu_LootBodiesMedical", "Check corpses: medical"), player, NPCMenuBridge.MercenaryOrder, square, "LootBodiesMedical", nil, nil, nil, groupId)
+    lootMenu:addOption(bm_menuLabel("Menu_LootBodiesSupplies", "Check corpses: supplies"), player, NPCMenuBridge.MercenaryOrder, square, "LootBodiesSupplies", nil, nil, nil, groupId)
+    lootMenu:addOption(bm_menuLabel("Menu_RearmHere", "Rearm from nearby loot"), player, NPCMenuBridge.MercenaryOrder, square, "RearmHere", nil, nil, nil, groupId)
+end
+
 function NPCMenuBridge.AddMercenaryOrdersMenu(context, player, square, groupId)
     if not (NPCMercenaryContract and NPCMercenaryContract.IsHireEnabled and NPCMercenaryContract.IsHireEnabled()) then return end
+    if groupId and not bm_menuMercenaryGroupHiredByPlayer(groupId, player) then return end
     if not groupId and not NPCMenuBridge.HasHiredMercenaries(player) then return end
 
     local root = context:addOption(groupId and bm_text("Menu_ThisMercenarySquadOrders") or bm_text("Menu_MercenaryBodyguardOrders"))
     local menu = context:getNew(context)
     context:addSubMenu(root, menu)
 
+    menu:addOption(bm_menuLabel("Menu_MercenaryOrderStatus", "Show current orders / status"), player, NPCMenuBridge.MercenaryStatus, groupId)
     menu:addOption(bm_text("Menu_FollowMe"), player, NPCMenuBridge.MercenaryOrder, square, "Follow", nil, nil, nil, groupId)
     menu:addOption(bm_text("Menu_MoveHoldHere"), player, NPCMenuBridge.MercenaryOrder, square, "Hold", nil, nil, nil, groupId)
     menu:addOption(bm_text("Menu_GuardHere"), player, NPCMenuBridge.MercenaryOrder, square, "Guard", nil, nil, nil, groupId)
     menu:addOption(bm_text("Menu_GuardHere") .. " - " .. bm_text("Menu_FormationWide"), player, NPCMenuBridge.MercenaryOrder, square, "Guard", nil, "wide", 5.0, groupId)
     menu:addOption(bm_text("Menu_GuardHere") .. " - " .. bm_text("Menu_FormationLine"), player, NPCMenuBridge.MercenaryOrder, square, "Guard", nil, "line", 4.0, groupId)
     menu:addOption(bm_text("Menu_PatrolThisArea"), player, NPCMenuBridge.MercenaryOrder, square, "Patrol", nil, nil, nil, groupId)
-    menu:addOption(bm_text("Menu_LootThisArea"), player, NPCMenuBridge.MercenaryOrder, square, "Loot", nil, nil, nil, groupId)
-    menu:addOption(bm_text("Menu_LootThisHouse"), player, NPCMenuBridge.MercenaryOrder, square, "LootHouse", nil, nil, nil, groupId)
+    NPCMenuBridge.AddMercenaryLootOrdersMenu(menu, player, square, groupId)
     menu:addOption(bm_text("Menu_ReturnToThisPoint"), player, NPCMenuBridge.MercenaryOrder, square, "Return", nil, nil, nil, groupId)
 
     local tacticalRoot = menu:addOption(bm_text("Menu_TacticalOrders"))
@@ -880,19 +1082,40 @@ function NPCMenuBridge.WorldContextMenuPre(playerID, context, worldobjects, test
         if ok then generator = gen end
     end
 
+    local zombie = bm_menuGetSquareZombie(square, worldobjects)
+    local hiredZombie = nil
+    local hiredBrain = nil
+    if not zombie then
+        hiredZombie, hiredBrain = bm_menuFindNearbyHiredMercenary(player, square, worldobjects)
+        if hiredZombie then zombie = hiredZombie end
+    end
+
+    local contextBrain = nil
+    if zombie and bm_menuIsNPCZombie(zombie) then
+        contextBrain = hiredZombie == zombie and hiredBrain or NPCBrainData.Get(zombie)
+    end
+
+    local clickedBlueMerc = contextBrain and NPCMercenaryContract and NPCMercenaryContract.IsBlueMercenaryBrain and NPCMercenaryContract.IsBlueMercenaryBrain(contextBrain)
+    local clickedBlueMercOwned = false
+    if clickedBlueMerc then
+        clickedBlueMercOwned = bm_menuIsHiredByPlayer(contextBrain, player)
+        local clickedGroupId = bm_menuGroupId(contextBrain)
+        if clickedGroupId ~= nil and tostring(clickedGroupId) ~= "" and not bm_menuMercenaryGroupHiredByPlayer(clickedGroupId, player) then
+            clickedBlueMercOwned = false
+        end
+    end
+
     NPCMenuBridge.AddPlayerFactionMenu(context, player)
-    NPCMenuBridge.AddMercenaryOrdersMenu(context, player, square)
+    if not (clickedBlueMerc and not clickedBlueMercOwned) then
+        NPCMenuBridge.AddMercenaryOrdersMenu(context, player, square)
+    end
     if NPCBaseCaptureUIBridge and NPCBaseCaptureUIBridge.AddContextMenu then
         NPCBaseCaptureUIBridge.AddContextMenu(context, player)
     end
 
-    local zombie = bm_menuGetSquareZombie(square, worldobjects)
-    local hiredZombie, hiredBrain = bm_menuFindNearbyHiredMercenary(player, square, worldobjects)
-    if hiredZombie then zombie = hiredZombie end
-    
     -- Player options
     if zombie and bm_menuIsNPCZombie(zombie) then
-        local brain = hiredZombie == zombie and hiredBrain or NPCBrainData.Get(zombie)
+        local brain = contextBrain or NPCBrainData.Get(zombie)
         if brain then
             local isBlueMerc = NPCMercenaryContract and NPCMercenaryContract.IsBlueMercenaryBrain and NPCMercenaryContract.IsBlueMercenaryBrain(brain)
             local banditOption = nil
@@ -922,9 +1145,11 @@ function NPCMenuBridge.WorldContextMenuPre(playerID, context, worldobjects, test
                 banditMenu = context:getNew(context)
                 context:addSubMenu(banditOption, banditMenu)
                 if bm_menuIsHiredByPlayer(brain, player) then
-                    banditMenu:addOption(bm_text("Menu_OrdersForThisSquad"), player, NPCMenuBridge.MercenaryOrder, square, "Follow", nil, nil, nil, bm_menuGroupId(brain))
-                    NPCMenuBridge.AddMercenaryOrdersMenu(banditMenu, player, square, bm_menuGroupId(brain))
-                else
+                    local hiredGroupId = bm_menuGroupId(brain)
+                    if hiredGroupId ~= nil and tostring(hiredGroupId) ~= "" and bm_menuMercenaryGroupHiredByPlayer(hiredGroupId, player) then
+                        NPCMenuBridge.AddMercenaryOrdersMenu(banditMenu, player, square, hiredGroupId)
+                    end
+                elseif not bm_menuMercenaryBrainHiredByOther(brain, player) then
                     local cost = NPCMercenaryContract and NPCMercenaryContract.GetHireCostLabel and NPCMercenaryContract.GetHireCostLabel() or "resources"
                     banditMenu:addOption(bm_text("Menu_HireSquadFor") .. " " .. tostring(cost), player, NPCMenuBridge.HireMercenaryGroup, bm_menuBuildNPCArgs(zombie, brain))
                 end

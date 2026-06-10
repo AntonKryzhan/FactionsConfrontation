@@ -5,6 +5,7 @@ require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCWoundedBridge"
 require "NPCCore/NPCLegacySettingsBridge"
 require "NPCCore/NPCCompatibilityBridge"
+require "NPCCore/NPCZombieLifecycleClassifierBridge"
 
 NPCWoundedClientBridge = NPCWoundedClientBridge or {}
 local NPC_WOUNDED_CLIENT_LEGACY_KEYS = {
@@ -129,6 +130,10 @@ local function bwc_halo(text, r, g, b)
 end
 
 function NPCWoundedClientBridge.OnHitZombie(zombie, attacker, bodyPartType, handWeapon)
+    if NPCZombieLifecycleClassifierBridge and NPCZombieLifecycleClassifierBridge.IsLiveNPC then
+        local okLive, live = pcall(function() return NPCZombieLifecycleClassifierBridge.IsLiveNPC(zombie) end)
+        if okLive and live ~= true then return end
+    end
     if not (NPCWoundedBridge and NPCWoundedBridge.TryMarkDowned) then return end
     local ok, downed, brain = pcall(function() return NPCWoundedBridge.TryMarkDowned(zombie, attacker) end)
     if not ok or not downed or not brain then return end
@@ -155,11 +160,14 @@ function NPCWoundedClientBridge.OnZombieUpdate(zombie)
     NPCWoundedBridge.ApplyLocalState(zombie, brain)
     if NPCWoundedBridge.IsDowned(brain) then
         NPCWoundedBridge.ApplyBleedout(zombie, brain)
-        if NPCEntity and NPCEntity.ClearTasks and NPCEntity.AddTask and not NPCEntity.HasActionTask(zombie) then
-            local tasks = NPCWoundedBridge.PlanTasks(zombie, brain)
-            if tasks and #tasks > 0 then
-                NPCEntity.ClearTasks(zombie)
-                for _, task in ipairs(tasks) do NPCEntity.AddTask(zombie, task) end
+        if NPCEntity and NPCEntity.ClearTasks and NPCEntity.AddTask then
+            local current = NPCEntity.GetTask and NPCEntity.GetTask(zombie) or nil
+            if not current or current.woundedDowned ~= true then
+                local tasks = NPCWoundedBridge.PlanTasks(zombie, brain)
+                if tasks and #tasks > 0 then
+                    NPCEntity.ClearTasks(zombie)
+                    for _, task in ipairs(tasks) do NPCEntity.AddTask(zombie, task) end
+                end
             end
         end
     end

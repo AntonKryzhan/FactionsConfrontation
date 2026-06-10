@@ -2,12 +2,41 @@
 -- Compatibility backend for the legacy world-director facade.
 
 NPCWorldDirectorBridge = NPCWorldDirectorBridge or {}
-NPCWorldDirectorBridge.Version = 1
+NPCWorldDirectorBridge.Version = 458
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCCheckpointsBridge"
 require "NPCCore/NPCLeadersBridge"
 require "NPCCore/NPCOutfitsBridge"
+require "NPCCore/NPCIdentityReconciliationBridge"
+require "NPCCore/NPCZombieLifecycleClassifierBridge"
+require "NPCCore/NPCMarkerReconciliationBridge"
+require "NPCCore/NPCDiagnosticsBridge"
+pcall(require, "NPCCore/NPCPerformanceTelemetryBridge")
+pcall(require, "NPCCore/NPCStreamingRuntimeBridge")
+
+local function npc_wd_isSinglePlayerRuntime()
+    return (not (isClient and isClient())) and (not (isServer and isServer()))
+end
+
+local function npc_wd_spBudget(value, fallback, minValue, maxValue)
+    local n = tonumber(value) or tonumber(fallback) or 0
+    if minValue ~= nil and n < minValue then n = minValue end
+    if maxValue ~= nil and n > maxValue then n = maxValue end
+    return n
+end
+
+local function npc_wd_shouldSkipSPActivationScan(source, tick)
+    if not npc_wd_isSinglePlayerRuntime() then return false end
+    if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldSkipActivationScan then
+        local ok, skip = pcall(function() return NPCStreamingRuntimeBridge.ShouldSkipActivationScan(source or "world_director", tick) end)
+        if ok and skip == true then return true end
+    end
+    return false
+end
+
+local npc_wd_shouldBootstrapGate
+local npc_wd_recordBootstrapGate
 
 local NPC_WORLD_DIRECTOR_LEGACY_KEYS = {
     liveFlag = NPCLegacyContractBridge.Key("FLAG"),
@@ -29,6 +58,17 @@ local NPC_WORLD_DIRECTOR_LEGACY_FIELDS = {
     formerCleanupScopes = NPCLegacyContractBridge.State.formerCleanupScopes
 }
 
+function NPCWorldDirectorBridge.IsPlayerCommandedMercenaryGroup(group)
+    if type(group) ~= "table" then return false end
+    return group.commandAuthority == "player"
+        or group.playerCommandAuthority == true
+        or group.worldCommandDisabled == true
+        or group.mercenaryHired == true
+        or group.hired == true
+        or group.isPlayerGuard == true
+        or group.state == "player_commanded"
+end
+
 
 function NPCWorldDirectorBridge.ApplyDefaults(director)
     if not director then return end
@@ -39,35 +79,49 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     director.STARTUP_ROAD_PATROL_ENCOUNTERS = 22
     director.MAX_ROAD_PATROLS = 70
     director.MAX_VIRTUAL_GROUPS = 150
-    director.MAX_PHYSICAL_GROUPS = 20
-    director.PHYSICAL_DEACTIVATION_RADIUS = 650
-    director.PHYSICAL_REACTIVATION_RADIUS = 300
-    director.PHYSICAL_DEACTIVATION_HIGH_LOAD_RADIUS = 420
-    director.PHYSICAL_DEACTIVATION_CRITICAL_RADIUS = 320
-    director.PHYSICAL_DEACTIVATION_IMPORTANT_RADIUS = 650
-    director.PHYSICAL_DEACTIVATION_MIN_AGE_HOURS = 30 / 3600
-    director.PHYSICAL_CLEANUP_INTERVAL_TICKS = 1200
-    director.PHYSICAL_CLEANUP_HIGH_INTERVAL_TICKS = 600
-    director.PHYSICAL_CLEANUP_CRITICAL_INTERVAL_TICKS = 300
-    director.PHYSICAL_CLEANUP_MAX_DEMATERIALIZE_PER_RUN = 3
+    director.MAX_PHYSICAL_GROUPS = 6
+    director.PHYSICAL_DEACTIVATION_RADIUS = 260
+    director.PHYSICAL_REACTIVATION_RADIUS = 150
+    director.PHYSICAL_DEACTIVATION_HIGH_LOAD_RADIUS = 220
+    director.PHYSICAL_DEACTIVATION_CRITICAL_RADIUS = 190
+    director.PHYSICAL_DEACTIVATION_IMPORTANT_RADIUS = 420
+    director.PHYSICAL_DEACTIVATION_MIN_AGE_HOURS = 6 / 3600
+    director.PHYSICAL_CLEANUP_INTERVAL_TICKS = 300
+    director.PHYSICAL_CLEANUP_HIGH_INTERVAL_TICKS = 90
+    director.PHYSICAL_CLEANUP_CRITICAL_INTERVAL_TICKS = 30
+    director.PHYSICAL_CLEANUP_MAX_DEMATERIALIZE_PER_RUN = 5
     director.PHYSICAL_CLEANUP_STREAMING_MAX_DEMATERIALIZE_PER_RUN = 6
     director.SPAWN_CHANCE_PER_TEN_MIN = 34
-    director.ACTIVATION_RADIUS = 260
+    director.ACTIVATION_RADIUS = 150
     director.MAX_GROUP_ACTIVATIONS_PER_UPDATE = 1
     director.MAX_GROUP_ACTIVATIONS_PER_PLAYER = 1
     director.MAX_BATTLE_PAIR_ACTIVATIONS_PER_UPDATE = 1
-    director.ACTIVATION_NPC_SOFT_CAP_PER_PLAYER = 32
+    director.ACTIVATION_NPC_SOFT_CAP_PER_PLAYER = 14
     director.DEFER_ACTIVATION_WHEN_NPC_NEAR_PLAYER = true
     director.PROXY_LOD_HARD_CAP_ENABLED = true
-    director.PROXY_LOD_MAX_REAL_NPC_PER_PLAYER = 10
+    director.PROXY_LOD_MAX_REAL_NPC_PER_PLAYER = 12
     director.PROXY_LOD_MAX_REAL_NPC_HIGH = 8
-    director.PROXY_LOD_MAX_REAL_NPC_CRITICAL = 6
-    director.PROXY_LOD_MAX_REAL_NPC_GLOBAL = 48
-    director.PROXY_LOD_PROTECTED_RADIUS = 128
-    director.PROXY_LOD_ENFORCE_INTERVAL_TICKS = 240
-    director.PROXY_LOD_DEMATERIALIZE_PER_RUN = 2
+    director.PROXY_LOD_MAX_REAL_NPC_CRITICAL = 5
+    director.PROXY_LOD_MAX_REAL_NPC_GLOBAL = 28
+    director.PROXY_LOD_PROTECTED_RADIUS = 74
+    director.PROXY_LOD_ENFORCE_INTERVAL_TICKS = 30
+    director.PROXY_LOD_DEMATERIALIZE_PER_RUN = 6
     director.PROXY_LOD_RETRY_SECONDS = 18
     director.PROXY_LOD_DEBUG = false
+    director.WORLD_CALENDAR_QUEUE_ENABLED = true
+    director.WORLD_CALENDAR_MAX_TASKS_PER_TICK = 2
+    director.WORLD_CALENDAR_DEFER_TICKS = 9
+    director.WORLD_CALENDAR_JITTER_TICKS = 37
+    director.SP_HARD_STREAMING_QUARANTINE_ENABLED = director.SP_HARD_STREAMING_QUARANTINE_ENABLED ~= false
+    director.SP_QUARANTINE_BOOTSTRAP_MIN_INTERVAL_TICKS = director.SP_QUARANTINE_BOOTSTRAP_MIN_INTERVAL_TICKS or 90
+    director.SP_QUARANTINE_BOOTSTRAP_GROUPS_PER_STEP = director.SP_QUARANTINE_BOOTSTRAP_GROUPS_PER_STEP or 1
+    director.SP_QUARANTINE_BOOTSTRAP_ROAD_PATROLS_PER_STEP = director.SP_QUARANTINE_BOOTSTRAP_ROAD_PATROLS_PER_STEP or 0
+    director.SP_QUARANTINE_WORLD_UPDATE_DEFER_TICKS = director.SP_QUARANTINE_WORLD_UPDATE_DEFER_TICKS or 600
+    director.SP_BOOTSTRAP_HARD_GATE_ENABLED = director.SP_BOOTSTRAP_HARD_GATE_ENABLED ~= false
+    director.SP_BOOTSTRAP_GATE_MARKER_SYNC = director.SP_BOOTSTRAP_GATE_MARKER_SYNC ~= false
+    director.SP_BOOTSTRAP_GATE_VIRTUAL_GROUPS = director.SP_BOOTSTRAP_GATE_VIRTUAL_GROUPS ~= false
+    director.SP_BOOTSTRAP_GATE_ROAD_BATTLES = director.SP_BOOTSTRAP_GATE_ROAD_BATTLES ~= false
+    director.SP_BOOTSTRAP_GATE_BASE_ECONOMY = director.SP_BOOTSTRAP_GATE_BASE_ECONOMY ~= false
     director.NET_BATCHED_REMOVE_OBJECTS = true
     director.NET_REMOVE_OBJECTS_BATCH_INTERVAL_TICKS = 6
     director.NET_REMOVE_OBJECTS_MAX_IDS_PER_BATCH = 96
@@ -78,9 +132,9 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     director[formerLegacyScopePrefix .. "_CLEANUP_SCOPE_TTL_TICKS"] = director.FORMER_NPC_CLEANUP_SCOPE_TTL_TICKS
     director[formerLegacyScopePrefix .. "_CLEANUP_SCOPE_INTERVAL_TICKS"] = director.FORMER_NPC_CLEANUP_SCOPE_INTERVAL_TICKS
     director[formerLegacyScopePrefix .. "_CLEANUP_SCOPE_MAX"] = director.FORMER_NPC_CLEANUP_SCOPE_MAX
-    director.TELEPORT_ACTIVATION_COOLDOWN_HOURS = 8 / 3600
+    director.TELEPORT_ACTIVATION_COOLDOWN_HOURS = 2 / 3600
     director.TELEPORT_DISTANCE_THRESHOLD = 180
-    director.TELEPORT_MARKER_MATERIALIZE_RADIUS = 36
+    director.TELEPORT_MARKER_MATERIALIZE_RADIUS = 72
     director.DEFERRED_ACTIVATION_RETRY_HOURS = 0.012
     director.MATERIALIZE_BATTLE_PAIR_AS_SINGLE_WAVE = true
     director.OFFSCREEN_MATERIALIZE_ENABLED = true
@@ -99,20 +153,34 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     director.VIRTUAL_TARGET_ATTEMPTS = 240
     director.VIRTUAL_MOVE_SPEED_TILES_PER_HOUR = 120
     director.VIRTUAL_TARGET_RADIUS = 300
-    director.ROAD_PATROL_TARGET_RADIUS = 240
-    director.ROAD_PATROL_VIRTUAL_STEP_RADIUS = 90
+    director.ROAD_PATROL_TARGET_RADIUS = 480
+    director.ROAD_PATROL_VIRTUAL_STEP_RADIUS = 360
+    director.VIRTUAL_CLUSTER_ACTIVATION_RADIUS = director.VIRTUAL_CLUSTER_ACTIVATION_RADIUS or 140
+    director.VIRTUAL_CLUSTER_ACTIVATION_MAX = director.VIRTUAL_CLUSTER_ACTIVATION_MAX or 4
+    director.VIRTUAL_MAP_ROAD_PROJECTION_ENABLED = director.VIRTUAL_MAP_ROAD_PROJECTION_ENABLED ~= false
+    director.VIRTUAL_MAP_ROAD_PROJECTION_WAYPOINTS = director.VIRTUAL_MAP_ROAD_PROJECTION_WAYPOINTS or 5
+    director.VIRTUAL_MAP_ROAD_PROJECTION_RADIUS = director.VIRTUAL_MAP_ROAD_PROJECTION_RADIUS or 360
+    director.VIRTUAL_MAP_ROAD_PROJECTION_ATTEMPTS = director.VIRTUAL_MAP_ROAD_PROJECTION_ATTEMPTS or 48
+    director.VIRTUAL_MAP_ROAD_PROJECTION_CACHE_HOURS = director.VIRTUAL_MAP_ROAD_PROJECTION_CACHE_HOURS or 0.35
+    director.VIRTUAL_ROAD_FOLLOWING_ENABLED = director.VIRTUAL_ROAD_FOLLOWING_ENABLED ~= false
+    director.VIRTUAL_ROAD_FOLLOWING_MIN_DISTANCE = director.VIRTUAL_ROAD_FOLLOWING_MIN_DISTANCE or 95
+    director.VIRTUAL_ROAD_FOLLOWING_FINAL_APPROACH_DISTANCE = director.VIRTUAL_ROAD_FOLLOWING_FINAL_APPROACH_DISTANCE or 70
+    director.VIRTUAL_ROAD_FOLLOWING_STEP_REUSE_DISTANCE = director.VIRTUAL_ROAD_FOLLOWING_STEP_REUSE_DISTANCE or 18
+    director.VIRTUAL_ROAD_FOLLOWING_STEP_EXPIRE_HOURS = director.VIRTUAL_ROAD_FOLLOWING_STEP_EXPIRE_HOURS or 0.12
     director.ROAD_PATROL_ENCOUNTER_MIN_DISTANCE = 45
     director.ROAD_PATROL_ENCOUNTER_MAX_DISTANCE = 130
-    director.ROAD_PATROL_BATTLE_RADIUS = 155
-    director.ROAD_PATROL_BATTLE_GRID_SIZE = director.ROAD_PATROL_BATTLE_GRID_SIZE or 165
-    director.ROAD_PATROL_BATTLE_KEEP_RADIUS = 220
-    director.ROAD_PATROL_BATTLE_TICK_HOURS = 0.10
-    if director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS == nil or tonumber(director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS) == 0.35 then director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS = 0.65 end
-    director.ROAD_PATROL_BATTLE_STARTUP_DELAY_HOURS = director.ROAD_PATROL_BATTLE_STARTUP_DELAY_HOURS or 0.10
-    director.ROAD_PATROL_BATTLE_MAX_STARTS_PER_UPDATE = director.ROAD_PATROL_BATTLE_MAX_STARTS_PER_UPDATE or 2
+    director.ROAD_PATROL_BATTLE_RADIUS = 260
+    director.ROAD_PATROL_BATTLE_GRID_SIZE = director.ROAD_PATROL_BATTLE_GRID_SIZE or 300
+    director.ROAD_PATROL_BATTLE_KEEP_RADIUS = 360
+    director.ROAD_PATROL_BATTLE_TICK_HOURS = 0.025
+    if director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS == nil or tonumber(director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS) == 0.35 or tonumber(director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS) == 0.65 then director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS = 0.08 end
+    director.ROAD_PATROL_BATTLE_STARTUP_DELAY_HOURS = director.ROAD_PATROL_BATTLE_STARTUP_DELAY_HOURS or 0.02
+    director.ROAD_PATROL_BATTLE_MAX_STARTS_PER_UPDATE = director.ROAD_PATROL_BATTLE_MAX_STARTS_PER_UPDATE or 6
+    director.ROAD_PATROL_BATTLE_DECISIVE = director.ROAD_PATROL_BATTLE_DECISIVE ~= false
     director.STRATEGIC_MARKER_GROUPS_ENABLED = director.STRATEGIC_MARKER_GROUPS_ENABLED ~= false
     director.STRATEGIC_MARKER_ACTIVATION_RADIUS = director.STRATEGIC_MARKER_ACTIVATION_RADIUS or 300
     director.CHECKPOINT_GUARD_GROUP_SIZE = director.CHECKPOINT_GUARD_GROUP_SIZE or 5
+    director.CHECKPOINT_FORCE_ACTIVATION_RADIUS = director.CHECKPOINT_FORCE_ACTIVATION_RADIUS or 90
     director.BASE_GARRISON_GROUP_SIZE = director.BASE_GARRISON_GROUP_SIZE or 6
     director.STRATEGIC_GROUP_MIN_REFRESH_HOURS = director.STRATEGIC_GROUP_MIN_REFRESH_HOURS or 0.05
     director.STRATEGIC_MARKER_PERSISTENCE_ENABLED = director.STRATEGIC_MARKER_PERSISTENCE_ENABLED ~= false
@@ -124,6 +192,10 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     director.STRATEGIC_WAR_MAX_BASE_IMBALANCE = director.STRATEGIC_WAR_MAX_BASE_IMBALANCE or 1
     director.STRATEGIC_GROUP_SIDE_BALANCE_MAX_DELTA = director.STRATEGIC_GROUP_SIDE_BALANCE_MAX_DELTA or 2
     director.STRATEGIC_FRONT_TIE_ALTERNATE_SIDES = director.STRATEGIC_FRONT_TIE_ALTERNATE_SIDES ~= false
+    director.STRATEGIC_INITIAL_FACTION_BASES_ENABLED = director.STRATEGIC_INITIAL_FACTION_BASES_ENABLED ~= false
+    director.STRATEGIC_INITIAL_FACTION_BASE_GRID = director.STRATEGIC_INITIAL_FACTION_BASE_GRID or 820
+    director.STRATEGIC_INITIAL_FACTION_BASE_PROVOCATION_RADIUS = director.STRATEGIC_INITIAL_FACTION_BASE_PROVOCATION_RADIUS or 1500
+    director.STRATEGIC_INITIAL_FACTION_BASE_MAX_IMBALANCE = director.STRATEGIC_INITIAL_FACTION_BASE_MAX_IMBALANCE or 1
     director.STRATEGIC_ACTIVITY_GRAPH_ENABLED = director.STRATEGIC_ACTIVITY_GRAPH_ENABLED ~= false
     director.STRATEGIC_ACTIVITY_UPDATE_HOURS = director.STRATEGIC_ACTIVITY_UPDATE_HOURS or 0.18
     director.STRATEGIC_ACTIVITY_INACTIVE_TTL_HOURS = director.STRATEGIC_ACTIVITY_INACTIVE_TTL_HOURS or 6.0
@@ -141,8 +213,45 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     if director.STRATEGIC_ACTIVITY_CRITICAL_READINESS == nil or tonumber(director.STRATEGIC_ACTIVITY_CRITICAL_READINESS) == 30 then director.STRATEGIC_ACTIVITY_CRITICAL_READINESS = 18 end
     if director.STRATEGIC_ACTIVITY_ROAD_PATROL_RETREAT_READINESS == nil or tonumber(director.STRATEGIC_ACTIVITY_ROAD_PATROL_RETREAT_READINESS) == 22 then director.STRATEGIC_ACTIVITY_ROAD_PATROL_RETREAT_READINESS = 14 end
     director.STRATEGIC_ACTIVITY_ROAD_PATROL_MIN_COUNT = director.STRATEGIC_ACTIVITY_ROAD_PATROL_MIN_COUNT or 1
+    director.STRATEGIC_EXPANSION_NEUTRAL_FIRST_ENABLED = director.STRATEGIC_EXPANSION_NEUTRAL_FIRST_ENABLED ~= false
+    director.STRATEGIC_EXPANSION_NEUTRAL_RADIUS = director.STRATEGIC_EXPANSION_NEUTRAL_RADIUS or 1800
+    director.STRATEGIC_EXPANSION_NEUTRAL_BONUS = director.STRATEGIC_EXPANSION_NEUTRAL_BONUS or 420
+    director.STRATEGIC_EXPANSION_ENEMY_DELAY_PENALTY = director.STRATEGIC_EXPANSION_ENEMY_DELAY_PENALTY or 620
+    director.STRATEGIC_MANEUVER_ENABLED = director.STRATEGIC_MANEUVER_ENABLED ~= false
+    director.STRATEGIC_MANEUVER_MIN_DISTANCE = director.STRATEGIC_MANEUVER_MIN_DISTANCE or 560
+    director.STRATEGIC_MANEUVER_STRIKE_MIN_COUNT = director.STRATEGIC_MANEUVER_STRIKE_MIN_COUNT or 3
+    director.STRATEGIC_MANEUVER_FLANK_MAX_OFFSET = director.STRATEGIC_MANEUVER_FLANK_MAX_OFFSET or 360
+    director.STRATEGIC_MANEUVER_APPROACH_DISTANCE = director.STRATEGIC_MANEUVER_APPROACH_DISTANCE or 460
+    director.STRATEGIC_STRIKE_ASSEMBLY_ENABLED = director.STRATEGIC_STRIKE_ASSEMBLY_ENABLED ~= false
+    director.STRATEGIC_STRIKE_ASSEMBLY_MIN_GROUPS = director.STRATEGIC_STRIKE_ASSEMBLY_MIN_GROUPS or 2
+    director.STRATEGIC_STRIKE_ASSEMBLY_MAX_GROUPS = director.STRATEGIC_STRIKE_ASSEMBLY_MAX_GROUPS or 4
+    director.STRATEGIC_STRIKE_ASSEMBLY_MAX_WAIT_HOURS = director.STRATEGIC_STRIKE_ASSEMBLY_MAX_WAIT_HOURS or 1.25
+    director.STRATEGIC_STRIKE_STAGING_DISTANCE = director.STRATEGIC_STRIKE_STAGING_DISTANCE or 360
+    director.STRATEGIC_STRIKE_STAGING_OFFSET = director.STRATEGIC_STRIKE_STAGING_OFFSET or 170
+    director.STRATEGIC_ENCIRCLEMENT_ENABLED = director.STRATEGIC_ENCIRCLEMENT_ENABLED ~= false
+    director.STRATEGIC_ENCIRCLEMENT_MIN_COMMITTED_GROUPS = director.STRATEGIC_ENCIRCLEMENT_MIN_COMMITTED_GROUPS or 3
+    director.STRATEGIC_ENCIRCLEMENT_RADIUS = director.STRATEGIC_ENCIRCLEMENT_RADIUS or 260
+    director.STRATEGIC_ENCIRCLEMENT_OFFSET = director.STRATEGIC_ENCIRCLEMENT_OFFSET or 320
+    director.STRATEGIC_REINFORCE_THREATENED_BASE_ENABLED = director.STRATEGIC_REINFORCE_THREATENED_BASE_ENABLED ~= false
+    director.STRATEGIC_REINFORCE_THREATENED_BASE_MAX_GROUPS = director.STRATEGIC_REINFORCE_THREATENED_BASE_MAX_GROUPS or 3
+    director.STRATEGIC_REINFORCE_THREATENED_BASE_RADIUS = director.STRATEGIC_REINFORCE_THREATENED_BASE_RADIUS or 2600
+    director.STRATEGIC_REINFORCE_BREAK_STRIKE_THREAT = director.STRATEGIC_REINFORCE_BREAK_STRIKE_THREAT or 980
+    director.STRATEGIC_REINFORCE_LOW_DEFENSE_SCORE = director.STRATEGIC_REINFORCE_LOW_DEFENSE_SCORE or 380
+    director.STRATEGIC_COUNTER_AMBUSH_ENABLED = director.STRATEGIC_COUNTER_AMBUSH_ENABLED ~= false
+    director.STRATEGIC_COUNTER_AMBUSH_MAX_PER_SIDE = director.STRATEGIC_COUNTER_AMBUSH_MAX_PER_SIDE or 2
+    director.STRATEGIC_COUNTER_AMBUSH_MIN_THREAT = director.STRATEGIC_COUNTER_AMBUSH_MIN_THREAT or 620
+    director.STRATEGIC_COUNTER_AMBUSH_MIN_READINESS = director.STRATEGIC_COUNTER_AMBUSH_MIN_READINESS or 58
+    director.STRATEGIC_COUNTER_AMBUSH_RADIUS = director.STRATEGIC_COUNTER_AMBUSH_RADIUS or 2400
+    director.STRATEGIC_COUNTER_AMBUSH_OFFSET = director.STRATEGIC_COUNTER_AMBUSH_OFFSET or 180
+    director.BASE_OWNED_GLOBAL_GROUPS_ENABLED = director.BASE_OWNED_GLOBAL_GROUPS_ENABLED ~= false
+    director.BASE_OWNED_GLOBAL_GROUPS_SPAWN_ENABLED = director.BASE_OWNED_GLOBAL_GROUPS_SPAWN_ENABLED ~= false
+    director.BASE_OWNED_GLOBAL_GROUPS_REPAIR_PROTECT = director.BASE_OWNED_GLOBAL_GROUPS_REPAIR_PROTECT ~= false
+    director.BASE_OWNED_GLOBAL_GROUPS_REPAIR_COOLDOWN_HOURS = director.BASE_OWNED_GLOBAL_GROUPS_REPAIR_COOLDOWN_HOURS or 1.20
+    director.BASE_OWNED_GLOBAL_GROUPS_STAGING_RADIUS = director.BASE_OWNED_GLOBAL_GROUPS_STAGING_RADIUS or 42
+    director.BASE_OWNED_GLOBAL_GROUPS_PATROL_RADIUS = director.BASE_OWNED_GLOBAL_GROUPS_PATROL_RADIUS or 620
+    director.BASE_OWNED_GLOBAL_GROUPS_MAX_BASE_DISTANCE = director.BASE_OWNED_GLOBAL_GROUPS_MAX_BASE_DISTANCE or 6200
     director.BLUE_MERCENARY_PATROL_STABILITY_ENABLED = director.BLUE_MERCENARY_PATROL_STABILITY_ENABLED ~= false
-    if director.BLUE_MERCENARY_PATROL_MOVE_SPEED == nil or tonumber(director.BLUE_MERCENARY_PATROL_MOVE_SPEED) == 34 then director.BLUE_MERCENARY_PATROL_MOVE_SPEED = 22 end
+    if director.BLUE_MERCENARY_PATROL_MOVE_SPEED == nil or tonumber(director.BLUE_MERCENARY_PATROL_MOVE_SPEED) == 34 or tonumber(director.BLUE_MERCENARY_PATROL_MOVE_SPEED) == 80 then director.BLUE_MERCENARY_PATROL_MOVE_SPEED = 22 end
     if director.BLUE_MERCENARY_PATROL_RETARGET_COOLDOWN_HOURS == nil or tonumber(director.BLUE_MERCENARY_PATROL_RETARGET_COOLDOWN_HOURS) == 1.50 then director.BLUE_MERCENARY_PATROL_RETARGET_COOLDOWN_HOURS = 3.0 end
     if director.BLUE_MERCENARY_PATROL_BATTLE_GRACE_HOURS == nil or tonumber(director.BLUE_MERCENARY_PATROL_BATTLE_GRACE_HOURS) == 4.0 then director.BLUE_MERCENARY_PATROL_BATTLE_GRACE_HOURS = 6.0 end
     if director.BLUE_MERCENARY_PATROL_MAP_DWELL_HOURS == nil or tonumber(director.BLUE_MERCENARY_PATROL_MAP_DWELL_HOURS) == 5.0 then director.BLUE_MERCENARY_PATROL_MAP_DWELL_HOURS = 8.0 end
@@ -163,6 +272,19 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     director.STRATEGIC_LOGISTICS_FRONT_NUDGE_TILES = director.STRATEGIC_LOGISTICS_FRONT_NUDGE_TILES or 220
     director.STRATEGIC_LOGISTICS_SUPPLY_LINE_RANGE = director.STRATEGIC_LOGISTICS_SUPPLY_LINE_RANGE or 1800
     director.STRATEGIC_LOGISTICS_MAX_SIDE_LOSS_MEMORY = director.STRATEGIC_LOGISTICS_MAX_SIDE_LOSS_MEMORY or 120
+    director.BASE_LOGISTICS_ECONOMY_ENABLED = director.BASE_LOGISTICS_ECONOMY_ENABLED ~= false
+    director.BASE_LOGISTICS_ECONOMY_UPDATE_HOURS = director.BASE_LOGISTICS_ECONOMY_UPDATE_HOURS or 0.25
+    director.BASE_LOGISTICS_MANPOWER_PER_GARRISON = director.BASE_LOGISTICS_MANPOWER_PER_GARRISON or 2.4
+    director.BASE_LOGISTICS_MIN_PATROL_MANPOWER = director.BASE_LOGISTICS_MIN_PATROL_MANPOWER or 3
+    director.BASE_LOGISTICS_MIN_RAID_MANPOWER = director.BASE_LOGISTICS_MIN_RAID_MANPOWER or 5
+    director.BASE_LOGISTICS_MANPOWER_RECOVERY_PER_HOUR = director.BASE_LOGISTICS_MANPOWER_RECOVERY_PER_HOUR or 0.32
+    director.BASE_LOGISTICS_WOUNDED_RECOVERY_PER_HOUR = director.BASE_LOGISTICS_WOUNDED_RECOVERY_PER_HOUR or 0.22
+    director.BASE_LOGISTICS_GROUP_SUPPLY_DRAIN = director.BASE_LOGISTICS_GROUP_SUPPLY_DRAIN or 0.055
+    director.BASE_LOGISTICS_GROUP_AMMO_DRAIN = director.BASE_LOGISTICS_GROUP_AMMO_DRAIN or 0.050
+    director.BASE_LOGISTICS_GROUP_MEDICAL_DRAIN = director.BASE_LOGISTICS_GROUP_MEDICAL_DRAIN or 0.014
+    director.BASE_LOGISTICS_RESUPPLY_GAIN = director.BASE_LOGISTICS_RESUPPLY_GAIN or 10.0
+    director.BASE_LOGISTICS_CRITICAL_READINESS = director.BASE_LOGISTICS_CRITICAL_READINESS or 28
+    director.BASE_LOGISTICS_LOW_READINESS = director.BASE_LOGISTICS_LOW_READINESS or 52
     director.STRATEGIC_REALISM_ENABLED = director.STRATEGIC_REALISM_ENABLED ~= false
     director.STRATEGIC_REALISM_ROUTE_PENALTY_PER_1000_TILES = director.STRATEGIC_REALISM_ROUTE_PENALTY_PER_1000_TILES or 140
     director.STRATEGIC_REALISM_DEFENSE_SCORE_WEIGHT = director.STRATEGIC_REALISM_DEFENSE_SCORE_WEIGHT or 0.85
@@ -173,10 +295,29 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     if not director.WORLD_BEHAVIOR_LOG_FILE or director.WORLD_BEHAVIOR_LOG_FILE == "" then director.WORLD_BEHAVIOR_LOG_FILE = "NPC_FACTIONS.log" end
     director.FACTION_BALANCE_LOG_FILE = director.WORLD_BEHAVIOR_LOG_FILE
     director.WORLD_BEHAVIOR_SNAPSHOT_HOURS = director.WORLD_BEHAVIOR_SNAPSHOT_HOURS or 0.50
-    director.BATTLE_REMAINS_ACTIVATION_RADIUS = 280
-    director.BATTLE_REMAINS_MAX_RECORDS = 48
-    director.BATTLE_REMAINS_MAX_BODIES = 8
-    director.BATTLE_REMAINS_DECAY_HOURS = 24 * 21
+    director.BATTLE_REMAINS_MATERIALIZE_ENABLED = true
+    director.BATTLE_REMAINS_PROP_ONLY = true
+    director.BATTLE_REMAINS_ACTIVATION_RADIUS = 70
+    director.BATTLE_REMAINS_MAX_RECORDS = 12
+    director.BATTLE_REMAINS_MAX_BODIES = 2
+    director.BATTLE_REMAINS_MAX_DEBRIS = 8
+    director.BATTLE_REMAINS_MIN_SPACING = 96
+    director.BATTLE_REMAINS_DECAY_HOURS = 24 * 2
+    director.BATTLEFIELD_CLEANUP_ENABLED = true
+    director.BATTLEFIELD_CLEANUP_RADIUS = 42
+    director.BATTLEFIELD_CLEANUP_CORPSE_SOFT_CAP = 18
+    director.BATTLEFIELD_CLEANUP_DEBRIS_SOFT_CAP = 24
+    director.BATTLEFIELD_CLEANUP_INTERVAL_TICKS = 900
+    director.BATTLEFIELD_CLEANUP_MAX_REMOVE_PER_RUN = 48
+    director.URBAN_COVER_PROPS_ENABLED = true
+    director.URBAN_COVER_PROPS_RADIUS = 58
+    director.URBAN_COVER_PROPS_INTERVAL_TICKS = 900
+    director.URBAN_COVER_PROPS_MAX_CLUSTERS_PER_RUN = 2
+    director.URBAN_COVER_PROPS_MAX_RECORDS = 120
+    director.URBAN_COVER_PROPS_MIN_SPACING = 18
+    director.URBAN_COVER_PROPS_BUILDING_RADIUS = 7
+    director.URBAN_COVER_PROPS_ATTEMPTS_PER_PLAYER = 34
+    director.URBAN_COVER_PROPS_MAX_ITEMS_PER_CLUSTER = 4
     director.URBAN_GROUP_EARLY_SCORE = 150
     director.URBAN_GROUP_ACCEPT_SCORE = 120
     director.URBAN_GROUP_ROAD_BIAS_RADIUS = 220
@@ -187,6 +328,32 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     director.ROAD_PATROL_EARLY_SCORE = 245
     director._tick = director._tick or 0
     director._startupRuntimeRevirtualized = director._startupRuntimeRevirtualized or false
+    director.SINGLEPLAYER_BOOTSTRAP_GROUPS_PER_STEP = director.SINGLEPLAYER_BOOTSTRAP_GROUPS_PER_STEP or 4
+    director.SINGLEPLAYER_BOOTSTRAP_ROAD_PATROLS_PER_STEP = director.SINGLEPLAYER_BOOTSTRAP_ROAD_PATROLS_PER_STEP or 4
+    director.SINGLEPLAYER_BOOTSTRAP_TICK_INTERVAL = director.SINGLEPLAYER_BOOTSTRAP_TICK_INTERVAL or 45
+    director.SINGLEPLAYER_ACTIVATION_TICK_INTERVAL = director.SINGLEPLAYER_ACTIVATION_TICK_INTERVAL or 120
+    director.SINGLEPLAYER_WORLD_UPDATE_GROUP_BUDGET = director.SINGLEPLAYER_WORLD_UPDATE_GROUP_BUDGET or 18
+    director.SINGLEPLAYER_MAP_SYNC_GROUP_BUDGET = director.SINGLEPLAYER_MAP_SYNC_GROUP_BUDGET or 90
+    director.SERVER_BOOTSTRAP_GROUPS_PER_STEP = director.SERVER_BOOTSTRAP_GROUPS_PER_STEP or 6
+    director.SERVER_BOOTSTRAP_ROAD_PATROLS_PER_STEP = director.SERVER_BOOTSTRAP_ROAD_PATROLS_PER_STEP or 4
+    director.SERVER_BOOTSTRAP_TICK_INTERVAL = director.SERVER_BOOTSTRAP_TICK_INTERVAL or 30
+    director.SERVER_WORLD_UPDATE_GROUP_BUDGET = director.SERVER_WORLD_UPDATE_GROUP_BUDGET or 36
+    director.SERVER_MAP_SYNC_GROUP_BUDGET = director.SERVER_MAP_SYNC_GROUP_BUDGET or 120
+
+    -- Stage 411: keep long-term world persistence strategic and cheap. Bases stay
+    -- fully persistent through their own systems; distant world groups are stored
+    -- as compact summaries, while physical groups around online players are
+    -- snapshotted so they can be restored after a stop/start without replaying the
+    -- entire global map runtime.
+    director.PERSISTENCE_COMPACT_VIRTUAL_GROUPS = director.PERSISTENCE_COMPACT_VIRTUAL_GROUPS ~= false
+    director.PERSISTENCE_COMPACT_INTERVAL_TICKS = director.PERSISTENCE_COMPACT_INTERVAL_TICKS or 900
+    director.PERSISTENCE_COMPACT_GROUPS_PER_RUN = director.PERSISTENCE_COMPACT_GROUPS_PER_RUN or 32
+    director.PERSISTENCE_PHYSICAL_BUBBLE_ENABLED = director.PERSISTENCE_PHYSICAL_BUBBLE_ENABLED ~= false
+    director.PERSISTENCE_PHYSICAL_BUBBLE_RADIUS = director.PERSISTENCE_PHYSICAL_BUBBLE_RADIUS or 170
+    director.PERSISTENCE_PHYSICAL_BUBBLE_MAX_GROUPS = director.PERSISTENCE_PHYSICAL_BUBBLE_MAX_GROUPS or 8
+    director.PERSISTENCE_PHYSICAL_BUBBLE_INTERVAL_TICKS = director.PERSISTENCE_PHYSICAL_BUBBLE_INTERVAL_TICKS or 300
+    director.PERSISTENCE_RESTORE_BUBBLE_RADIUS = director.PERSISTENCE_RESTORE_BUBBLE_RADIUS or 220
+    director.PERSISTENCE_RESTORE_MAX_GROUPS_PER_RUN = director.PERSISTENCE_RESTORE_MAX_GROUPS_PER_RUN or 1
 
     director.DEBUG_LOG = director.DEBUG_LOG or false
 
@@ -195,6 +362,7 @@ function NPCWorldDirectorBridge.ApplyDefaults(director)
     director.MERCENARY_FOLLOW_TELEPORT_DISTANCE = director.MERCENARY_FOLLOW_TELEPORT_DISTANCE or 44
     director.MERCENARY_FOLLOW_VIRTUAL_TELEPORT_DISTANCE = director.MERCENARY_FOLLOW_VIRTUAL_TELEPORT_DISTANCE or 56
     director.MERCENARY_FOLLOW_PLAYER_TELEPORT_DISTANCE = director.MERCENARY_FOLLOW_PLAYER_TELEPORT_DISTANCE or 72
+    director.MERCENARY_FOLLOW_HARD_RESTORE_DISTANCE = director.MERCENARY_FOLLOW_HARD_RESTORE_DISTANCE or 140
     director.MERCENARY_FOLLOW_CLOSE_RADIUS = director.MERCENARY_FOLLOW_CLOSE_RADIUS or 8
     director.MERCENARY_FOLLOW_HIRE_GRACE_SECONDS = director.MERCENARY_FOLLOW_HIRE_GRACE_SECONDS or 8
     director.MERCENARY_FOLLOW_LOADED_COUNT_CACHE_SECONDS = director.MERCENARY_FOLLOW_LOADED_COUNT_CACHE_SECONDS or 2
@@ -279,7 +447,7 @@ local function wd_collectFactionLogContext(director, now)
         redGroups = 0, greenGroups = 0, blueGroups = 0,
         redMembers = 0, greenMembers = 0, blueMembers = 0,
         redBases = 0, greenBases = 0, neutralBases = 0,
-        attack = 0, siege = 0, defend = 0, reinforce = 0,
+        attack = 0, siege = 0, assemble = 0, defend = 0, reinforce = 0,
         retreat = 0, scout = 0, patrol = 0, ambush = 0,
         roadBattles = 0, blueHireable = 0
     }
@@ -302,6 +470,7 @@ local function wd_collectFactionLogContext(director, now)
             local act = tostring(group.strategicActivityType or group.state or "")
             if act == "AttackBase" or act == "activity_attack" then ctx.attack = ctx.attack + 1 end
             if act == "SiegeBase" or act == "activity_siege" then ctx.siege = ctx.siege + 1 end
+            if act == "AssembleStrike" or act == "activity_assemble_strike" then ctx.assemble = ctx.assemble + 1 end
             if act == "DefendBase" or act == "activity_defend" then ctx.defend = ctx.defend + 1 end
             if act == "ReinforceBase" or act == "activity_reinforce" then ctx.reinforce = ctx.reinforce + 1 end
             if act == "RetreatToBase" or act == "activity_retreat" then ctx.retreat = ctx.retreat + 1 end
@@ -373,11 +542,18 @@ function NPCWorldDirectorBridge.BehaviorLog(director, eventName, fields)
         parts[#parts + 1] = key .. "=" .. wd_behaviorValue(merged[key])
     end
 
+    if NPCDiagnosticsBridge and NPCDiagnosticsBridge.Log then
+        local data = {event = eventName or "unknown"}
+        for key, value in pairs(merged) do data[key] = value end
+        local force = eventName == "base_owner_changed" or eventName == "spawn_failed" or eventName == "runtime_reconcile_error"
+        return NPCDiagnosticsBridge.Log("WORLD_BEHAVIOR", tostring(eventName or "unknown"), data, "world-behavior:" .. tostring(eventName or "unknown"), force) ~= false
+    end
+
     local fileName = wd_factionLogFileName(director)
     local ok = pcall(function()
         local writer = getFileWriter(fileName, true, true)
         if writer then
-            writer:write(table.concat(parts, " | ") .. "\n")
+            writer:write("[NPCDiag] | [SERVER] | [WORLD_BEHAVIOR] | " .. table.concat(parts, " | ") .. "\n")
             writer:close()
         end
     end)
@@ -389,6 +565,15 @@ function NPCWorldDirectorBridge.GetDirectorBrain()
 end
 
 function NPCWorldDirectorBridge.DirectorEvent(director, kind, x, y, z, meta)
+    kind = tostring(kind or "")
+    if npc_wd_shouldBootstrapGate and npc_wd_isSinglePlayerRuntime() then
+        local lowerKind = string.lower(kind)
+        local optional = string.find(lowerKind, "virtual", 1, true) or string.find(lowerKind, "road_battle", 1, true) or string.find(lowerKind, "battle_remains", 1, true) or string.find(lowerKind, "strategic", 1, true) or string.find(lowerKind, "base_", 1, true)
+        if optional then
+            local gate, retry, reason = npc_wd_shouldBootstrapGate(director, "director_event:" .. kind)
+            if gate then npc_wd_recordBootstrapGate("director_event:" .. kind, retry, reason); return end
+        end
+    end
     local directorBrain = NPCWorldDirectorBridge.GetDirectorBrain()
     if not (directorBrain and directorBrain.PushEvent) then return end
 
@@ -487,8 +672,111 @@ function NPCWorldDirectorBridge.SendDebugMap(command, args)
     end
 end
 
+
+NPCWorldDirectorBridge.DebugMapDirtySync = NPCWorldDirectorBridge.DebugMapDirtySync or {
+    enabled = true,
+    minIntervalMs = 1200,
+    forceIntervalMs = 12000,
+    sent = {},
+    stats = {sent=0, skipped=0, forced=0}
+}
+
+local function npc_wd_markerSignature(marker)
+    if type(marker) ~= "table" then return "" end
+    local x = math.floor((tonumber(marker.x) or 0) * 2 + 0.5) / 2
+    local y = math.floor((tonumber(marker.y) or 0) * 2 + 0.5) / 2
+    local parts = {
+        tostring(marker.id or marker.uid or marker.groupId or ""),
+        tostring(marker.markerType or marker.type or ""),
+        tostring(marker.faction or marker.side or marker.owner or ""),
+        tostring(x), tostring(y), tostring(marker.z or 0),
+        tostring(marker.state or marker.status or marker.activity or ""),
+        tostring(marker.active == true), tostring(marker.virtual == true), tostring(marker.dead == true),
+        tostring(marker.inBattle == true), tostring(marker.leader == true), tostring(marker.isFactionLeader == true),
+        tostring(marker.count or marker.size or marker.power or ""),
+        tostring(marker.baseId or ""), tostring(marker.convoyId or ""), tostring(marker.checkpointId or "")
+    }
+    return table.concat(parts, "|")
+end
+
+local function npc_wd_nowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and tonumber(value) then return tonumber(value) end
+    end
+    if getTimestamp then
+        local ok, value = pcall(function() return getTimestamp() end)
+        if ok and tonumber(value) then return tonumber(value) * 1000 end
+    end
+    if getGameTime and getGameTime() then
+        local ok, hours = pcall(function() return getGameTime():getWorldAgeHours() end)
+        if ok and tonumber(hours) then return tonumber(hours) * 3600000 end
+    end
+    return 0
+end
+
+local function npc_wd_shouldSendDebugMarker(marker)
+    local cfg = NPCWorldDirectorBridge.DebugMapDirtySync
+    if not (cfg and cfg.enabled) then return true end
+    if type(marker) ~= "table" then return true end
+    local id = tostring(marker.id or marker.uid or marker.groupId or "")
+    if id == "" then return true end
+    local now = npc_wd_nowMs()
+    local sig = npc_wd_markerSignature(marker)
+    local prev = cfg.sent[id]
+    local minMs = tonumber(cfg.minIntervalMs) or 1200
+    local forceMs = tonumber(cfg.forceIntervalMs) or 12000
+    if prev and prev.sig == sig and now - (tonumber(prev.t) or 0) < forceMs then
+        if now - (tonumber(prev.lastSkip) or 0) >= minMs then
+            prev.lastSkip = now
+        end
+        cfg.stats.skipped = (tonumber(cfg.stats.skipped) or 0) + 1
+        return false
+    end
+    cfg.sent[id] = {sig=sig, t=now}
+    if prev and prev.sig == sig then cfg.stats.forced = (tonumber(cfg.stats.forced) or 0) + 1 end
+    cfg.stats.sent = (tonumber(cfg.stats.sent) or 0) + 1
+    return true
+end
+
+function NPCWorldDirectorBridge.GetDebugMapDirtySyncDiagnostics(reset)
+    local cfg = NPCWorldDirectorBridge.DebugMapDirtySync or {}
+    local stats = {}
+    for k, v in pairs(cfg.stats or {}) do stats[k] = v end
+    local tracked = 0
+    for _, _ in pairs(cfg.sent or {}) do tracked = tracked + 1 end
+    local out = {enabled = cfg.enabled, tracked = tracked, stats = stats}
+    if reset == true then cfg.stats = {sent=0, skipped=0, forced=0} end
+    return out
+end
+
+local function npc_wd_isCriticalDebugMarker(marker)
+    if type(marker) ~= "table" then return false end
+    return marker.mercenary == true or marker.mercenaryHired == true or marker.isPlayerGuard == true
+        or marker.blackMarket == true or marker.blackMarketNPC == true or marker.contract == true
+        or marker.playerOrder == true or marker.followPlayer == true or marker.guardPlayer == true
+end
+
+local function npc_wd_shouldThrottleDebugMarkerUpdate(marker)
+    if npc_wd_isCriticalDebugMarker(marker) then return false end
+    if not NPCStreamingRuntimeBridge then return false end
+    local markerType = type(marker) == "table" and tostring(marker.markerType or marker.type or "marker") or "marker"
+    local label = "debug_marker_update:" .. markerType
+    if NPCStreamingRuntimeBridge.ShouldDropRuntimeTask then
+        local okDrop, drop = pcall(function() return NPCStreamingRuntimeBridge.ShouldDropRuntimeTask(label, "normal") end)
+        if okDrop and drop == true then return true end
+    end
+    if NPCStreamingRuntimeBridge.AllowRuntimeTaskNow then
+        local okAllow, allow = pcall(function() return NPCStreamingRuntimeBridge.AllowRuntimeTaskNow(label, "normal") end)
+        if okAllow and allow == false then return true end
+    end
+    return false
+end
+
 function NPCWorldDirectorBridge.SendDebugMapUpdate(marker)
     if not marker then return end
+    if npc_wd_shouldThrottleDebugMarkerUpdate(marker) then return end
+    if not npc_wd_shouldSendDebugMarker(marker) then return end
     if NPCNetContract and NPCNetContract.SendDebugMapUpdate then
         NPCNetContract.SendDebugMapUpdate(marker)
         return
@@ -500,6 +788,9 @@ end
 
 function NPCWorldDirectorBridge.SendDebugMapRemove(id)
     if not id then return end
+    if NPCWorldDirectorBridge.DebugMapDirtySync and NPCWorldDirectorBridge.DebugMapDirtySync.sent then
+        NPCWorldDirectorBridge.DebugMapDirtySync.sent[tostring(id)] = nil
+    end
     if NPCNetContract and NPCNetContract.SendDebugMapRemove then
         NPCNetContract.SendDebugMapRemove(id)
         return
@@ -507,6 +798,20 @@ function NPCWorldDirectorBridge.SendDebugMapRemove(id)
     if sendServerCommand then
         sendServerCommand('NPCDebugMap', 'Remove', {id=tostring(id)})
     end
+end
+
+function NPCWorldDirectorBridge.ReconcileDebugMarkers(gmd, reason, maxMarkers)
+    if not (gmd and NPCMarkerReconciliationBridge and NPCMarkerReconciliationBridge.ReconcileServerMarkers) then return 0 end
+    local ok, changed = pcall(function()
+        return NPCMarkerReconciliationBridge.ReconcileServerMarkers(gmd, {
+            reason = tostring(reason or "world_director"),
+            maxMarkers = maxMarkers or 160,
+            sendRemove = function(id) NPCWorldDirectorBridge.SendDebugMapRemove(id) end,
+            sendUpdate = function(marker) NPCWorldDirectorBridge.SendDebugMapUpdate(marker) end
+        })
+    end)
+    if ok then return tonumber(changed) or 0 end
+    return 0
 end
 
 function NPCWorldDirectorBridge.NpcMarkerId(id)
@@ -678,6 +983,31 @@ function NPCWorldDirectorBridge.GetZombieServiceId(zombie, mdKey, variableName)
     return nil
 end
 
+function NPCWorldDirectorBridge.GetQueuedRuntimeBrain(gmd, runtimeId, persistentId)
+    if not (gmd and type(gmd.Queue) == "table") then return nil, nil end
+
+    if runtimeId ~= nil then
+        local brain = gmd.Queue[runtimeId] or gmd.Queue[tostring(runtimeId)]
+        local numericId = tonumber(runtimeId)
+        if not brain and numericId then brain = gmd.Queue[numericId] end
+        if type(brain) == "table" then return brain, runtimeId end
+    end
+
+    if persistentId ~= nil then
+        local wanted = tostring(persistentId)
+        for queueId, brain in pairs(gmd.Queue) do
+            if type(brain) == "table" then
+                local brainPersistentId = brain.persistentId or brain.uid
+                if brainPersistentId and tostring(brainPersistentId) == wanted then
+                    return brain, queueId
+                end
+            end
+        end
+    end
+
+    return nil, nil
+end
+
 function NPCWorldDirectorBridge.SetHasEntries(set)
     if type(set) ~= "table" then return false end
     for _, _ in pairs(set) do return true end
@@ -686,6 +1016,11 @@ end
 
 function NPCWorldDirectorBridge.IsCleanupFormerNPCZombie(zombie)
     if not zombie then return false end
+
+    if NPCZombieLifecycleClassifierBridge and NPCZombieLifecycleClassifierBridge.ShouldCleanupAsFormerNPC then
+        local ok, cleanup = pcall(function() return NPCZombieLifecycleClassifierBridge.ShouldCleanupAsFormerNPC(zombie) end)
+        if ok then return cleanup == true end
+    end
 
     local md = zombie.getModData and zombie:getModData() or nil
     if md and md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie] then return true end
@@ -703,6 +1038,285 @@ function NPCWorldDirectorBridge.IsCleanupFormerNPCZombie(zombie)
     if NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId) then return true end
 
     return false
+end
+
+function NPCWorldDirectorBridge.IsStalePersistentRuntimeNPCZombie(zombie, gmd)
+    if not zombie then return false end
+
+    if NPCZombieLifecycleClassifierBridge and NPCZombieLifecycleClassifierBridge.Classify then
+        local okClass, class = pcall(function() return NPCZombieLifecycleClassifierBridge.Classify(zombie) end)
+        if okClass then
+            if class == "ordinary_zombie" or class == "black_market" or class == "live_npc" or class == "wounded_npc" then return false end
+        end
+    end
+
+    local md = zombie.getModData and zombie:getModData() or nil
+    if md and (md.NPCBlackMarketBridge == true or md.BlackMarketNPC == true) then return false end
+    if zombie.getVariableBoolean and NPC_WORLD_DIRECTOR_LEGACY_KEYS.blackMarket then
+        local okBlack, black = pcall(function() return zombie:getVariableBoolean(NPC_WORLD_DIRECTOR_LEGACY_KEYS.blackMarket) end)
+        if okBlack and black == true then return false end
+    end
+
+    local runtimeId = NPCWorldDirectorBridge.GetZombieRuntimeId(zombie)
+    if runtimeId and gmd and type(gmd.Queue) == "table" then
+        local sid = tostring(runtimeId)
+        if gmd.Queue[runtimeId] or gmd.Queue[sid] or (tonumber(runtimeId) and gmd.Queue[tonumber(runtimeId)]) then return false end
+    end
+
+    local persistentId = NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId, NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId)
+    local groupId = NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId)
+    local program = NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.program, NPC_WORLD_DIRECTOR_LEGACY_KEYS.program)
+    local isNPC = md and md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.isNPC] == true
+
+    if not (persistentId or groupId or program or isNPC) then return false end
+    if persistentId and gmd and type(gmd.PersistentNPCs) == "table" then
+        local profile = gmd.PersistentNPCs[tostring(persistentId)]
+        if type(profile) == "table" and profile.dead == true then return true end
+    end
+    return true
+end
+
+function NPCWorldDirectorBridge.WriteRecoveredNPCServiceIds(zombie, brain, groupId)
+    if not (zombie and brain) then return false end
+
+    local runtimeId = brain.id or brain.runtimeId
+    local persistentId = brain.persistentId or brain.uid
+    local programName = brain.program and brain.program.name or brain.programName
+    local md = zombie.getModData and zombie:getModData() or nil
+    if md then
+        md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.isNPC] = true
+        md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie] = false
+        if runtimeId ~= nil then md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.runtimeId] = tostring(runtimeId) end
+        if persistentId ~= nil then md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId] = tostring(persistentId) end
+        if groupId ~= nil then md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId] = tostring(groupId) end
+        if programName ~= nil then md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.program] = tostring(programName) end
+    end
+
+    pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.liveFlag, true) end)
+    pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie, false) end)
+    if runtimeId ~= nil then pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.runtimeId, tostring(runtimeId)) end) end
+    if persistentId ~= nil then pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId, tostring(persistentId)) end) end
+    if groupId ~= nil then pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId, tostring(groupId)) end) end
+    if programName ~= nil then pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.program, tostring(programName)) end) end
+    pcall(function() zombie:setNoTeeth(false) end)
+    pcall(function() zombie:setReanim(false) end)
+    return true
+end
+
+function NPCWorldDirectorBridge.RecoverLoadedQueuedRuntimeObject(director, zombie, gmd)
+    if not (director and zombie and gmd) then return false end
+
+    local alreadyNPC = false
+    if zombie.getVariableBoolean then
+        local okNPC, value = pcall(function() return zombie:getVariableBoolean(NPC_WORLD_DIRECTOR_LEGACY_KEYS.liveFlag) end)
+        alreadyNPC = okNPC and value == true
+    end
+    local md = zombie.getModData and zombie:getModData() or nil
+    if alreadyNPC and md and md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.isNPC] == true then return false end
+    if md and md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie] == true then return false end
+
+    local runtimeId = NPCWorldDirectorBridge.GetZombieRuntimeId(zombie)
+    local persistentId = NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId, NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId)
+    local queuedBrain = nil
+    local queueKey = nil
+    queuedBrain, queueKey = NPCWorldDirectorBridge.GetQueuedRuntimeBrain(gmd, runtimeId, persistentId)
+    if type(queuedBrain) ~= "table" then return false end
+
+    local hasPersistentStamp = persistentId ~= nil or queuedBrain.persistentId ~= nil or queuedBrain.uid ~= nil or queuedBrain.worldGroupId ~= nil or queuedBrain.groupId ~= nil
+    if not hasPersistentStamp then return false end
+
+    local brain = queuedBrain
+    runtimeId = runtimeId or brain.id or brain.runtimeId or queueKey
+    if runtimeId == nil then return false end
+
+    persistentId = persistentId or brain.persistentId or brain.uid
+    local groupId = brain.worldGroupId or brain.groupId or NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId)
+
+    brain.id = runtimeId
+    brain.runtimeId = runtimeId
+    brain.uid = brain.uid or persistentId
+    brain.persistentId = brain.persistentId or brain.uid or persistentId
+    brain.worldGroupId = brain.worldGroupId or brain.groupId or groupId
+    brain.groupId = brain.groupId or brain.worldGroupId or groupId
+    brain.program = type(brain.program) == "table" and brain.program or {name = brain.programName or "Looter", stage = brain.programStage or "Prepare"}
+    brain.tasks = type(brain.tasks) == "table" and brain.tasks or {}
+    brain.weapons = type(brain.weapons) == "table" and brain.weapons or {melee=false, primary={name=false, magSize=0, bulletsLeft=0, magCount=0}, secondary={name=false, magSize=0, bulletsLeft=0, magCount=0}}
+    brain.restoredFromQueuedRuntime = true
+
+    if NPCIdentityBridge and NPCIdentityBridge.EnsureBrain then
+        local okIdentity, identityBrain = pcall(function() return NPCIdentityBridge.EnsureBrain(brain, gmd, runtimeId, true) end)
+        if okIdentity and type(identityBrain) == "table" then brain = identityBrain end
+    end
+    if NPCPersistentNPCBridge and NPCPersistentNPCBridge.ApplyProfileToBrain then
+        local okProfile, profileBrain = pcall(function() return NPCPersistentNPCBridge.ApplyProfileToBrain(gmd, brain, zombie, nil) end)
+        if okProfile and type(profileBrain) == "table" then brain = profileBrain end
+    end
+
+    gmd.Queue = gmd.Queue or {}
+    gmd.Queue[runtimeId] = brain
+    if queueKey ~= nil then gmd.Queue[queueKey] = brain end
+    if NPCIdentityBridge and NPCIdentityBridge.TouchRegistry then
+        pcall(function() NPCIdentityBridge.TouchRegistry(gmd, brain, runtimeId) end)
+    end
+
+    groupId = brain.worldGroupId or brain.groupId or groupId
+    if groupId and type(gmd.VirtualGroups) == "table" then
+        local group = gmd.VirtualGroups[tostring(groupId)]
+        if type(group) == "table" then
+            group.physicalIds = group.physicalIds or {}
+            local sid = tostring(runtimeId)
+            local seen = false
+            for _, existing in ipairs(group.physicalIds) do
+                if tostring(existing) == sid then seen = true break end
+            end
+            if not seen then table.insert(group.physicalIds, sid) end
+            group.activated = true
+            group.virtual = false
+            group.state = "physical"
+            group.updatedAt = getGameTime and getGameTime():getWorldAgeHours() or group.updatedAt
+            gmd.VirtualGroups[tostring(groupId)] = group
+        end
+    end
+
+    NPCWorldDirectorBridge.WriteRecoveredNPCServiceIds(zombie, brain, groupId)
+    if NPCIdentityReconciliationBridge and NPCIdentityReconciliationBridge.ReconcileRuntimeObject then
+        local okRecon, reconciledBrain = pcall(function()
+            return NPCIdentityReconciliationBridge.ReconcileRuntimeObject(gmd, zombie, brain, runtimeId, "server_queued_runtime_recover")
+        end)
+        if okRecon and type(reconciledBrain) == "table" then brain = reconciledBrain end
+    end
+    brain.infection = 0
+    if zombie.setHealth and brain.health then pcall(function() zombie:setHealth(brain.health) end) end
+    local md = zombie.getModData and zombie:getModData() or nil
+    if md then md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie] = false end
+    if zombie.setVariable then
+        pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie, false) end)
+        pcall(function() zombie:setVariable("ZombieBiteDone", false) end)
+    end
+    return true
+end
+
+function NPCWorldDirectorBridge.RecoverLoadedPersistedRuntimeObject(director, zombie, gmd)
+    if not (director and zombie and gmd) then return false end
+
+    local runtimeId = NPCWorldDirectorBridge.GetZombieRuntimeId(zombie)
+    local persistentId = NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId, NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId)
+    if not (runtimeId and persistentId) then return false end
+
+    local profile = nil
+    if type(gmd.PersistentNPCs) == "table" then profile = gmd.PersistentNPCs[tostring(persistentId)] end
+    if not profile and type(gmd.Registry) == "table" then profile = gmd.Registry[tostring(persistentId)] end
+    if type(profile) ~= "table" or profile.dead == true then return false end
+
+    local brain = NPCWorldDirectorBridge.Copy(profile) or {}
+    brain.id = runtimeId
+    brain.runtimeId = runtimeId
+    brain.uid = brain.uid or persistentId
+    brain.persistentId = brain.persistentId or brain.uid or persistentId
+    brain.worldGroupId = brain.worldGroupId or brain.groupId or NPCWorldDirectorBridge.GetZombieServiceId(zombie, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId, NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId)
+    brain.groupId = brain.groupId or brain.worldGroupId
+    brain.program = type(brain.program) == "table" and brain.program or {name = brain.programName or "Looter", stage = brain.programStage or "Prepare"}
+    brain.tasks = type(brain.tasks) == "table" and brain.tasks or {}
+    brain.weapons = type(brain.weapons) == "table" and brain.weapons or {melee=false, primary={name=false, magSize=0, bulletsLeft=0, magCount=0}, secondary={name=false, magSize=0, bulletsLeft=0, magCount=0}}
+    brain.health = brain.health or profile.health or 3.0
+    brain.maxHealth = brain.maxHealth or profile.maxHealth or brain.health
+    brain.restoredFromPersistentRuntime = true
+
+    if NPCIdentityBridge and NPCIdentityBridge.EnsureBrain then
+        brain = NPCIdentityBridge.EnsureBrain(brain, gmd, runtimeId, true) or brain
+    end
+    if NPCPersistentNPCBridge and NPCPersistentNPCBridge.ApplyProfileToBrain then
+        brain = NPCPersistentNPCBridge.ApplyProfileToBrain(gmd, brain, zombie, profile) or brain
+    end
+
+    gmd.Queue = gmd.Queue or {}
+    gmd.Queue[runtimeId] = brain
+    if NPCIdentityBridge and NPCIdentityBridge.TouchRegistry then
+        pcall(function() NPCIdentityBridge.TouchRegistry(gmd, brain, runtimeId) end)
+    end
+
+    local groupId = brain.worldGroupId or brain.groupId
+    if groupId and type(gmd.VirtualGroups) == "table" then
+        local group = gmd.VirtualGroups[tostring(groupId)]
+        if type(group) == "table" then
+            group.physicalIds = group.physicalIds or {}
+            local sid = tostring(runtimeId)
+            local seen = false
+            for _, existing in ipairs(group.physicalIds) do
+                if tostring(existing) == sid then seen = true break end
+            end
+            if not seen then table.insert(group.physicalIds, sid) end
+            group.activated = true
+            group.virtual = false
+            group.state = "physical"
+            group.updatedAt = getGameTime and getGameTime():getWorldAgeHours() or group.updatedAt
+            gmd.VirtualGroups[tostring(groupId)] = group
+        end
+    end
+
+    NPCWorldDirectorBridge.WriteRecoveredNPCServiceIds(zombie, brain, groupId)
+    if NPCIdentityReconciliationBridge and NPCIdentityReconciliationBridge.ReconcileRuntimeObject then
+        local okRecon, reconciledBrain = pcall(function()
+            return NPCIdentityReconciliationBridge.ReconcileRuntimeObject(gmd, zombie, brain, runtimeId, "server_persisted_runtime_recover")
+        end)
+        if okRecon and type(reconciledBrain) == "table" then brain = reconciledBrain end
+    end
+    brain.infection = 0
+    if zombie.setHealth and brain.health then pcall(function() zombie:setHealth(brain.health) end) end
+    local md = zombie.getModData and zombie:getModData() or nil
+    if md then md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie] = false end
+    if zombie.setVariable then
+        pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie, false) end)
+        pcall(function() zombie:setVariable("ZombieBiteDone", false) end)
+    end
+    return true
+end
+
+function NPCWorldDirectorBridge.CleanupLoadedPersistedRuntimeObjects(director, reason)
+    local cell = getCell and getCell() or nil
+    if not (director and cell and cell.getZombieList) then return 0 end
+
+    local gmd = director.EnsureData and director.EnsureData() or NPCWorldDirectorBridge.EnsureData(director)
+    if NPCIdentityReconciliationBridge and NPCIdentityReconciliationBridge.ReconcileGlobal then
+        pcall(function()
+            NPCIdentityReconciliationBridge.ReconcileGlobal(gmd, {
+                reason = tostring(reason or "persistent_runtime_cleanup"),
+                intervalSeconds = 20,
+                maxQueue = 96,
+                maxGroups = 48,
+                maxMarkers = 96,
+                allowSoftRevirtualize = true,
+                sendRemove = function(id) NPCWorldDirectorBridge.SendDebugMapRemove(id) end
+            })
+        end)
+    end
+    NPCWorldDirectorBridge.ReconcileDebugMarkers(gmd, tostring(reason or "persistent_runtime_cleanup"), 96)
+    local zombieList = cell:getZombieList()
+    if not zombieList then return 0 end
+
+    local removed = 0
+    local recovered = 0
+    for i = zombieList:size() - 1, 0, -1 do
+        local zombie = zombieList:get(i)
+        if NPCWorldDirectorBridge.RecoverLoadedQueuedRuntimeObject(director, zombie, gmd) then
+            recovered = recovered + 1
+        elseif NPCWorldDirectorBridge.IsStalePersistentRuntimeNPCZombie(zombie, gmd) then
+            if NPCWorldDirectorBridge.RecoverLoadedPersistedRuntimeObject(director, zombie, gmd) then
+                recovered = recovered + 1
+            elseif NPCWorldDirectorBridge.RemoveZombieObject(zombie) then
+                removed = removed + 1
+            end
+        end
+    end
+
+    if removed > 0 or recovered > 0 then
+        gmd.WorldDirector = gmd.WorldDirector or {}
+        gmd.WorldDirector.lastPersistentRuntimeCleanupAt = getGameTime and getGameTime():getWorldAgeHours() or 0
+        gmd.WorldDirector.lastPersistentRuntimeCleanupReason = tostring(reason or "startup_persistent_runtime_cleanup")
+        gmd.WorldDirector.lastPersistentRuntimeCleanupRemoved = removed
+        gmd.WorldDirector.lastPersistentRuntimeCleanupRecovered = recovered
+    end
+    return removed + recovered
 end
 
 function NPCWorldDirectorBridge.MatchesCleanupScope(zombie, args, runtimeId, runtimeIdSet, persistentIdSet)
@@ -729,6 +1343,10 @@ end
 
 function NPCWorldDirectorBridge.IsFormerNPCZombie(zombie)
     if not zombie then return false end
+    if NPCZombieLifecycleClassifierBridge and NPCZombieLifecycleClassifierBridge.IsNPCLikeZombie then
+        local ok, npcLike = pcall(function() return NPCZombieLifecycleClassifierBridge.IsNPCLikeZombie(zombie) end)
+        if ok then return npcLike == true end
+    end
     local md = zombie.getModData and zombie:getModData() or nil
     if md and (md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.formerNPCZombie] or md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.isNPC] or md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.runtimeId] or md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.persistentId] or md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.worldGroupId] or md[NPC_WORLD_DIRECTOR_LEGACY_KEYS.program]) then return true end
 
@@ -751,8 +1369,28 @@ function NPCWorldDirectorBridge.IsFormerNPCZombie(zombie)
     return false
 end
 
-function NPCWorldDirectorBridge.RemoveZombieObject(zombie)
+function NPCWorldDirectorBridge.ShouldKeepDeadNPCCorpse(zombie, args)
     if not zombie then return false end
+    local md = zombie.getModData and zombie:getModData() or nil
+    if not md then return false end
+    if not (md.NPCKeepCorpse == true or md.NPCLootableCorpse == true or md.NPCCorpseFromNPCCombat == true) then return false end
+    if args and (args.forceCorpseCleanup == true or args.forceRemoveCorpse == true or args.blackMarketStaticCleanup == true) then return false end
+    local isDead = false
+    local okDead, deadValue = pcall(function() return zombie:isDead() end)
+    if okDead and deadValue == true then isDead = true end
+    local okAlive, aliveValue = pcall(function() return zombie:isAlive() end)
+    if okAlive and aliveValue == false then isDead = true end
+    return isDead == true
+end
+
+function NPCWorldDirectorBridge.RemoveZombieObject(zombie, args)
+    if not zombie then return false end
+    if NPCWorldDirectorBridge.ShouldKeepDeadNPCCorpse(zombie, args) then return false end
+
+    if NPCZombieLifecycleClassifierBridge and NPCZombieLifecycleClassifierBridge.IsOrdinaryZombie then
+        local okOrdinary, ordinary = pcall(function() return NPCZombieLifecycleClassifierBridge.IsOrdinaryZombie(zombie) end)
+        if okOrdinary and ordinary == true then return false end
+    end
 
     pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.liveFlag, false) end)
     pcall(function() zombie:setVariable(NPC_WORLD_DIRECTOR_LEGACY_KEYS.primary, "") end)
@@ -791,7 +1429,7 @@ function NPCWorldDirectorBridge.RemoveLoadedNPCObjects(director, args)
                 remove = true
             end
 
-            if remove and NPCWorldDirectorBridge.RemoveZombieObject(zombie) then
+            if remove and NPCWorldDirectorBridge.RemoveZombieObject(zombie, args) then
                 removed = removed + 1
             end
         end
@@ -1278,7 +1916,10 @@ function NPCWorldDirectorBridge.GetNearbyPreferredPoint(director, x, y, radius)
 end
 
 function NPCWorldDirectorBridge.GetNearbyRoadPoint(director, x, y, radius)
-    radius = tonumber(radius) or tonumber(director.ROAD_PATROL_TARGET_RADIUS) or 420
+    x = tonumber(x)
+    y = tonumber(y)
+    if not (x and y) then return false end
+    radius = tonumber(radius) or (director and tonumber(director.ROAD_PATROL_TARGET_RADIUS)) or 420
     local bestPoint = false
     local bestScore = -1000
 
@@ -1496,8 +2137,8 @@ function NPCWorldDirectorBridge.CancelPendingGroupSpawnQueue(groupId, reason)
 end
 
 function NPCWorldDirectorBridge.MercenaryLeashRematerializeCooldownHours(director)
-    local seconds = tonumber(director and director.MERCENARY_FOLLOW_REMATERIALIZE_COOLDOWN_SECONDS) or 18
-    if seconds < 1 then seconds = 1 end
+    local seconds = tonumber(director and director.MERCENARY_FOLLOW_REMATERIALIZE_COOLDOWN_SECONDS) or 45
+    if seconds < 10 then seconds = 10 end
     return seconds / 3600
 end
 
@@ -1529,7 +2170,7 @@ function NPCWorldDirectorBridge.UpdateHiredFollowGroupMarker(gmd, groupId, group
     marker.x = math.floor(tonumber(x) or tonumber(group.x) or 0)
     marker.y = math.floor(tonumber(y) or tonumber(group.y) or 0)
     marker.z = math.floor(tonumber(z) or tonumber(group.z) or 0)
-    marker.name = "Hired Blue Mercenaries " .. groupId
+    marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group, "Hired Blue Mercenaries " .. tostring(groupId))
     marker.count = tonumber(count) or tonumber(group.count) or marker.count or 0
     marker.hostile = false
     marker.friendly = true
@@ -1547,6 +2188,7 @@ function NPCWorldDirectorBridge.UpdateHiredFollowGroupMarker(gmd, groupId, group
     marker.dead = false
     marker.state = group.state
     marker.updatedAt = group.updatedAt or (getGameTime and getGameTime():getWorldAgeHours() or marker.updatedAt)
+    NPCWorldDirectorBridge.ApplyVirtualGroupMapMotionFields(nil, marker, group, marker.updatedAt)
     gmd.DebugMapMarkers[groupId] = marker
     NPCWorldDirectorBridge.SendDebugMapUpdate(marker)
 end
@@ -1583,7 +2225,7 @@ function NPCWorldDirectorBridge.IsImportantPhysicalGroup(group)
     if group.bountyHunter or group.targetClass == "bounty_hunt" then return true end
     if group.leaderId or group.isFactionLeader then return true end
     if group.economyConvoy or group.convoyId then return true end
-    if group.blackMarket or group.blackMarketNPC or group.blackMarketService then return true end
+    if group.blackMarket or group.blackMarketNPC or group.blackMarketService or group.blackMarketQuestGuardGroup or group.blackMarketDefenseQuestGroup then return true end
     return false
 end
 
@@ -1677,7 +2319,9 @@ end
 function NPCWorldDirectorBridge.GetProxyLODPlayerCap(director)
     local level = NPCWorldDirectorBridge.PhysicalLoadLevel()
     local cap = tonumber(director.PROXY_LOD_MAX_REAL_NPC_PER_PLAYER) or 10
-    if level >= 2 then
+    if level >= 3 then
+        cap = math.min(cap, math.max(2, math.floor((tonumber(director.PROXY_LOD_MAX_REAL_NPC_CRITICAL) or cap) * 0.65)))
+    elseif level >= 2 then
         cap = math.min(cap, tonumber(director.PROXY_LOD_MAX_REAL_NPC_CRITICAL) or cap)
     elseif level >= 1 then
         cap = math.min(cap, tonumber(director.PROXY_LOD_MAX_REAL_NPC_HIGH) or cap)
@@ -1767,7 +2411,16 @@ function NPCWorldDirectorBridge.GetProxySpawnLimit(director, group, player, budg
 
     local slots = director.GetAvailablePhysicalNPCSlots(player, group, budget)
     if slots <= 0 then return 0 end
-    return math.max(1, math.min(requestedLimit, slots))
+    local limit = math.max(1, math.min(requestedLimit, slots))
+    local loadLevel = NPCWorldDirectorBridge.PhysicalLoadLevel()
+    if loadLevel >= 3 then
+        limit = math.min(limit, 1)
+    elseif loadLevel >= 2 then
+        limit = math.min(limit, 2)
+    elseif loadLevel >= 1 then
+        limit = math.min(limit, 3)
+    end
+    return limit
 end
 
 function NPCWorldDirectorBridge.AdjustQueuedSpawnBatch(director, entry, requestedBatch)
@@ -2116,48 +2769,100 @@ function NPCWorldDirectorBridge.GetActivationPriority(_director, group, player, 
     return score
 end
 
-function NPCWorldDirectorBridge.CanActivateGroupForPlayer(director, group, player, budget, totalActivations)
+function NPCWorldDirectorBridge.IsCriticalCheckpointActivation(director, group, player, distance)
+    if not (director and group and player) then return false end
+    if not (group.checkpointId or group.checkpointGuard == true or group.state == "checkpoint_patrol") then return false end
+    local dist = tonumber(distance)
+    if not dist then
+        local px = player.getX and player:getX() or nil
+        local py = player.getY and player:getY() or nil
+        if not (px and py and group.x and group.y) then return false end
+        local dx = px - group.x
+        local dy = py - group.y
+        dist = math.sqrt(dx * dx + dy * dy)
+    end
+    return dist <= (tonumber(director.CHECKPOINT_FORCE_ACTIVATION_RADIUS) or 90)
+end
+
+function NPCWorldDirectorBridge.CountInactiveVirtualGroupsNear(director, group, radius, maxCount)
+    if not (director and director.EnsureData and group and group.x and group.y) then return 0 end
+    local gmd = director.EnsureData()
+    if not (gmd and type(gmd.VirtualGroups) == "table") then return 0 end
+    radius = tonumber(radius) or 140
+    local r2 = radius * radius
+    local count = 0
+    for _, other in pairs(gmd.VirtualGroups) do
+        if type(other) == "table" and other ~= group and other.activated ~= true and other.x and other.y then
+            local dx = (tonumber(other.x) or 0) - (tonumber(group.x) or 0)
+            local dy = (tonumber(other.y) or 0) - (tonumber(group.y) or 0)
+            if dx * dx + dy * dy <= r2 then
+                count = count + 1
+                if maxCount and count >= maxCount then return count end
+            end
+        end
+    end
+    return count
+end
+
+function NPCWorldDirectorBridge.CanActivateGroupForPlayer(director, group, player, budget, totalActivations, distance)
     if not group or not player or not budget then return false end
-    if director.GetPhysicalGroupCount() >= (tonumber(director.MAX_PHYSICAL_GROUPS) or 20) then
-        return director.DeferGroupActivation(group, "physical_group_cap")
-    end
-
-    local directorBrain = NPCWorldDirectorBridge.GetDirectorBrain()
-    if directorBrain and directorBrain.ShouldDeferActivation then
-        local pressureReason, pressureRetry = directorBrain.ShouldDeferActivation(group, player, budget)
-        if pressureReason then
-            return director.DeferGroupActivation(group, pressureReason, pressureRetry)
+    local criticalCheckpoint = NPCWorldDirectorBridge.IsCriticalCheckpointActivation(director, group, player, distance)
+    local teleportMarkerEntry = director.TELEPORT_MARKER_BYPASS_DEFERS ~= false and NPCWorldDirectorBridge.IsPlayerOnDebugMarker(director, group, player)
+    local urgentMarkerActivation = criticalCheckpoint or teleportMarkerEntry
+    local physicalCount = director.GetPhysicalGroupCount()
+    local hardCap = tonumber(director.MAX_PHYSICAL_GROUPS) or 20
+    if physicalCount >= hardCap then
+        if not urgentMarkerActivation or physicalCount >= hardCap + 1 then
+            return director.DeferGroupActivation(group, teleportMarkerEntry and "teleport_marker_physical_group_cap" or "physical_group_cap")
         end
     end
 
-    if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldDeferActivation then
-        local streamingReason, streamingRetry = NPCStreamingRuntimeBridge.ShouldDeferActivation(group, player, budget)
-        if streamingReason then
-            return director.DeferGroupActivation(group, streamingReason, streamingRetry)
+    if not urgentMarkerActivation then
+        local clusterMax = tonumber(director.VIRTUAL_CLUSTER_ACTIVATION_MAX) or 0
+        if clusterMax > 0 and group.inBattle ~= true then
+            local clusterCount = NPCWorldDirectorBridge.CountInactiveVirtualGroupsNear(director, group, director.VIRTUAL_CLUSTER_ACTIVATION_RADIUS, clusterMax + 1)
+            if clusterCount > clusterMax then
+                return director.DeferGroupActivation(group, "virtual_cluster_density", 0.02)
+            end
+        end
+
+        local directorBrain = NPCWorldDirectorBridge.GetDirectorBrain()
+        if directorBrain and directorBrain.ShouldDeferActivation then
+            local pressureReason, pressureRetry = directorBrain.ShouldDeferActivation(group, player, budget)
+            if pressureReason then
+                return director.DeferGroupActivation(group, pressureReason, pressureRetry)
+            end
+        end
+
+        if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldDeferActivation then
+            local streamingReason, streamingRetry = NPCStreamingRuntimeBridge.ShouldDeferActivation(group, player, budget)
+            if streamingReason then
+                return director.DeferGroupActivation(group, streamingReason, streamingRetry)
+            end
+        end
+
+        if NPCCrowdBudgetBridge and NPCCrowdBudgetBridge.ShouldDeferActivation then
+            local crowdReason, crowdRetry = NPCCrowdBudgetBridge.ShouldDeferActivation(group, player, budget)
+            if crowdReason then
+                return director.DeferGroupActivation(group, crowdReason, crowdRetry)
+            end
+        end
+
+        local proxyReason, proxyRetry = director.ShouldDeferForProxyLOD(group, player, budget)
+        if proxyReason then
+            return director.DeferGroupActivation(group, proxyReason, proxyRetry)
+        end
+
+        if (tonumber(totalActivations) or 0) >= (tonumber(director.MAX_GROUP_ACTIVATIONS_PER_UPDATE) or 1) then
+            return director.DeferGroupActivation(group, "update_activation_budget")
+        end
+
+        if (tonumber(budget.activations) or 0) >= (tonumber(director.MAX_GROUP_ACTIVATIONS_PER_PLAYER) or 1) then
+            return director.DeferGroupActivation(group, "player_activation_budget")
         end
     end
 
-    if NPCCrowdBudgetBridge and NPCCrowdBudgetBridge.ShouldDeferActivation then
-        local crowdReason, crowdRetry = NPCCrowdBudgetBridge.ShouldDeferActivation(group, player, budget)
-        if crowdReason then
-            return director.DeferGroupActivation(group, crowdReason, crowdRetry)
-        end
-    end
-
-    local proxyReason, proxyRetry = director.ShouldDeferForProxyLOD(group, player, budget)
-    if proxyReason then
-        return director.DeferGroupActivation(group, proxyReason, proxyRetry)
-    end
-
-    if (tonumber(totalActivations) or 0) >= (tonumber(director.MAX_GROUP_ACTIVATIONS_PER_UPDATE) or 1) then
-        return director.DeferGroupActivation(group, "update_activation_budget")
-    end
-
-    if (tonumber(budget.activations) or 0) >= (tonumber(director.MAX_GROUP_ACTIVATIONS_PER_PLAYER) or 1) then
-        return director.DeferGroupActivation(group, "player_activation_budget")
-    end
-
-    if director.DEFER_ACTIVATION_WHEN_NPC_NEAR_PLAYER then
+    if director.DEFER_ACTIVATION_WHEN_NPC_NEAR_PLAYER and not urgentMarkerActivation then
         local softCap = tonumber(director.ACTIVATION_NPC_SOFT_CAP_PER_PLAYER) or 0
         if softCap > 0 then
             local projected = (tonumber(budget.npcNear) or 0) + director.GetGroupMemberCount(group)
@@ -2186,6 +2891,32 @@ function NPCWorldDirectorBridge.BattleMemberOffset(index)
     local count = #offsets
     if count <= 0 then return {x=0, y=0} end
     return offsets[((tonumber(index) or 1) - 1) % count + 1]
+end
+
+function NPCWorldDirectorBridge.BattleRemainsDistanceSq(record, x, y, z)
+    if type(record) ~= "table" then return nil end
+    local rx = tonumber(record.x)
+    local ry = tonumber(record.y)
+    if not rx or not ry then return nil end
+    local rz = math.floor(tonumber(record.z) or 0)
+    if z ~= nil and rz ~= math.floor(tonumber(z) or 0) then return nil end
+    local dx = rx - (tonumber(x) or 0)
+    local dy = ry - (tonumber(y) or 0)
+    return dx * dx + dy * dy
+end
+
+function NPCWorldDirectorBridge.FindNearbyBattleRemains(gmd, x, y, z, radius)
+    if type(gmd) ~= "table" or type(gmd.BattleRemains) ~= "table" then return nil end
+    local r = tonumber(radius) or 0
+    if r <= 0 then return nil end
+    local r2 = r * r
+    for id, record in pairs(gmd.BattleRemains) do
+        local d2 = NPCWorldDirectorBridge.BattleRemainsDistanceSq(record, x, y, z)
+        if d2 and d2 <= r2 then
+            return id, record
+        end
+    end
+    return nil
 end
 
 function NPCWorldDirectorBridge.TableCount(t)
@@ -2246,6 +2977,324 @@ function NPCWorldDirectorBridge.SafeAddBattleDebris(square, itemType)
         square:AddWorldInventoryItem(itemType, ZombRandFloat(0.18, 0.82), ZombRandFloat(0.18, 0.82), 0)
     end) == true
 end
+
+function NPCWorldDirectorBridge.SafeAddBattleAftermathProp(square, candidates)
+    if not square or type(candidates) ~= "table" then return nil end
+    for i = 1, #candidates do
+        local itemType = candidates[i]
+        if itemType then
+            local ok = pcall(function()
+                square:AddWorldInventoryItem(itemType, ZombRandFloat(0.14, 0.86), ZombRandFloat(0.14, 0.86), 0)
+            end)
+            if ok then return itemType end
+        end
+    end
+    return nil
+end
+
+function NPCWorldDirectorBridge.BattleAftermathPropCandidates(index)
+    local sets = NPCWorldDirectorBridge.BattleAftermathPropSets
+    if type(sets) ~= "table" then
+        sets = {
+            { "Base.ScrapMetal", "Base.SmallSheetMetal", "Base.SheetMetal", "Base.MetalPipe", "Base.MetalBar" },
+            { "Base.Plank", "Base.UnusableWood", "Base.NailsBox", "Base.Nails" },
+            { "Base.BrokenGlass", "Base.Garbagebag", "Base.RippedSheetsDirty", "Base.BandageDirty" },
+            { "Base.EmptyPetrolCan", "Base.PetrolCanEmpty", "Base.WaterBottleEmpty", "Base.PopEmpty", "Base.TinCanEmpty" },
+            { "Base.NormalTire1", "Base.NormalTire2", "Base.NormalTire3", "Base.OldTire1", "Base.OldTire2", "Base.OldTire3" }
+        }
+        NPCWorldDirectorBridge.BattleAftermathPropSets = sets
+    end
+    local count = #sets
+    if count <= 0 then return nil end
+    return sets[((tonumber(index) or 1) - 1) % count + 1]
+end
+
+
+function NPCWorldDirectorBridge.UrbanCoverPropCandidates(index)
+    local sets = NPCWorldDirectorBridge.UrbanCoverPropSets
+    if type(sets) ~= "table" then
+        sets = {
+            { "Base.NormalTire1", "Base.NormalTire2", "Base.NormalTire3", "Base.OldTire1", "Base.OldTire2", "Base.OldTire3" },
+            { "Base.ScrapMetal", "Base.SmallSheetMetal", "Base.SheetMetal", "Base.MetalPipe", "Base.MetalBar" },
+            { "Base.Plank", "Base.UnusableWood", "Base.NailsBox", "Base.Nails" },
+            { "Base.Hinge", "Base.Doorknob", "Base.Screws", "Base.MetalPipe" },
+            { "Base.EngineParts", "Base.ScrapMetal", "Base.MetalBar", "Base.EmptyPetrolCan", "Base.PetrolCanEmpty" },
+            { "Base.BrokenGlass", "Base.Garbagebag", "Base.EmptyPetrolCan", "Base.WaterBottleEmpty", "Base.PopEmpty", "Base.TinCanEmpty" }
+        }
+        NPCWorldDirectorBridge.UrbanCoverPropSets = sets
+    end
+    local count = #sets
+    if count <= 0 then return nil end
+    return sets[((tonumber(index) or 1) - 1) % count + 1]
+end
+
+function NPCWorldDirectorBridge.IsUrbanCoverPropItem(fullType)
+    fullType = tostring(fullType or "")
+    return fullType == "Base.NormalTire1"
+        or fullType == "Base.NormalTire2"
+        or fullType == "Base.NormalTire3"
+        or fullType == "Base.OldTire1"
+        or fullType == "Base.OldTire2"
+        or fullType == "Base.OldTire3"
+        or fullType == "Base.ScrapMetal"
+        or fullType == "Base.SmallSheetMetal"
+        or fullType == "Base.SheetMetal"
+        or fullType == "Base.MetalPipe"
+        or fullType == "Base.MetalBar"
+        or fullType == "Base.Plank"
+        or fullType == "Base.UnusableWood"
+        or fullType == "Base.NailsBox"
+        or fullType == "Base.Nails"
+        or fullType == "Base.Hinge"
+        or fullType == "Base.Doorknob"
+        or fullType == "Base.Screws"
+        or fullType == "Base.EngineParts"
+        or fullType == "Base.BrokenGlass"
+        or fullType == "Base.Garbagebag"
+        or fullType == "Base.EmptyPetrolCan"
+        or fullType == "Base.PetrolCanEmpty"
+        or fullType == "Base.WaterBottleEmpty"
+        or fullType == "Base.PopEmpty"
+        or fullType == "Base.TinCanEmpty"
+end
+
+function NPCWorldDirectorBridge.EnsureUrbanCoverProps(gmd)
+    if not gmd then return {} end
+    if type(gmd.UrbanCoverProps) ~= "table" then gmd.UrbanCoverProps = {} end
+    return gmd.UrbanCoverProps
+end
+
+function NPCWorldDirectorBridge.PruneUrbanCoverProps(director, gmd)
+    local records = NPCWorldDirectorBridge.EnsureUrbanCoverProps(gmd)
+    local maxRecords = math.max(0, tonumber(director and director.URBAN_COVER_PROPS_MAX_RECORDS) or 120)
+    if maxRecords <= 0 then
+        for id, _ in pairs(records) do records[id] = nil end
+        return 0
+    end
+
+    local count = NPCWorldDirectorBridge.CountTable(records)
+    local removed = 0
+    while count > maxRecords do
+        local oldestId, oldestAt = nil, nil
+        for id, record in pairs(records) do
+            local at = type(record) == "table" and tonumber(record.spawnedAt) or nil
+            if not oldestId or (oldestAt == nil and at ~= nil) or (at ~= nil and oldestAt ~= nil and at < oldestAt) then
+                oldestId = id
+                oldestAt = at
+            end
+        end
+        if not oldestId then break end
+        records[oldestId] = nil
+        removed = removed + 1
+        count = count - 1
+    end
+    return removed
+end
+
+function NPCWorldDirectorBridge.IsNearUrbanCoverProp(records, x, y, z, minSpacing)
+    if type(records) ~= "table" or not x or not y then return false end
+    local spacing = tonumber(minSpacing) or 18
+    local spacing2 = spacing * spacing
+    local iz = math.floor(tonumber(z) or 0)
+    for _, record in pairs(records) do
+        if type(record) == "table" and record.x and record.y then
+            local rz = math.floor(tonumber(record.z) or 0)
+            if rz == iz then
+                local dx = (tonumber(record.x) or 0) - x
+                local dy = (tonumber(record.y) or 0) - y
+                if dx * dx + dy * dy < spacing2 then return true end
+            end
+        end
+    end
+    return false
+end
+
+function NPCWorldDirectorBridge.GetSquareWorldItemFullType(obj)
+    if not obj then return nil end
+    local okItem, item = pcall(function() return obj:getItem() end)
+    if not okItem or not item then return nil end
+    local okFull, fullType = pcall(function() return item:getFullType() end)
+    if okFull and fullType then return tostring(fullType) end
+    local okType, itemType = pcall(function() return item:getType() end)
+    if okType and itemType then return "Base." .. tostring(itemType) end
+    return nil
+end
+
+function NPCWorldDirectorBridge.SquareHasUrbanCoverPropItem(square)
+    if not square then return false end
+    local ok, objects = pcall(function() return square:getWorldObjects() end)
+    if not ok or not objects then return false end
+    local size = 0
+    local okSize, result = pcall(function() return objects:size() end)
+    if okSize and result then size = tonumber(result) or 0 end
+    if size <= 0 then return false end
+    for i = 0, size - 1 do
+        local obj = objects:get(i)
+        local fullType = NPCWorldDirectorBridge.GetSquareWorldItemFullType(obj)
+        if NPCWorldDirectorBridge.IsUrbanCoverPropItem(fullType) then return true end
+    end
+    return false
+end
+
+function NPCWorldDirectorBridge.IsOutdoorBuildableCoverSquare(square)
+    if not square then return false end
+    local okRoom, room = pcall(function() return square:getRoom() end)
+    if okRoom and room then return false end
+    local okBuilding, building = pcall(function() return square:getBuilding() end)
+    if okBuilding and building then return false end
+    local okSolid, solid = pcall(function() return square:isSolid() or square:isSolidTrans() end)
+    if okSolid and solid then return false end
+    local okFree, free = pcall(function() return square:isFree(false) end)
+    if okFree and free == false then return false end
+    if NPCWorldDirectorBridge.SquareHasUrbanCoverPropItem(square) then return false end
+    return true
+end
+
+function NPCWorldDirectorBridge.SquareNearBuildingExterior(square, radius)
+    if not square or not getCell then return false end
+    local cell = getCell()
+    if not cell then return false end
+    local sx, sy, sz = square:getX(), square:getY(), square:getZ()
+    local scan = math.max(2, tonumber(radius) or 7)
+    for dx = -scan, scan do
+        for dy = -scan, scan do
+            if dx ~= 0 or dy ~= 0 then
+                local nsq = cell:getGridSquare(sx + dx, sy + dy, sz)
+                if nsq then
+                    local okRoom, room = pcall(function() return nsq:getRoom() end)
+                    if okRoom and room then return true end
+                    local okBuilding, building = pcall(function() return nsq:getBuilding() end)
+                    if okBuilding and building then return true end
+                end
+            end
+        end
+    end
+    return false
+end
+
+function NPCWorldDirectorBridge.FindUrbanCoverPropSquare(director, player, gmd)
+    if not player or not getCell then return nil end
+    local cell = getCell()
+    if not cell then return nil end
+
+    local radius = math.max(12, tonumber(director and director.URBAN_COVER_PROPS_RADIUS) or 58)
+    local attempts = math.max(6, tonumber(director and director.URBAN_COVER_PROPS_ATTEMPTS_PER_PLAYER) or 34)
+    local buildingRadius = math.max(2, tonumber(director and director.URBAN_COVER_PROPS_BUILDING_RADIUS) or 7)
+    local records = NPCWorldDirectorBridge.EnsureUrbanCoverProps(gmd)
+    local minSpacing = math.max(6, tonumber(director and director.URBAN_COVER_PROPS_MIN_SPACING) or 18)
+    local px = math.floor(player:getX())
+    local py = math.floor(player:getY())
+    local pz = math.floor(player:getZ() or 0)
+
+    for _ = 1, attempts do
+        local dx = ZombRand and (ZombRand(radius * 2 + 1) - radius) or math.random(-radius, radius)
+        local dy = ZombRand and (ZombRand(radius * 2 + 1) - radius) or math.random(-radius, radius)
+        if dx ~= 0 or dy ~= 0 then
+            local x = px + dx
+            local y = py + dy
+            local sq = cell:getGridSquare(x, y, pz)
+            if sq and NPCWorldDirectorBridge.IsOutdoorBuildableCoverSquare(sq) then
+                if not NPCWorldDirectorBridge.IsNearUrbanCoverProp(records, x, y, pz, minSpacing) then
+                    if NPCWorldDirectorBridge.SquareNearBuildingExterior(sq, buildingRadius) then
+                        return sq
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+function NPCWorldDirectorBridge.AddUrbanCoverPropItem(square, setIndex)
+    if not square then return nil end
+    local candidates = NPCWorldDirectorBridge.UrbanCoverPropCandidates(setIndex)
+    if type(candidates) ~= "table" then return nil end
+    return NPCWorldDirectorBridge.SafeAddBattleAftermathProp(square, candidates)
+end
+
+function NPCWorldDirectorBridge.SpawnUrbanCoverPropCluster(director, gmd, square)
+    if not (director and gmd and square) then return 0 end
+    local records = NPCWorldDirectorBridge.EnsureUrbanCoverProps(gmd)
+    local x, y, z = square:getX(), square:getY(), square:getZ()
+    local minSpacing = math.max(6, tonumber(director.URBAN_COVER_PROPS_MIN_SPACING) or 18)
+    if NPCWorldDirectorBridge.IsNearUrbanCoverProp(records, x, y, z, minSpacing) then return 0 end
+
+    local maxItems = math.max(1, math.min(8, tonumber(director.URBAN_COVER_PROPS_MAX_ITEMS_PER_CLUSTER) or 4))
+    local targetItems = math.max(1, math.min(maxItems, 2 + (ZombRand and ZombRand(math.max(1, maxItems)) or math.random(0, math.max(1, maxItems - 1)))))
+    local offsets = {{0,0},{1,0},{0,1},{-1,0},{0,-1},{1,1},{-1,1},{1,-1},{-1,-1},{2,0},{0,2},{-2,0},{0,-2}}
+    local cell = getCell and getCell() or nil
+    if not cell then return 0 end
+
+    local spawned = 0
+    local itemTypes = {}
+    for i = 1, #offsets do
+        if spawned >= targetItems then break end
+        local ox, oy = offsets[i][1], offsets[i][2]
+        local sq = cell:getGridSquare(x + ox, y + oy, z)
+        if sq and NPCWorldDirectorBridge.IsOutdoorBuildableCoverSquare(sq) then
+            local itemType = NPCWorldDirectorBridge.AddUrbanCoverPropItem(sq, i)
+            if itemType then
+                spawned = spawned + 1
+                itemTypes[#itemTypes + 1] = itemType
+            end
+        end
+    end
+
+    if spawned <= 0 then return 0 end
+    local okAge, worldAge = pcall(function() return getGameTime():getWorldAgeHours() end)
+    local id = "urban_cover_" .. tostring(x) .. "_" .. tostring(y) .. "_" .. tostring(z)
+    records[id] = {
+        id = id,
+        kind = "urban_cover_prop",
+        x = x,
+        y = y,
+        z = z,
+        spawnedAt = okAge and worldAge or 0,
+        count = spawned,
+        items = itemTypes
+    }
+    NPCWorldDirectorBridge.PruneUrbanCoverProps(director, gmd)
+    NPCWorldDirectorBridge.Log(director, "[NPCWorldDirector] Spawned urban cover props " .. tostring(id) .. " items=" .. tostring(spawned))
+    return spawned
+end
+
+function NPCWorldDirectorBridge.UpdateUrbanCoverProps(director)
+    if not (director and director.URBAN_COVER_PROPS_ENABLED and getOnlinePlayers) then return 0 end
+    local gmd = director.EnsureData and director.EnsureData() or NPCWorldDirectorBridge.EnsureData(director)
+    if not gmd then return 0 end
+    NPCWorldDirectorBridge.PruneUrbanCoverProps(director, gmd)
+
+    local players = getOnlinePlayers()
+    if not players then return 0 end
+    local size = 0
+    local okSize, result = pcall(function() return players:size() end)
+    if okSize and result then size = tonumber(result) or 0 end
+    if size <= 0 then return 0 end
+
+    local maxClusters = math.max(0, tonumber(director.URBAN_COVER_PROPS_MAX_CLUSTERS_PER_RUN) or 2)
+    if maxClusters <= 0 then return 0 end
+
+    local spawnedClusters = 0
+    local spawnedItems = 0
+    for i = 0, size - 1 do
+        if spawnedClusters >= maxClusters then break end
+        local player = players:get(i)
+        if player then
+            local square = NPCWorldDirectorBridge.FindUrbanCoverPropSquare(director, player, gmd)
+            if square then
+                local added = NPCWorldDirectorBridge.SpawnUrbanCoverPropCluster(director, gmd, square)
+                if added > 0 then
+                    spawnedClusters = spawnedClusters + 1
+                    spawnedItems = spawnedItems + added
+                end
+            end
+        end
+    end
+
+    return spawnedItems
+end
+
 
 function NPCWorldDirectorBridge.SpawnBattleCorpse(member, square, x, y, z)
     if not square then return false end
@@ -2345,6 +3394,10 @@ function NPCWorldDirectorBridge.PruneBattleRemains(director, gmd, worldAge)
 end
 
 function NPCWorldDirectorBridge.CreateBattleRemains(director, gmd, loser, winner, battleId, membersSnapshot, worldAge)
+    if director and director.SP_BOOTSTRAP_GATE_ROAD_BATTLES ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, "battle_remains")
+        if gate then npc_wd_recordBootstrapGate("battle_remains", retry, reason); return false end
+    end
     if type(gmd) ~= "table" or type(loser) ~= "table" or loser.id == nil then return false end
     if type(gmd.BattleRemains) ~= "table" then gmd.BattleRemains = {} end
     if type(gmd.DebugMapMarkers) ~= "table" then gmd.DebugMapMarkers = {} end
@@ -2355,8 +3408,8 @@ function NPCWorldDirectorBridge.CreateBattleRemains(director, gmd, loser, winner
     end
     worldAge = tonumber(worldAge) or 0
 
-    local maxBodies = tonumber(director and director.BATTLE_REMAINS_MAX_BODIES) or 8
-    if maxBodies < 1 then maxBodies = 1 end
+    local maxBodies = tonumber(director and director.BATTLE_REMAINS_MAX_BODIES) or 2
+    if maxBodies < 0 then maxBodies = 0 end
 
     local members = {}
     if type(membersSnapshot) == "table" then
@@ -2365,7 +3418,7 @@ function NPCWorldDirectorBridge.CreateBattleRemains(director, gmd, loser, winner
             members[#members + 1] = NPCWorldDirectorBridge.CompactBattleMember(member)
         end
     end
-    if #members <= 0 then
+    if #members <= 0 and maxBodies > 0 then
         members[1] = NPCWorldDirectorBridge.CompactBattleMember(type(loser.members) == "table" and loser.members[1] or nil)
     end
 
@@ -2376,6 +3429,16 @@ function NPCWorldDirectorBridge.CreateBattleRemains(director, gmd, loser, winner
     local x = wx and math.floor((lx + wx) / 2) or math.floor(lx)
     local y = wy and math.floor((ly + wy) / 2) or math.floor(ly)
     local z = tonumber(loser.z) or (type(winner) == "table" and tonumber(winner.z)) or 0
+    local spacing = tonumber(director and director.BATTLE_REMAINS_MIN_SPACING) or 96
+    local nearbyId, nearbyRecord = NPCWorldDirectorBridge.FindNearbyBattleRemains(gmd, x, y, z, spacing)
+    if nearbyId and type(nearbyRecord) == "table" then
+        nearbyRecord.count = math.min((tonumber(nearbyRecord.count) or 0) + #members, tonumber(director and director.BATTLE_REMAINS_MAX_BODIES) or 2)
+        nearbyRecord.updatedAt = worldAge
+        nearbyRecord.lastBattleId = battleId
+        gmd.BattleRemains[tostring(nearbyId)] = nearbyRecord
+        return true
+    end
+
     local id = NPCWorldDirectorBridge.MakeBattleRemainsId(battleId, loser.id, worldAge)
 
     local winnerGroupId = type(winner) == "table" and winner.id ~= nil and tostring(winner.id) or nil
@@ -2448,42 +3511,36 @@ function NPCWorldDirectorBridge.MaterializeBattleRemains(director, gmd, remainsI
     local baseSquare = director.FindLoadedSpawnSquareNear(baseX, baseY, baseZ, 36)
     if not baseSquare then return false end
 
-    local spawnedBodies = 0
-    local members = type(record.members) == "table" and record.members or {}
-    for i=1, #members do
-        local offset = NPCWorldDirectorBridge.BattleMemberOffset(i)
-        local sx = baseX + offset.x + ZombRand(-2, 3)
-        local sy = baseY + offset.y + ZombRand(-2, 3)
-        local square = director.FindLoadedSpawnSquareNear(sx, sy, baseZ, 8) or baseSquare
-        if square then
-            local okX, qx = pcall(function() return square:getX() end)
-            local okY, qy = pcall(function() return square:getY() end)
-            local okZ, qz = pcall(function() return square:getZ() end)
-            if okX and okY and okZ and NPCWorldDirectorBridge.SpawnBattleCorpse(members[i], square, qx, qy, qz) then
-                spawnedBodies = spawnedBodies + 1
-                NPCWorldDirectorBridge.SafeAddBattleBlood(square, 4 + ZombRand(5))
-            end
-        end
+    if director.BATTLE_REMAINS_MATERIALIZE_ENABLED ~= true and director.BATTLE_REMAINS_PROP_ONLY ~= true then
+        record.materialized = true
+        local okAge, worldAge = pcall(function() return getGameTime():getWorldAgeHours() end)
+        record.materializedAt = okAge and worldAge or record.materializedAt
+        record.spawnedBodies = 0
+        record.suppressed = true
+        gmd.BattleRemains[tostring(remainsId)] = record
+        if type(gmd.DebugMapMarkers) == "table" then gmd.DebugMapMarkers[tostring(remainsId)] = nil end
+        NPCWorldDirectorBridge.SendDebugMapRemove(tostring(remainsId))
+        return true
     end
 
-    local debris = {
-        "Base.RippedSheetsDirty",
-        "Base.BandageDirty",
-        "Base.Cigarettes",
-        "Base.WaterBottleEmpty",
-        "Base.PopEmpty",
-        "Base.TinCanEmpty",
-        "Base.Bullets9mmBox",
-        "Base.ShotgunShellsBox",
-        "Base.Bullets45Box"
-    }
-    local debrisCount = math.min(12, 3 + spawnedBodies * 2 + ZombRand(4))
+    local spawnedBodies = 0
+    local spawnedProps = 0
+    local members = type(record.members) == "table" and record.members or {}
+    local debrisCap = tonumber(director.BATTLE_REMAINS_MAX_DEBRIS) or 8
+    if debrisCap < 1 then debrisCap = 1 end
+    local intensity = math.max(tonumber(record.count) or 0, #members, 1)
+    local debrisCount = math.min(debrisCap, 4 + intensity + ZombRand(3))
     for i=1, debrisCount do
         local offset = NPCWorldDirectorBridge.BattleMemberOffset(i)
-        local square = director.FindLoadedSpawnSquareNear(baseX + offset.x + ZombRand(-3, 4), baseY + offset.y + ZombRand(-3, 4), baseZ, 8) or baseSquare
+        local square = director.FindLoadedSpawnSquareNear(baseX + offset.x + ZombRand(-4, 5), baseY + offset.y + ZombRand(-4, 5), baseZ, 8) or baseSquare
         if square then
-            NPCWorldDirectorBridge.SafeAddBattleBlood(square, 1 + ZombRand(3))
-            NPCWorldDirectorBridge.SafeAddBattleDebris(square, debris[1 + ZombRand(#debris)])
+            local candidates = NPCWorldDirectorBridge.BattleAftermathPropCandidates(i + ZombRand(4))
+            if NPCWorldDirectorBridge.SafeAddBattleAftermathProp(square, candidates) then
+                spawnedProps = spawnedProps + 1
+            end
+            if spawnedProps <= 2 and ZombRand(3) == 0 then
+                NPCWorldDirectorBridge.SafeAddBattleBlood(square, 1)
+            end
         end
     end
 
@@ -2491,6 +3548,7 @@ function NPCWorldDirectorBridge.MaterializeBattleRemains(director, gmd, remainsI
     local okAge, worldAge = pcall(function() return getGameTime():getWorldAgeHours() end)
     record.materializedAt = okAge and worldAge or record.materializedAt
     record.spawnedBodies = spawnedBodies
+    record.spawnedProps = spawnedProps
     gmd.BattleRemains[tostring(remainsId)] = record
     if type(gmd.DebugMapMarkers) == "table" then gmd.DebugMapMarkers[tostring(remainsId)] = nil end
 
@@ -2498,10 +3556,127 @@ function NPCWorldDirectorBridge.MaterializeBattleRemains(director, gmd, remainsI
     NPCWorldDirectorBridge.DirectorEvent(director, "battle_remains_materialized", baseX, baseY, baseZ, {
         battleId = tostring(record.battleId or ""),
         remainsId = tostring(remainsId),
-        spawnedBodies = spawnedBodies
+        spawnedBodies = spawnedBodies,
+        spawnedProps = spawnedProps
     })
-    NPCWorldDirectorBridge.Log(director, "[NPCWorldDirector] Materialized aftermath " .. tostring(remainsId) .. " bodies=" .. tostring(spawnedBodies))
+    NPCWorldDirectorBridge.Log(director, "[NPCWorldDirector] Materialized aftermath " .. tostring(remainsId) .. " props=" .. tostring(spawnedProps))
     return true
+end
+
+function NPCWorldDirectorBridge.IsBattleDebrisItem(fullType)
+    fullType = tostring(fullType or "")
+    return fullType == "Base.RippedSheetsDirty"
+        or fullType == "Base.BandageDirty"
+        or fullType == "Base.Cigarettes"
+        or fullType == "Base.WaterBottleEmpty"
+        or fullType == "Base.PopEmpty"
+        or fullType == "Base.TinCanEmpty"
+        or fullType == "Base.Bullets9mmBox"
+        or fullType == "Base.ShotgunShellsBox"
+        or fullType == "Base.Bullets45Box"
+        or fullType == "Base.ScrapMetal"
+        or fullType == "Base.SmallSheetMetal"
+        or fullType == "Base.SheetMetal"
+        or fullType == "Base.MetalPipe"
+        or fullType == "Base.MetalBar"
+        or fullType == "Base.Plank"
+        or fullType == "Base.UnusableWood"
+        or fullType == "Base.NailsBox"
+        or fullType == "Base.Nails"
+        or fullType == "Base.Hinge"
+        or fullType == "Base.Doorknob"
+        or fullType == "Base.Screws"
+        or fullType == "Base.EngineParts"
+        or fullType == "Base.BrokenGlass"
+        or fullType == "Base.Garbagebag"
+        or fullType == "Base.EmptyPetrolCan"
+        or fullType == "Base.PetrolCanEmpty"
+        or fullType == "Base.NormalTire1"
+        or fullType == "Base.NormalTire2"
+        or fullType == "Base.NormalTire3"
+        or fullType == "Base.OldTire1"
+        or fullType == "Base.OldTire2"
+        or fullType == "Base.OldTire3"
+end
+
+function NPCWorldDirectorBridge.RemoveWorldObjectSafe(obj)
+    if not obj then return false end
+    local ok = false
+    if obj.removeFromWorld then ok = pcall(function() obj:removeFromWorld() end) or ok end
+    if obj.removeFromSquare then ok = pcall(function() obj:removeFromSquare() end) or ok end
+    return ok == true
+end
+
+function NPCWorldDirectorBridge.CleanupBattlefieldClutterAroundPlayer(director, player)
+    if not (director and director.BATTLEFIELD_CLEANUP_ENABLED) or not player or not getCell then return 0 end
+    local radius = tonumber(director.BATTLEFIELD_CLEANUP_RADIUS) or 42
+    local corpseSoftCap = tonumber(director.BATTLEFIELD_CLEANUP_CORPSE_SOFT_CAP) or 18
+    local debrisSoftCap = tonumber(director.BATTLEFIELD_CLEANUP_DEBRIS_SOFT_CAP) or 24
+    local maxRemove = tonumber(director.BATTLEFIELD_CLEANUP_MAX_REMOVE_PER_RUN) or 48
+    if radius <= 0 or maxRemove <= 0 then return 0 end
+
+    local cell = getCell()
+    if not cell then return 0 end
+    local px = math.floor(tonumber(player:getX()) or 0)
+    local py = math.floor(tonumber(player:getY()) or 0)
+    local pz = math.floor(tonumber(player:getZ()) or 0)
+    local bodies = {}
+    local debris = {}
+
+    for y = py - radius, py + radius do
+        for x = px - radius, px + radius do
+            local square = cell:getGridSquare(x, y, pz)
+            if square then
+                if square.getDeadBody then
+                    local okBody, body = pcall(function() return square:getDeadBody() end)
+                    if okBody and body then bodies[#bodies + 1] = body end
+                end
+                if square.getWorldObjects then
+                    local okWorld, worldObjects = pcall(function() return square:getWorldObjects() end)
+                    if okWorld and worldObjects then
+                        local size = worldObjects:size()
+                        for i = 0, size - 1 do
+                            local obj = worldObjects:get(i)
+                            local item = obj and obj.getItem and obj:getItem() or nil
+                            local fullType = item and item.getFullType and item:getFullType() or nil
+                            if NPCWorldDirectorBridge.IsBattleDebrisItem(fullType) then
+                                debris[#debris + 1] = obj
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    local removed = 0
+    if #debris > debrisSoftCap then
+        for i = debrisSoftCap + 1, #debris do
+            if removed >= maxRemove then break end
+            if NPCWorldDirectorBridge.RemoveWorldObjectSafe(debris[i]) then removed = removed + 1 end
+        end
+    end
+    if #bodies > corpseSoftCap then
+        for i = corpseSoftCap + 1, #bodies do
+            if removed >= maxRemove then break end
+            if NPCWorldDirectorBridge.RemoveWorldObjectSafe(bodies[i]) then removed = removed + 1 end
+        end
+    end
+    return removed
+end
+
+function NPCWorldDirectorBridge.CleanupBattlefieldClutter(director)
+    if not (director and director.BATTLEFIELD_CLEANUP_ENABLED) or not getOnlinePlayers then return 0 end
+    local playerList = getOnlinePlayers()
+    if not playerList then return 0 end
+    local removed = 0
+    for i = 0, playerList:size() - 1 do
+        local player = playerList:get(i)
+        if player and not player:isDead() then
+            removed = removed + NPCWorldDirectorBridge.CleanupBattlefieldClutterAroundPlayer(director, player)
+        end
+    end
+    return removed
 end
 
 function NPCWorldDirectorBridge.UpdateBattleRemains(director)
@@ -2545,6 +3720,7 @@ function NPCWorldDirectorBridge.EnsureData(_director)
     if not gmd.VirtualGroups then gmd.VirtualGroups = {} end
     if not gmd.DebugMapMarkers then gmd.DebugMapMarkers = {} end
     if not gmd.BattleRemains then gmd.BattleRemains = {} end
+    if not gmd.UrbanCoverProps then gmd.UrbanCoverProps = {} end
     if not gmd.WorldDirector then
         gmd.WorldDirector = {
             enabled = true,
@@ -2582,7 +3758,8 @@ function NPCWorldDirectorBridge.RefreshRevirtualizedGroupMarker(gmd, groupId, gr
     marker.x = group.x
     marker.y = group.y
     marker.z = group.z or 0
-    marker.name = group.roadPatrol and ((group.hostile and "Red Road Patrol " or "Green Road Patrol ") .. groupId) or ("NPC Group " .. groupId)
+    marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group, marker.name)
+    marker.displayName = marker.name
     marker.count = group.count
     marker.hostile = group.hostile
     marker.friendly = not group.hostile
@@ -2613,6 +3790,7 @@ function NPCWorldDirectorBridge.RefreshRevirtualizedGroupMarker(gmd, groupId, gr
     marker.spawnFailCount = group.spawnFailCount
     marker.spawnFailReason = nil
     marker.updatedAt = worldAge
+    NPCWorldDirectorBridge.ApplyVirtualGroupMapMotionFields(nil, marker, group, worldAge)
     gmd.DebugMapMarkers[groupId] = marker
     NPCWorldDirectorBridge.SendDebugMapUpdate(marker)
 end
@@ -2658,19 +3836,27 @@ function NPCWorldDirectorBridge.RevirtualizePersistedRuntimeState(director)
             if NPCPersistentNPCBridge and NPCPersistentNPCBridge.RestoreGroupMembers then
                 NPCPersistentNPCBridge.RestoreGroupMembers(gmd, group)
             end
-            group.activated = false
-            group.virtual = true
-            group.physicalIds = nil
-            group.spawnPending = false
-            group.spawnQueued = 0
-            group.retryAfter = nil
-            group.lastSpawnFailReason = nil
-            group.spawnFailed = false
-            group.state = NPCWorldDirectorBridge.ResumeVirtualState(group)
-            if type(group.members) == "table" and #group.members > 0 then
-                group.count = #group.members
+            local bubble = NPCWorldDirectorBridge.GetPersistedPhysicalBubble(gmd, groupId)
+            if bubble and NPCWorldDirectorBridge.PreparePhysicalBubbleGroupForRestore(director, gmd, groupId, group, bubble, worldAge) then
+                -- Keep only a compact strategic snapshot in save, but make the
+                -- nearby physical group eligible for fast restoration when the
+                -- owning player returns after a stop/start.
+            else
+                group.activated = false
+                group.virtual = true
+                group.physicalIds = nil
+                group.spawnPending = false
+                group.spawnQueued = 0
+                group.retryAfter = nil
+                group.lastSpawnFailReason = nil
+                group.spawnFailed = false
+                group.state = NPCWorldDirectorBridge.ResumeVirtualState(group)
+                if type(group.members) == "table" and #group.members > 0 then
+                    group.count = #group.members
+                end
+                group.updatedAt = worldAge
+                NPCWorldDirectorBridge.CompactVirtualGroupForStrategicPersistence(director, gmd, groupId, group, "startup_revirtualize")
             end
-            group.updatedAt = worldAge
             gmd.VirtualGroups[groupId] = group
             if NPCPersistentNPCBridge and NPCPersistentNPCBridge.RegisterGroup then
                 NPCPersistentNPCBridge.RegisterGroup(gmd, group)
@@ -2681,11 +3867,107 @@ function NPCWorldDirectorBridge.RevirtualizePersistedRuntimeState(director)
         end
     end
 
+    if NPCWorldDirectorBridge.CleanupLoadedPersistedRuntimeObjects(director, "startup_revirtualize") > 0 then
+        changed = true
+    end
+
+    if NPCIdentityReconciliationBridge and NPCIdentityReconciliationBridge.ReconcileGlobal then
+        local okRecon, reconChanged = pcall(function()
+            return NPCIdentityReconciliationBridge.ReconcileGlobal(gmd, {
+                force = true,
+                reason = "startup_revirtualize",
+                maxQueue = 160,
+                maxGroups = 96,
+                maxMarkers = 160,
+                allowSoftRevirtualize = true,
+                sendRemove = function(id) NPCWorldDirectorBridge.SendDebugMapRemove(id) end
+            })
+        end)
+        if okRecon and tonumber(reconChanged) and tonumber(reconChanged) > 0 then changed = true end
+    end
+
+    if NPCWorldDirectorBridge.ReconcileDebugMarkers(gmd, "startup_revirtualize", 180) > 0 then changed = true end
+
     if changed and TransmitNPCModData then
         TransmitNPCModData()
     end
 
     return changed
+end
+
+function NPCWorldDirectorBridge.RevirtualizePersistedRuntimeStateStep(director, maxGroups)
+    if type(director) ~= "table" then return false, true end
+    if director._startupRuntimeRevirtualized then return false, true end
+
+    local gmd = director.EnsureData and director.EnsureData() or NPCWorldDirectorBridge.EnsureData(director)
+    local worldAge = getGameTime and getGameTime():getWorldAgeHours() or 0
+    local state = director._spRuntimeRevirtualizeState
+    if type(state) ~= "table" then
+        state = {groupIds = {}, index = 1, initialized = true}
+        for groupId, _ in pairs(gmd.VirtualGroups or {}) do
+            state.groupIds[#state.groupIds + 1] = tostring(groupId)
+        end
+        director._spRuntimeRevirtualizeState = state
+        if NPCPersistentNPCBridge and NPCPersistentNPCBridge.ClearRuntimeLinks then
+            pcall(function() NPCPersistentNPCBridge.ClearRuntimeLinks(gmd) end)
+        end
+        if type(gmd.Queue) == "table" and NPCWorldDirectorBridge.CountTable(gmd.Queue) > 0 then
+            gmd.Queue = {}
+        end
+        gmd.RuntimeToUID = {}
+        gmd.UIDToRuntime = {}
+        gmd.PersistentRuntimeToUID = {}
+        gmd.PersistentUIDToRuntime = {}
+    end
+
+    local budget = npc_wd_spBudget(maxGroups, 8, 1, 64)
+    local changed = false
+    local processed = 0
+    while state.index <= #state.groupIds and processed < budget do
+        local groupId = tostring(state.groupIds[state.index] or "")
+        state.index = state.index + 1
+        processed = processed + 1
+        local group = gmd.VirtualGroups and gmd.VirtualGroups[groupId] or nil
+        if type(group) == "table" and (group.activated or group.virtual == false or group.state == "physical" or group.state == "spawning" or group.physicalIds ~= nil or group.spawnPending) then
+            if NPCPersistentNPCBridge and NPCPersistentNPCBridge.RestoreGroupMembers then
+                pcall(function() NPCPersistentNPCBridge.RestoreGroupMembers(gmd, group) end)
+            end
+            local bubble = NPCWorldDirectorBridge.GetPersistedPhysicalBubble(gmd, groupId)
+            if bubble and NPCWorldDirectorBridge.PreparePhysicalBubbleGroupForRestore(director, gmd, groupId, group, bubble, worldAge) then
+                -- Restored as a lazy physical-bubble candidate below.
+            else
+                group.activated = false
+                group.virtual = true
+                group.physicalIds = nil
+                group.spawnPending = false
+                group.spawnQueued = 0
+                group.retryAfter = nil
+                group.lastSpawnFailReason = nil
+                group.spawnFailed = false
+                group.state = NPCWorldDirectorBridge.ResumeVirtualState(group)
+                if type(group.members) == "table" and #group.members > 0 then
+                    group.count = #group.members
+                end
+                group.updatedAt = worldAge
+                NPCWorldDirectorBridge.CompactVirtualGroupForStrategicPersistence(director, gmd, groupId, group, "startup_revirtualize_step")
+            end
+            gmd.VirtualGroups[groupId] = group
+            if NPCPersistentNPCBridge and NPCPersistentNPCBridge.RegisterGroup then
+                pcall(function() NPCPersistentNPCBridge.RegisterGroup(gmd, group) end)
+            end
+            NPCWorldDirectorBridge.RefreshRevirtualizedGroupMarker(gmd, groupId, group, worldAge)
+            changed = true
+        end
+    end
+
+    if state.index > #state.groupIds then
+        director._startupRuntimeRevirtualized = true
+        director._spRuntimeRevirtualizeState = nil
+        if NPCWorldDirectorBridge.ReconcileDebugMarkers(gmd, "sp_startup_revirtualize", 90) > 0 then changed = true end
+        return changed, true
+    end
+
+    return changed, false
 end
 
 -- Stage 49: neutral virtual-group creation backend.
@@ -2818,6 +4100,11 @@ function NPCWorldDirectorBridge.GetProgramForWave(_director, wave)
 end
 
 function NPCWorldDirectorBridge.MakeFallbackNPC(_director, wave)
+    if NPCCreatorBridge and NPCCreatorBridge.GetFirearmWeightedWave then
+        wave = NPCCreatorBridge.GetFirearmWeightedWave(wave or {})
+    else
+        wave = wave or {}
+    end
     local bandit = {}
 
     bandit.clan = wave.clanId or 1
@@ -2854,13 +4141,25 @@ function NPCWorldDirectorBridge.MakeFallbackNPC(_director, wave)
 
     bandit.weapons.primary = {name=false, magSize=0, bulletsLeft=0, magCount=0}
     if primaryPool and #primaryPool > 0 and ZombRand(101) < (wave.hasRifleChance or 0) then
-        bandit.weapons.primary = NPCWorldDirectorBridge.Copy(NPCWorldDirectorBridge.Choice(primaryPool))
+        local primary = nil
+        if NPCCreatorBridge and NPCCreatorBridge.PickBalancedFirearm then
+            primary = NPCCreatorBridge.PickBalancedFirearm(primaryPool, wave, "primary")
+        else
+            primary = NPCWorldDirectorBridge.Choice(primaryPool)
+        end
+        bandit.weapons.primary = NPCWorldDirectorBridge.Copy(primary)
         bandit.weapons.primary.magCount = wave.rifleMagCount or 1
     end
 
     bandit.weapons.secondary = {name=false, magSize=0, bulletsLeft=0, magCount=0}
     if secondaryPool and #secondaryPool > 0 and ZombRand(101) < (wave.hasPistolChance or 0) then
-        bandit.weapons.secondary = NPCWorldDirectorBridge.Copy(NPCWorldDirectorBridge.Choice(secondaryPool))
+        local secondary = nil
+        if NPCCreatorBridge and NPCCreatorBridge.PickBalancedFirearm then
+            secondary = NPCCreatorBridge.PickBalancedFirearm(secondaryPool, wave, "secondary")
+        else
+            secondary = NPCWorldDirectorBridge.Choice(secondaryPool)
+        end
+        bandit.weapons.secondary = NPCWorldDirectorBridge.Copy(secondary)
         bandit.weapons.secondary.magCount = wave.pistolMagCount or 2
     end
 
@@ -2937,20 +4236,252 @@ function NPCWorldDirectorBridge.ApplyVirtualGroupStrategicState(director, gmd, g
     if NPCStrategicAIBridge and NPCStrategicAIBridge.EvaluateGroupCombatPower then
         NPCStrategicAIBridge.EvaluateGroupCombatPower(gmd, group)
     end
+    if NPCWorldDirectorBridge.EnsureBaseOwnedGroup then
+        NPCWorldDirectorBridge.EnsureBaseOwnedGroup(director, gmd, group, getGameTime and getGameTime():getWorldAgeHours() or nil, "strategic_state")
+    end
 
     return group
+end
+
+function NPCWorldDirectorBridge.CleanVirtualGroupDisplayName(name, groupId)
+    if name == nil then return nil end
+    local text = tostring(name or "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" or text == "nil" or text == "false" then return nil end
+
+    local gid = tostring(groupId or "")
+    if gid ~= "" and text == gid then return nil end
+    if string.match(text, "^P%d+%s+BBC%d+$") then return nil end
+    if string.match(text, "^BBC%d+$") then return nil end
+    if string.match(text, "^WG%d+$") then return nil end
+    if string.match(text, "^CP%d+$") then return nil end
+    if string.match(text, "^SG%d+$") then return nil end
+
+    text = string.gsub(text, "%s+P%d+%s+BBC%d+$", "")
+    text = string.gsub(text, "%s+BBC%d+$", "")
+    text = string.gsub(text, "%s+WG%d+$", "")
+    text = string.gsub(text, "%s+CP%d+$", "")
+    text = string.gsub(text, "%s+SG%d+$", "")
+    if gid ~= "" then
+        text = string.gsub(text, "%s+" .. gid .. "$", "")
+    end
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+
+    local lower = string.lower(text)
+    if text == "" or lower == "npc group" or lower == "road patrol" or lower == "checkpoint patrol" then return nil end
+    if string.match(text, "^NPC Group%s*") then return nil end
+    return text
+end
+
+function NPCWorldDirectorBridge.GetVirtualGroupSideLabel(group)
+    local side = group and (group.factionSide or group.side or group.faction or group.patrolColor) or nil
+    side = tostring(side or "")
+    if NPCFactionBridge and NPCFactionBridge.NormalizeSide then
+        local ok, normalized = pcall(function() return NPCFactionBridge.NormalizeSide(side) end)
+        if ok and normalized then side = tostring(normalized) end
+    end
+    side = string.lower(side)
+    if side == "red" then return "Red" end
+    if side == "green" then return "Green" end
+    if side == "blue" then return "Blue" end
+    if group and group.hostile == true then return "Red" end
+    return "Green"
+end
+
+function NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group, preferredName)
+    local cleaned = NPCWorldDirectorBridge.CleanVirtualGroupDisplayName(preferredName or (group and group.name), groupId)
+    if cleaned then return cleaned end
+
+    local sideLabel = NPCWorldDirectorBridge.GetVirtualGroupSideLabel(group)
+    if group and (group.mercenary or group.mercenaryElite or sideLabel == "Blue") then
+        if group.mercenaryHired then return "Hired blue mercenaries" end
+        return "Blue mercenaries"
+    end
+    if group and group.inBattle then
+        return "Battle: " .. sideLabel .. " patrol"
+    end
+    if group and (group.checkpointId or group.targetClass == "checkpoint_road_patrol" or group.state == "checkpoint_patrol") then
+        return sideLabel .. " checkpoint patrol"
+    end
+    if group and group.roadPatrol then
+        return sideLabel .. " road patrol"
+    end
+    if group and (group.homeBaseId or group.state == "base_patrol" or group.targetClass == "base_guard") then
+        return sideLabel .. " base patrol"
+    end
+    if group and group.strategicActivityType then
+        return sideLabel .. " field team"
+    end
+    return sideLabel .. " patrol"
+end
+
+function NPCWorldDirectorBridge.MapMotionDistance(ax, ay, bx, by)
+    ax = tonumber(ax) or 0
+    ay = tonumber(ay) or 0
+    bx = tonumber(bx) or 0
+    by = tonumber(by) or 0
+    local dx = bx - ax
+    local dy = by - ay
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+function NPCWorldDirectorBridge.MapMotionQuantize(value, size)
+    size = tonumber(size) or 80
+    if size <= 1 then size = 80 end
+    return math.floor((tonumber(value) or 0) / size)
+end
+
+function NPCWorldDirectorBridge.ClearVirtualGroupMapPath(marker)
+    if not marker then return marker end
+    marker.mapPathKey = nil
+    marker.mapPathCount = nil
+    for i=1, 6 do
+        marker["mapPathX" .. tostring(i)] = nil
+        marker["mapPathY" .. tostring(i)] = nil
+    end
+    return marker
+end
+
+function NPCWorldDirectorBridge.CopyVirtualGroupMapPathToMarker(marker, path)
+    NPCWorldDirectorBridge.ClearVirtualGroupMapPath(marker)
+    if not (marker and type(path) == "table" and type(path.nodes) == "table" and #path.nodes > 0) then return marker end
+
+    local count = 0
+    for i, node in ipairs(path.nodes) do
+        if count >= 6 then break end
+        local x = tonumber(node and node.x)
+        local y = tonumber(node and node.y)
+        if x and y then
+            count = count + 1
+            marker["mapPathX" .. tostring(count)] = x
+            marker["mapPathY" .. tostring(count)] = y
+        end
+    end
+    if count > 0 then
+        marker.mapPathCount = count
+        marker.mapPathKey = path.key
+    end
+    return marker
+end
+
+function NPCWorldDirectorBridge.BuildVirtualGroupMapRoadPath(director, group, sx, sy, tx, ty, worldAge)
+    if not (director and group and director.VIRTUAL_MAP_ROAD_PROJECTION_ENABLED ~= false) then return nil end
+    if not (NPCRoadNavBridge and NPCRoadNavBridge.FindNearbyWorldRoadStepToward) then return nil end
+    sx = tonumber(sx); sy = tonumber(sy); tx = tonumber(tx); ty = tonumber(ty)
+    if not (sx and sy and tx and ty) then return nil end
+
+    local totalDist = NPCWorldDirectorBridge.MapMotionDistance(sx, sy, tx, ty)
+    if totalDist < 80 then return nil end
+
+    local q = tonumber(director.VIRTUAL_MAP_ROAD_PROJECTION_KEY_SIZE) or 80
+    local routeX = tonumber(group.routeX)
+    local routeY = tonumber(group.routeY)
+    local key = table.concat({
+        tostring(group.id or ""),
+        tostring(NPCWorldDirectorBridge.MapMotionQuantize(sx, q)),
+        tostring(NPCWorldDirectorBridge.MapMotionQuantize(sy, q)),
+        tostring(NPCWorldDirectorBridge.MapMotionQuantize(tx, q)),
+        tostring(NPCWorldDirectorBridge.MapMotionQuantize(ty, q)),
+        tostring(NPCWorldDirectorBridge.MapMotionQuantize(routeX or tx, q)),
+        tostring(NPCWorldDirectorBridge.MapMotionQuantize(routeY or ty, q)),
+        tostring(group.roadPatrol == true)
+    }, ":")
+
+    local now = tonumber(worldAge) or (getGameTime and getGameTime():getWorldAgeHours() or 0)
+    local cached = group.mapRoadPath
+    if type(cached) == "table" and cached.key == key and type(cached.nodes) == "table" then
+        local cachedAt = tonumber(cached.updatedAt) or now
+        if now - cachedAt <= (tonumber(director.VIRTUAL_MAP_ROAD_PROJECTION_CACHE_HOURS) or 0.35) then
+            return cached
+        end
+    end
+
+    local nodes = {}
+    local maxNodes = math.max(1, math.min(6, tonumber(director.VIRTUAL_MAP_ROAD_PROJECTION_WAYPOINTS) or 5))
+    local radius = tonumber(director.VIRTUAL_MAP_ROAD_PROJECTION_RADIUS) or tonumber(director.ROAD_PATROL_VIRTUAL_STEP_RADIUS) or 360
+    local attempts = tonumber(director.VIRTUAL_MAP_ROAD_PROJECTION_ATTEMPTS) or 48
+    local curX = sx
+    local curY = sy
+
+    local function addNode(node)
+        if not node or #nodes >= maxNodes then return false end
+        local nx = tonumber(node.x)
+        local ny = tonumber(node.y)
+        if not (nx and ny) then return false end
+        if NPCWorldDirectorBridge.MapMotionDistance(curX, curY, nx, ny) < 18 then return false end
+        nodes[#nodes + 1] = {x=nx, y=ny}
+        curX = nx
+        curY = ny
+        return true
+    end
+
+    if group.roadPatrol and group.targetX and group.targetY then
+        addNode({x=group.targetX, y=group.targetY})
+    end
+
+    while #nodes < maxNodes and NPCWorldDirectorBridge.MapMotionDistance(curX, curY, tx, ty) > radius * 0.55 do
+        local step = nil
+        local okStep, got = pcall(function()
+            return NPCRoadNavBridge.FindNearbyWorldRoadStepToward(curX, curY, tx, ty, radius, attempts)
+        end)
+        if okStep and got and got.x and got.y then step = got end
+        if not addNode(step) then break end
+    end
+
+    if #nodes <= 0 then
+        group.mapRoadPath = nil
+        return nil
+    end
+
+    local path = {key=key, updatedAt=now, nodes=nodes}
+    group.mapRoadPath = path
+    return path
+end
+
+function NPCWorldDirectorBridge.ApplyVirtualGroupMapMotionFields(director, marker, group, worldAge)
+    if not (marker and group) then return marker end
+    director = director or NPCWorldDirector
+
+    local x = tonumber(group.preciseX) or tonumber(group.x) or tonumber(marker.x)
+    local y = tonumber(group.preciseY) or tonumber(group.y) or tonumber(marker.y)
+    local tx = tonumber((group.roadPatrol and group.routeX) or group.mapRouteX or group.targetX)
+    local ty = tonumber((group.roadPatrol and group.routeY) or group.mapRouteY or group.targetY)
+    local speed = tonumber(group.speed) or tonumber(director and director.VIRTUAL_MOVE_SPEED_TILES_PER_HOUR) or 120
+    local baseSpeed = tonumber(director and director.VIRTUAL_MOVE_SPEED_TILES_PER_HOUR) or 120
+    if speed > 0 and speed < baseSpeed and not NPCWorldDirectorBridge.IsRecruitableBlueMercenaryPatrol(group) then speed = baseSpeed end
+
+    if x then marker.preciseX = x end
+    if y then marker.preciseY = y end
+    marker.mapMotion = marker.markerType == "group" and marker.virtual ~= false and marker.active ~= true and group.activated ~= true and tx ~= nil and ty ~= nil and group.inBattle ~= true
+    marker.mapSourceX = x or marker.x
+    marker.mapSourceY = y or marker.y
+    marker.mapTargetX = tx
+    marker.mapTargetY = ty
+    marker.mapMoveSpeed = math.max(1, speed)
+    marker.mapUpdatedAt = tonumber(group.updatedAt) or tonumber(worldAge) or (getGameTime and getGameTime():getWorldAgeHours() or nil)
+
+    local path = nil
+    if marker.mapMotion then
+        path = NPCWorldDirectorBridge.BuildVirtualGroupMapRoadPath(director, group, marker.mapSourceX, marker.mapSourceY, marker.mapTargetX, marker.mapTargetY, marker.mapUpdatedAt)
+    end
+    NPCWorldDirectorBridge.CopyVirtualGroupMapPathToMarker(marker, path)
+
+    return marker
 end
 
 function NPCWorldDirectorBridge.BuildVirtualGroupMarker(group)
     if type(group) ~= "table" then return nil end
     local groupId = group.id
-    return {
+    local marker = {
         id = groupId,
         markerType = "group",
         x = group.x,
         y = group.y,
         z = group.z,
-        name = group.mercenary and "Blue Mercenaries " .. tostring(groupId) or "NPC Group " .. tostring(groupId),
+        name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group),
+        displayName = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group),
         count = group.count,
         hostile = group.hostile,
         friendly = not group.hostile,
@@ -2975,6 +4506,13 @@ function NPCWorldDirectorBridge.BuildVirtualGroupMarker(group)
         targetX = group.targetX,
         targetY = group.targetY,
         homeBaseId = group.homeBaseId,
+        homeBaseOwner = group.homeBaseOwner,
+        baseOwnedGlobalSquad = group.baseOwnedGlobalSquad == true,
+        baseOwnedRole = group.baseOwnedRole,
+        originBaseId = group.originBaseId,
+        routeOwnerBaseId = group.routeOwnerBaseId,
+        baseOwnedRouteReason = group.baseOwnedRouteReason,
+        locationRepairProtected = group.locationRepairProtected == true,
         strategicPower = group.strategicPower,
         combatReadiness = group.combatReadiness,
         supplyReadiness = group.supplyReadiness,
@@ -2994,6 +4532,7 @@ function NPCWorldDirectorBridge.BuildVirtualGroupMarker(group)
         strategicActivityTargetBaseId = group.strategicActivityTargetBaseId,
         strategicActivityTargetGroupId = group.strategicActivityTargetGroupId
     }
+    return NPCWorldDirectorBridge.ApplyVirtualGroupMapMotionFields(nil, marker, group)
 end
 
 
@@ -3045,7 +4584,8 @@ function NPCWorldDirectorBridge.BuildRoadPatrolMarker(director, gmd, group, name
     marker.x = group.x
     marker.y = group.y
     marker.z = group.z or 0
-    marker.name = tostring(namePrefix or "Road Patrol ") .. tostring(group.id)
+    marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(group.id, group, tostring(namePrefix or "Road Patrol ") .. tostring(group.id))
+    marker.displayName = marker.name
     marker.count = group.count or 0
     marker.hostile = group.hostile
     marker.friendly = not group.hostile
@@ -3086,6 +4626,11 @@ function NPCWorldDirectorBridge.BuildRoadPatrolMarker(director, gmd, group, name
     marker.convoyFaction = group.convoyFaction or group.patrolColor
     marker.homeBaseId = group.homeBaseId
     marker.homeBaseOwner = group.homeBaseOwner
+    marker.baseOwnedGlobalSquad = group.baseOwnedGlobalSquad == true
+    marker.baseOwnedRole = group.baseOwnedRole
+    marker.routeOwnerBaseId = group.routeOwnerBaseId
+    marker.baseOwnedRouteReason = group.baseOwnedRouteReason
+    marker.locationRepairProtected = group.locationRepairProtected == true
     marker.strategicPower = group.strategicPower
     marker.combatReadiness = group.combatReadiness
     marker.supplyReadiness = group.supplyReadiness
@@ -3101,7 +4646,7 @@ function NPCWorldDirectorBridge.BuildRoadPatrolMarker(director, gmd, group, name
         NPCStrategicAIBridge.BuildMarkerFields(marker, group)
     end
     marker.updatedAt = group.updatedAt or (getGameTime and getGameTime():getWorldAgeHours() or 0)
-    return marker
+    return NPCWorldDirectorBridge.ApplyVirtualGroupMapMotionFields(director, marker, group)
 end
 
 function NPCWorldDirectorBridge.StrategicSide(side)
@@ -3285,6 +4830,10 @@ end
 
 function NPCWorldDirectorBridge.CreateStrategicVirtualGroup(director, gmd, opts)
     if not (director and gmd and type(opts) == "table") then return nil end
+    if director.SP_BOOTSTRAP_GATE_VIRTUAL_GROUPS ~= false then
+        local gate, retry, reason = NPCWorldDirectorBridge.ShouldBootstrapGate(director, "strategic_virtual_group")
+        if gate then NPCWorldDirectorBridge.RecordBootstrapGate("strategic_virtual_group", retry, reason); return nil end
+    end
     gmd.VirtualGroups = gmd.VirtualGroups or {}
     gmd.DebugMapMarkers = gmd.DebugMapMarkers or {}
     local side = NPCWorldDirectorBridge.StrategicSide(opts.side)
@@ -3344,7 +4893,12 @@ function NPCWorldDirectorBridge.CreateStrategicVirtualGroup(director, gmd, opts)
         preferRoads = opts.kind == "checkpoint",
         roadPatrol = opts.kind == "checkpoint",
         checkpointId = opts.checkpointId,
-        homeBaseId = opts.baseId,
+        homeBaseId = opts.baseId or opts.originBaseId,
+        originBaseId = opts.originBaseId or opts.baseId,
+        homeBaseOwner = opts.baseOwner,
+        baseOwnedGlobalSquad = (opts.baseId or opts.originBaseId) ~= nil,
+        routeOwnerBaseId = opts.originBaseId or opts.baseId,
+        baseOwnedRole = opts.kind == "base" and "garrison" or (opts.kind == "checkpoint" and "checkpoint_patrol" or "field"),
         strategicMarkerId = opts.markerId,
         strategicGroup = true,
         leaderId = opts.leader and opts.leader.id or nil,
@@ -3357,6 +4911,13 @@ function NPCWorldDirectorBridge.CreateStrategicVirtualGroup(director, gmd, opts)
 
     if opts.leader and NPCLeadersBridge and NPCLeadersBridge.MarkerFields then
         NPCLeadersBridge.MarkerFields(group, opts.leader)
+    end
+    if NPCWorldDirectorBridge.EnsureBaseOwnedGroup then
+        NPCWorldDirectorBridge.EnsureBaseOwnedGroup(director, gmd, group, worldAge, "strategic_group_created")
+    end
+    if NPCWorldDirectorBridge.TryConsumeBaseEconomyForGroup and group.homeBaseId then
+        local homeBase = NPCWorldDirectorBridge.GetStrategicBaseById and NPCWorldDirectorBridge.GetStrategicBaseById(gmd, group.homeBaseId) or nil
+        if homeBase then NPCWorldDirectorBridge.TryConsumeBaseEconomyForGroup(director, gmd, homeBase, group, group.baseOwnedRole or group.state, worldAge) end
     end
     if NPCIdentityBridge and NPCIdentityBridge.TouchVirtualGroup then
         NPCIdentityBridge.TouchVirtualGroup(gmd, group)
@@ -3373,7 +4934,9 @@ function NPCWorldDirectorBridge.CreateStrategicVirtualGroup(director, gmd, opts)
         marker = NPCWorldDirectorBridge.BuildVirtualGroupMarker(group)
     end
     if marker then
-        marker.name = opts.name or marker.name
+        marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group, opts.name or marker.name)
+        group.name = marker.name
+        marker.displayName = marker.name
         marker.markerType = "group"
         marker.strategicGroup = true
         marker.checkpointId = opts.checkpointId
@@ -3418,10 +4981,24 @@ function NPCWorldDirectorBridge.EnsureCheckpointGuardGroups(director, gmd, world
                         namePrefix = "Checkpoint patrol "
                     })
                     if group then
+                        group.checkpointGuard = true
+                        group.forceCheckpointActivation = true
+                        group.checkpointId = group.checkpointId or cp.id
                         cp.guardGroupId = group.id
                         cp.updatedAt = worldAge
                         changed = changed + 1
                     end
+                end
+            else
+                local group = gmd.VirtualGroups and gmd.VirtualGroups[tostring(cp.guardGroupId)] or nil
+                if type(group) == "table" then
+                    group.checkpointGuard = true
+                    group.forceCheckpointActivation = true
+                    group.checkpointId = group.checkpointId or cp.id
+                    group.state = group.state or "checkpoint_patrol"
+                    group.x = tonumber(group.x) or tonumber(cp.x) or group.x
+                    group.y = tonumber(group.y) or tonumber(cp.y) or group.y
+                    group.z = tonumber(group.z) or tonumber(cp.z) or group.z
                 end
             end
         end
@@ -3617,12 +5194,132 @@ function NPCWorldDirectorBridge.CountStrategicWarBases(gmd)
                 redBaseCount = redBaseCount + 1
             elseif base.owner == "green" then
                 greenBaseCount = greenBaseCount + 1
-            elseif not base.owner or tostring(base.owner) == "" then
+            elseif not base.owner or tostring(base.owner) == "" or tostring(base.owner) == "neutral" then
                 neutralBaseCount = neutralBaseCount + 1
             end
         end
     end
     return redBaseCount, greenBaseCount, neutralBaseCount
+end
+
+local function wd_initialBaseOwnerHash(base, salt)
+    local x = tonumber(base and base.x) or 0
+    local y = tonumber(base and base.y) or 0
+    local key = tostring(base and (base.id or base.name or "") or "") .. tostring(salt or "")
+    local sum = 0
+    for i = 1, #key do
+        sum = sum + string.byte(key, i) * (i + 23)
+    end
+    local v = math.sin(x * 12.9898 + y * 78.233 + sum * 0.04123) * 43758.5453
+    return v - math.floor(v)
+end
+
+local function wd_initialBaseIsNeutral(base)
+    if type(base) ~= "table" then return false end
+    local owner = base.owner
+    local captureTeam = base.captureTeam
+    owner = owner ~= nil and tostring(owner) or ""
+    captureTeam = captureTeam ~= nil and tostring(captureTeam) or ""
+    return (owner == "" or owner == "neutral") and (captureTeam == "" or captureTeam == "neutral")
+end
+
+local function wd_nearestInitialOwnedSide(gmd, base, radius)
+    if not (gmd and base and base.x and base.y) then return nil, nil end
+    local bestSide = nil
+    local bestDist = tonumber(radius) or 0
+    if bestDist <= 0 then return nil, nil end
+    for _, other in pairs(gmd.BaseCamps or {}) do
+        if type(other) == "table" and other ~= base and other.x and other.y and (other.owner == "red" or other.owner == "green") then
+            local d = NPCWorldDirectorBridge.DistanceToPoint(base, other)
+            if d <= bestDist then
+                bestDist = d
+                bestSide = other.owner
+            end
+        end
+    end
+    return bestSide, bestDist
+end
+
+local function wd_chooseInitialFactionBaseOwner(director, gmd, base, redCount, greenCount)
+    if not (base and base.x and base.y) then return nil end
+    local maxImbalance = tonumber(director and director.STRATEGIC_INITIAL_FACTION_BASE_MAX_IMBALANCE) or 1
+    if redCount > greenCount + maxImbalance then return "green" end
+    if greenCount > redCount + maxImbalance then return "red" end
+
+    local nearSide = wd_nearestInitialOwnedSide(gmd, base, tonumber(director and director.STRATEGIC_INITIAL_FACTION_BASE_PROVOCATION_RADIUS) or 1500)
+    if nearSide and wd_initialBaseOwnerHash(base, "near") > 0.28 then
+        return nearSide == "red" and "green" or "red"
+    end
+
+    local grid = math.max(180, tonumber(director and director.STRATEGIC_INITIAL_FACTION_BASE_GRID) or 820)
+    local cellX = math.floor((tonumber(base.x) or 0) / grid)
+    local cellY = math.floor((tonumber(base.y) or 0) / grid)
+    local side = ((cellX + cellY) % 2 == 0) and "red" or "green"
+    if wd_initialBaseOwnerHash(base, "flip") > 0.66 then side = side == "red" and "green" or "red" end
+
+    if side == "red" and redCount > greenCount + maxImbalance then return "green" end
+    if side == "green" and greenCount > redCount + maxImbalance then return "red" end
+    return side
+end
+
+function NPCWorldDirectorBridge.EnsureInitialFactionBaseOwnership(director, gmd, war, worldAge, redBaseCount, greenBaseCount)
+    if not (director and director.STRATEGIC_INITIAL_FACTION_BASES_ENABLED ~= false and gmd and type(gmd.BaseCamps) == "table") then
+        return false, redBaseCount or 0, greenBaseCount or 0
+    end
+
+    redBaseCount = tonumber(redBaseCount) or 0
+    greenBaseCount = tonumber(greenBaseCount) or 0
+    local changed = false
+    local assigned = 0
+    local ids = {}
+    for id, base in pairs(gmd.BaseCamps or {}) do
+        if type(base) == "table" and base.x and base.y and wd_initialBaseIsNeutral(base) then
+            ids[#ids + 1] = tostring(id)
+            base.id = base.id or tostring(id)
+        end
+    end
+    table.sort(ids, function(a, b)
+        local ba = gmd.BaseCamps[a]
+        local bb = gmd.BaseCamps[b]
+        local ha = wd_initialBaseOwnerHash(ba, "sort")
+        local hb = wd_initialBaseOwnerHash(bb, "sort")
+        if ha == hb then return tostring(a) < tostring(b) end
+        return ha < hb
+    end)
+
+    for _, id in ipairs(ids) do
+        local base = gmd.BaseCamps[id]
+        if type(base) == "table" and wd_initialBaseIsNeutral(base) then
+            local side = wd_chooseInitialFactionBaseOwner(director, gmd, base, redBaseCount, greenBaseCount)
+            if side == "red" or side == "green" then
+                base.owner = side
+                base.captureTeam = nil
+                base.progress = 100
+                base.status = "controlled"
+                base.initialFactionOwner = side
+                base.initialFactionOwnerStage = 447
+                base.strategicSeedSide = side
+                base.updatedAt = worldAge
+                if side == "red" then redBaseCount = redBaseCount + 1 else greenBaseCount = greenBaseCount + 1 end
+                assigned = assigned + 1
+                changed = true
+                if NPCBaseCampServerBridge and NPCBaseCampServerBridge.UpdateVirtualGarrisonPower then
+                    pcall(function() NPCBaseCampServerBridge.UpdateVirtualGarrisonPower(base, worldAge) end)
+                end
+                if NPCBaseCampServerBridge and NPCBaseCampServerBridge.SendBaseMarkers then
+                    pcall(function() NPCBaseCampServerBridge.SendBaseMarkers(base, true) end)
+                end
+            end
+        end
+    end
+
+    if changed then
+        war.initialFactionBaseOwnershipStage = 447
+        war.initialFactionBaseOwnershipAt = worldAge
+        war.initialFactionBaseOwnershipAssigned = (tonumber(war.initialFactionBaseOwnershipAssigned) or 0) + assigned
+        NPCWorldDirectorBridge.BehaviorLog(director, "initial_faction_base_ownership", {assigned=assigned, redBases=redBaseCount, greenBases=greenBaseCount})
+    end
+    return changed, redBaseCount, greenBaseCount
 end
 
 function NPCWorldDirectorBridge.FindBalanceSeedBase(gmd, side, war, reservedId)
@@ -3714,6 +5411,10 @@ function NPCWorldDirectorBridge.EnsureStrategicWarState(director, gmd, worldAge)
     end
 
     local redBaseCount, greenBaseCount = NPCWorldDirectorBridge.CountStrategicWarBases(gmd)
+    local initialChanged = false
+    initialChanged, redBaseCount, greenBaseCount = NPCWorldDirectorBridge.EnsureInitialFactionBaseOwnership(director, gmd, war, worldAge, redBaseCount, greenBaseCount)
+    changed = changed or initialChanged
+
     if redBaseCount <= 0 then
         local base = NPCWorldDirectorBridge.SeedStrategicWarBase(gmd, "red", war.redAnchor, war.greenSeedBaseId, worldAge)
         if base then war.redSeedBaseId = base.id; redBaseCount = redBaseCount + 1; changed = true end
@@ -3820,14 +5521,39 @@ end
 
 function NPCWorldDirectorBridge.FindStrategicFrontTargetBase(gmd, side, front, fromRecord, director)
     local other = side == "red" and "green" or "red"
-    local best = nil
-    local bestScore = 999999
+    local source = fromRecord or front
+    local neutralFirst = not director or director.STRATEGIC_EXPANSION_NEUTRAL_FIRST_ENABLED ~= false
+    local neutralRadius = tonumber(director and director.STRATEGIC_EXPANSION_NEUTRAL_RADIUS) or 1800
+    local enemyDelayPenalty = tonumber(director and director.STRATEGIC_EXPANSION_ENEMY_DELAY_PENALTY) or 620
+    local bestNeutral = nil
+    local bestNeutralScore = 999999
+    local bestOther = nil
+    local bestOtherScore = 999999
+
     for _, base in pairs(gmd and gmd.BaseCamps or {}) do
         if type(base) == "table" and base.x and base.y and base.owner ~= side then
+            local owner = base.owner
+            local neutral = owner == nil or tostring(owner) == "" or tostring(owner) == "neutral"
+            local enemy = owner == other
             local dFront = front and NPCWorldDirectorBridge.DistanceToPoint(base, front) or 0
-            local score = dFront
-            if base.owner == other then score = score - 300 end
-            if base.captureTeam == side then score = score - 150 end
+            local dSource = source and NPCWorldDirectorBridge.DistanceToPoint(base, source) or dFront
+            local score = dSource * 0.65 + dFront * 0.35
+
+            if neutral then
+                if not source or dSource <= neutralRadius then
+                    score = score - (tonumber(director and director.STRATEGIC_EXPANSION_NEUTRAL_BONUS) or 420)
+                else
+                    score = score + 140
+                end
+                if base.captureTeam and base.captureTeam ~= side then score = score + 160 end
+            elseif enemy then
+                score = score - 220
+            else
+                score = score + 120
+            end
+
+            if base.captureTeam == side then score = score - 180 end
+            if base.status == "contested" then score = score - 70 end
             if director and director.STRATEGIC_REALISM_ENABLED ~= false then
                 score = score + NPCWorldDirectorBridge.EstimateStrategicBaseDefenseScore(director, base)
                 score = score + NPCWorldDirectorBridge.EstimateStrategicRoutePenalty(director, gmd, side, fromRecord or front or base, base)
@@ -3840,14 +5566,25 @@ function NPCWorldDirectorBridge.FindStrategicFrontTargetBase(gmd, side, front, f
                 if base.baseArchetype == "military" then score = score + 120 end
                 if base.baseArchetype == "checkpoint" then score = score - 45 end
             end
-            if score < bestScore then
-                best = base
-                best.id = best.id or tostring(base.id or "")
-                bestScore = score
+
+            if neutral then
+                if score < bestNeutralScore then
+                    bestNeutral = base
+                    bestNeutral.id = bestNeutral.id or tostring(base.id or "")
+                    bestNeutralScore = score
+                end
+            elseif score < bestOtherScore then
+                bestOther = base
+                bestOther.id = bestOther.id or tostring(base.id or "")
+                bestOtherScore = score
             end
         end
     end
-    return best
+
+    if neutralFirst and bestNeutral and (not bestOther or bestNeutralScore <= bestOtherScore + enemyDelayPenalty) then
+        return bestNeutral
+    end
+    return bestOther or bestNeutral
 end
 
 function NPCWorldDirectorBridge.ApplyStrategicFrontOrders(director, gmd, worldAge)
@@ -3860,6 +5597,7 @@ function NPCWorldDirectorBridge.ApplyStrategicFrontOrders(director, gmd, worldAg
         if type(group) == "table"
             and not group.activated
             and not group.inBattle
+            and not NPCWorldDirectorBridge.IsPlayerCommandedMercenaryGroup(group)
             and not group.economyMissionId
             and not group.mercenary
             and not group.roadPatrol
@@ -3948,6 +5686,7 @@ end
 local NPC_STRATEGIC_ACTIVITY_STATES = {
     Patrol = "activity_patrol",
     AttackBase = "activity_attack_base",
+    AssembleStrike = "activity_assemble_strike",
     DefendBase = "activity_defend_base",
     EscortConvoy = "activity_escort_convoy",
     AmbushRoad = "activity_ambush_road",
@@ -3961,6 +5700,7 @@ local NPC_STRATEGIC_ACTIVITY_STATES = {
 local NPC_STRATEGIC_ACTIVITY_TARGET_CLASS = {
     Patrol = "activity_patrol",
     AttackBase = "base_capture",
+    AssembleStrike = "strike_staging",
     DefendBase = "base_defense",
     EscortConvoy = "convoy_escort",
     AmbushRoad = "road_ambush",
@@ -3976,6 +5716,7 @@ local function wd_activityTypePriority(activityType)
     if activityType == "DefendBase" then return 20 end
     if activityType == "ReinforceBase" then return 30 end
     if activityType == "SiegeBase" then return 40 end
+    if activityType == "AssembleStrike" then return 45 end
     if activityType == "AttackBase" then return 50 end
     if activityType == "EscortConvoy" then return 60 end
     if activityType == "AmbushRoad" then return 70 end
@@ -4050,6 +5791,357 @@ local function wd_activityLogisticsCost(activityType)
     return 0.55, 0.45, 0.50
 end
 
+
+local WD_BASE_ECONOMY_STOCK_KEYS = {"food", "water", "medical", "ammo", "weapons", "armor", "materials", "tools", "supplies", "fuel", "spareParts"}
+local WD_BASE_ECONOMY_FIELD_BY_KEY = {
+    food = "stockFood", water = "stockWater", medical = "stockMedical", ammo = "stockAmmo",
+    weapons = "stockWeapons", armor = "stockArmor", materials = "stockMaterials", tools = "stockTools",
+    supplies = "stockSupplies", fuel = "stockFuel", spareParts = "stockSpareParts"
+}
+
+local function wd_baseEconomyStock(base, key)
+    if type(base) ~= "table" then return 0 end
+    local amount = 0
+    if type(base.stock) == "table" then amount = amount + (tonumber(base.stock[key]) or 0) end
+    if type(base.zoneStock) == "table" then amount = amount + (tonumber(base.zoneStock[key]) or 0) end
+    local field = WD_BASE_ECONOMY_FIELD_BY_KEY[key]
+    if amount <= 0 and field then amount = tonumber(base[field]) or 0 end
+    return math.max(0, amount)
+end
+
+local function wd_baseEconomyReadiness(base, key, perManpower)
+    local manpower = math.max(1, tonumber(perManpower) or tonumber(base and base.economy and base.economy.manpowerActive) or tonumber(base and base.garrisonSize) or 4)
+    local amount = wd_baseEconomyStock(base, key)
+    return wd_clamp((amount / manpower) * 18, 0, 100)
+end
+
+local function wd_baseEconomyConsumeFromStockTable(stock, key, amount)
+    if type(stock) ~= "table" or amount <= 0 then return amount, 0 end
+    local have = tonumber(stock[key]) or 0
+    if have <= 0 then return amount, 0 end
+    local take = math.min(have, amount)
+    stock[key] = have - take
+    return amount - take, take
+end
+
+local function wd_baseEconomyConsumeResource(base, key, amount)
+    if type(base) ~= "table" or not key then return 0 end
+    amount = math.max(0, tonumber(amount) or 0)
+    if amount <= 0 then return 0 end
+    local remaining = amount
+    local taken = 0
+    local zoneTaken = 0
+    base.stock = base.stock or {}
+    remaining, taken = wd_baseEconomyConsumeFromStockTable(base.stock, key, remaining)
+    if remaining > 0 and type(base.zones) == "table" then
+        for _, zone in pairs(base.zones) do
+            if remaining <= 0 then break end
+            if type(zone) == "table" and type(zone.stock) == "table" then
+                local left, got = wd_baseEconomyConsumeFromStockTable(zone.stock, key, remaining)
+                remaining = left
+                taken = taken + got
+                zoneTaken = zoneTaken + got
+            end
+        end
+    end
+    if type(base.zoneStock) == "table" then
+        base.zoneStock[key] = math.max(0, (tonumber(base.zoneStock[key]) or 0) - zoneTaken)
+    end
+    local field = WD_BASE_ECONOMY_FIELD_BY_KEY[key]
+    if field then base[field] = math.max(0, (tonumber(base[field]) or 0) - taken) end
+    return taken
+end
+
+local function wd_baseEconomyAddResource(base, key, amount)
+    if type(base) ~= "table" or not key then return 0 end
+    amount = math.max(0, tonumber(amount) or 0)
+    if amount <= 0 then return 0 end
+    base.stock = base.stock or {}
+    base.stock[key] = (tonumber(base.stock[key]) or 0) + amount
+    local field = WD_BASE_ECONOMY_FIELD_BY_KEY[key]
+    if field then base[field] = (tonumber(base[field]) or 0) + amount end
+    return amount
+end
+
+local function wd_baseEconomyStatusFromScores(supplyScore, ammoScore, medicalScore, manpowerReserve)
+    if manpowerReserve <= 0 or supplyScore <= 18 or ammoScore <= 14 then return "critical" end
+    if supplyScore <= 42 or ammoScore <= 34 or medicalScore <= 22 or manpowerReserve <= 2 then return "low" end
+    return "ok"
+end
+
+local function wd_baseEconomyNeedSummary(economy)
+    if type(economy) ~= "table" then return "ok" end
+    local needs = {}
+    if (tonumber(economy.supplyReadiness) or 100) <= 42 then table.insert(needs, "food/water") end
+    if (tonumber(economy.ammoReadiness) or 100) <= 34 then table.insert(needs, "ammo") end
+    if (tonumber(economy.medicalReadiness) or 100) <= 22 then table.insert(needs, "medical") end
+    if (tonumber(economy.manpowerReserve) or 0) <= 2 then table.insert(needs, "manpower") end
+    if #needs <= 0 then return "ok" end
+    return table.concat(needs, " ")
+end
+
+function NPCWorldDirectorBridge.EnsureBaseEconomy(base, worldAge)
+    if type(base) ~= "table" then return nil end
+    local now = tonumber(worldAge) or wd_worldAgeHoursSafe()
+    base.economy = type(base.economy) == "table" and base.economy or {}
+    local economy = base.economy
+    economy.version = 2
+    economy.createdAt = tonumber(economy.createdAt) or now
+    local garrison = math.max(1, tonumber(base.garrisonSize) or tonumber(base.virtualGarrisonEffective) or 5)
+    local fortify = math.max(1, tonumber(base.fortifyLevel) or 1)
+    local defaultMax = math.max(garrison + 2, math.floor(garrison * ((NPCWorldDirector and tonumber(NPCWorldDirector.BASE_LOGISTICS_MANPOWER_PER_GARRISON)) or 2.4) + fortify + 0.5))
+    economy.manpowerMax = math.max(tonumber(economy.manpowerMax) or 0, defaultMax)
+    economy.manpower = wd_clamp(tonumber(economy.manpower) or economy.manpowerMax, 0, economy.manpowerMax)
+    economy.wounded = wd_clamp(tonumber(economy.wounded) or 0, 0, economy.manpowerMax)
+    economy.losses = math.max(0, tonumber(economy.losses) or tonumber(base.virtualGarrisonLosses) or 0)
+    economy.deployed = math.max(0, tonumber(economy.deployed) or 0)
+    economy.missionCount = math.max(0, tonumber(economy.missionCount) or 0)
+    economy.manpowerActive = math.max(0, economy.manpower - economy.wounded)
+    economy.manpowerReserve = math.max(0, economy.manpowerActive - economy.deployed)
+    return economy
+end
+
+function NPCWorldDirectorBridge.BaseEconomyHash(base)
+    if type(base) ~= "table" then return "" end
+    local e = base.economy or {}
+    return table.concat({
+        tostring(e.status or ""),
+        tostring(math.floor((tonumber(e.manpower) or 0) + 0.5)),
+        tostring(math.floor((tonumber(e.manpowerReserve) or 0) + 0.5)),
+        tostring(math.floor((tonumber(e.deployed) or 0) + 0.5)),
+        tostring(math.floor((tonumber(e.supplyReadiness) or 0) + 0.5)),
+        tostring(math.floor((tonumber(e.ammoReadiness) or 0) + 0.5)),
+        tostring(math.floor((tonumber(e.medicalReadiness) or 0) + 0.5)),
+        tostring(math.floor((tonumber(e.morale) or 0) + 0.5)),
+        tostring(e.needSummary or "")
+    }, ":")
+end
+
+function NPCWorldDirectorBridge.GetBaseEconomySpawnPenalty(base)
+    if type(base) ~= "table" then return 0 end
+    local e = NPCWorldDirectorBridge.EnsureBaseEconomy(base, wd_worldAgeHoursSafe())
+    if type(e) ~= "table" then return 0 end
+    local penalty = 0
+    if e.status == "critical" then penalty = penalty + 2400 end
+    if e.status == "low" then penalty = penalty + 750 end
+    if e.canSpawnPatrol == false then penalty = penalty + 900 end
+    penalty = penalty + math.max(0, tonumber(e.deployed) or 0) * 120
+    penalty = penalty - math.min(500, math.max(0, tonumber(e.manpowerReserve) or 0) * 45)
+    return penalty
+end
+
+function NPCWorldDirectorBridge.UpdateBaseEconomy(director, gmd, worldAge)
+    if not (director and director.BASE_LOGISTICS_ECONOMY_ENABLED ~= false and gmd and type(gmd.BaseCamps) == "table") then return false end
+    gmd.WorldDirector = gmd.WorldDirector or {}
+    local wd = gmd.WorldDirector
+    local last = tonumber(wd.lastBaseEconomyUpdate) or 0
+    local interval = tonumber(director.BASE_LOGISTICS_ECONOMY_UPDATE_HOURS) or 0.25
+    if last > 0 and worldAge - last < interval then return false end
+    local dt = last > 0 and (worldAge - last) or interval
+    dt = wd_clamp(dt, 0.05, tonumber(director.STRATEGIC_LOGISTICS_MAX_DT_HOURS) or 3.0)
+    wd.lastBaseEconomyUpdate = worldAge
+
+    local deployed = {}
+    for _, group in pairs(gmd.VirtualGroups or {}) do
+        if type(group) == "table" and NPCWorldDirectorBridge.GroupMemberCount(group) > 0 then
+            local baseId = group.homeBaseId or group.missionOriginBaseId or group.originBaseId or group.logisticsBaseId
+            if baseId then
+                local key = tostring(baseId)
+                deployed[key] = deployed[key] or {members=0, missions=0, low=0, losses=0}
+                local count = NPCWorldDirectorBridge.GroupMemberCount(group)
+                if not group.economyReservedAt then deployed[key].members = deployed[key].members + count end
+                if group.strategicActivityType or group.economyMissionId then deployed[key].missions = deployed[key].missions + 1 end
+                if wd_groupReadiness(group) <= (tonumber(director.STRATEGIC_ACTIVITY_LOW_READINESS) or 55) then deployed[key].low = deployed[key].low + 1 end
+                deployed[key].losses = deployed[key].losses + math.max(0, tonumber(group.logisticsRecentLosses) or 0)
+            end
+        end
+    end
+
+    local changed = false
+    for id, base in pairs(gmd.BaseCamps or {}) do
+        if type(base) == "table" then
+            local owner = wd_activityBaseOwner(base)
+            local economy = NPCWorldDirectorBridge.EnsureBaseEconomy(base, worldAge)
+            if economy then
+                local key = tostring(wd_activityBaseId(base) or id)
+                local dep = deployed[key] or {members=0, missions=0, low=0, losses=0}
+                local previousHash = NPCWorldDirectorBridge.BaseEconomyHash(base)
+                economy.deployed = math.max(0, tonumber(dep.members) or 0)
+                economy.missionCount = math.max(0, tonumber(dep.missions) or 0)
+                economy.lowReadinessGroups = math.max(0, tonumber(dep.low) or 0)
+                economy.recentLosses = math.max(0, tonumber(dep.losses) or 0)
+
+                if owner == "red" or owner == "green" then
+                    local foodWater = wd_baseEconomyStock(base, "food") + wd_baseEconomyStock(base, "water")
+                    local ammoStock = wd_baseEconomyStock(base, "ammo")
+                    local medStock = wd_baseEconomyStock(base, "medical")
+                    local armoryStock = wd_baseEconomyStock(base, "weapons") * 3 + wd_baseEconomyStock(base, "armor") * 2 + wd_baseEconomyStock(base, "materials") * 0.25
+                    local population = math.max(1, tonumber(economy.manpower) or tonumber(base.garrisonSize) or 4)
+                    economy.supplyReadiness = wd_clamp((foodWater / population) * 10, 0, 100)
+                    economy.ammoReadiness = wd_clamp((ammoStock / population) * 16, 0, 100)
+                    economy.medicalReadiness = wd_clamp((medStock / population) * 22, 0, 100)
+                    economy.armoryReadiness = wd_clamp((armoryStock / population) * 10, 0, 100)
+                    economy.zoneReadiness = math.floor(((tonumber(base.garrisonReadiness) or 65) + (tonumber(base.logisticsReadiness) or 65) + (tonumber(base.defenseReadiness) or 65)) / 3 + 0.5)
+
+                    local recoverRate = (tonumber(director.BASE_LOGISTICS_MANPOWER_RECOVERY_PER_HOUR) or 0.32) * dt
+                    local woundedRate = (tonumber(director.BASE_LOGISTICS_WOUNDED_RECOVERY_PER_HOUR) or 0.22) * dt
+                    if economy.supplyReadiness < 35 then recoverRate = recoverRate * 0.35 end
+                    if economy.medicalReadiness < 25 then woundedRate = woundedRate * 0.40 end
+                    if economy.wounded > 0 then
+                        local recovered = math.min(economy.wounded, woundedRate)
+                        economy.wounded = economy.wounded - recovered
+                    end
+                    if economy.manpower < economy.manpowerMax and economy.supplyReadiness >= 45 and economy.medicalReadiness >= 20 then
+                        economy.manpower = math.min(economy.manpowerMax, economy.manpower + recoverRate)
+                    end
+                    economy.manpowerActive = math.max(0, economy.manpower - economy.wounded)
+                    economy.manpowerReserve = math.max(0, economy.manpowerActive - economy.deployed)
+                    economy.status = wd_baseEconomyStatusFromScores(economy.supplyReadiness, economy.ammoReadiness, economy.medicalReadiness, economy.manpowerReserve)
+                    economy.canSpawnPatrol = economy.status ~= "critical" and economy.manpowerReserve >= (tonumber(director.BASE_LOGISTICS_MIN_PATROL_MANPOWER) or 3) and economy.ammoReadiness >= 22 and economy.supplyReadiness >= 28
+                    economy.canRaid = economy.status == "ok" and economy.manpowerReserve >= (tonumber(director.BASE_LOGISTICS_MIN_RAID_MANPOWER) or 5) and economy.ammoReadiness >= 45 and economy.supplyReadiness >= 45
+                    economy.morale = wd_clamp(45 + economy.supplyReadiness * 0.20 + economy.ammoReadiness * 0.15 + economy.zoneReadiness * 0.20 - economy.lowReadinessGroups * 4 - economy.recentLosses * 2, 0, 100)
+                    economy.needSummary = wd_baseEconomyNeedSummary(economy)
+                    economy.updatedAt = worldAge
+
+                    base.economyStatus = economy.status
+                    base.needSummary = economy.needSummary
+                    base.missionCount = economy.missionCount
+                    base.manpower = math.floor(economy.manpower + 0.5)
+                    base.manpowerReserve = math.floor(economy.manpowerReserve + 0.5)
+                    base.manpowerDeployed = math.floor(economy.deployed + 0.5)
+                    base.canSpawnPatrol = economy.canSpawnPatrol == true
+                    base.canRaid = economy.canRaid == true
+                    base.baseEconomyMorale = math.floor((tonumber(economy.morale) or 0) + 0.5)
+                else
+                    economy.status = "neutral"
+                    economy.canSpawnPatrol = false
+                    economy.canRaid = false
+                    economy.needSummary = "neutral"
+                end
+
+                local afterHash = NPCWorldDirectorBridge.BaseEconomyHash(base)
+                if previousHash ~= afterHash then
+                    base.updatedAt = worldAge
+                    if NPCBaseCampServerBridge and NPCBaseCampServerBridge.SendBaseMarker then pcall(function() NPCBaseCampServerBridge.SendBaseMarker(base) end) end
+                    changed = true
+                end
+                gmd.BaseCamps[id] = base
+            end
+        end
+    end
+    return changed
+end
+
+function NPCWorldDirectorBridge.TryConsumeBaseEconomyForGroup(director, gmd, base, group, missionType, worldAge)
+    if not (director and director.BASE_LOGISTICS_ECONOMY_ENABLED ~= false and type(base) == "table" and type(group) == "table") then return false end
+    if director.SP_BOOTSTRAP_GATE_BASE_ECONOMY ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, "base_economy_reserve")
+        if gate then npc_wd_recordBootstrapGate("base_economy_reserve", retry, reason); return false end
+    end
+    if group.economyReservedAt then return false end
+    if NPCWorldDirectorBridge.IsPlayerCommandedMercenaryGroup and NPCWorldDirectorBridge.IsPlayerCommandedMercenaryGroup(group) then return false end
+    if group.state == "base_garrison" or group.targetClass == "base_guard" or group.baseOwnedRole == "garrison" then return false end
+    local economy = NPCWorldDirectorBridge.EnsureBaseEconomy(base, worldAge)
+    if type(economy) ~= "table" then return false end
+    local count = math.max(1, NPCWorldDirectorBridge.GroupMemberCount(group))
+    local kind = tostring(missionType or group.strategicActivityType or group.baseOwnedRole or group.state or "patrol")
+    local raid = kind == "AttackBase" or kind == "SiegeBase" or kind == "raid" or kind == "field"
+    local manpowerCost = count
+    local ammoCost = count * (raid and 1.25 or 0.65)
+    local supplyCost = count * (raid and 0.55 or 0.30)
+    local medicalCost = count * (raid and 0.18 or 0.08)
+
+    economy.manpower = wd_clamp((tonumber(economy.manpower) or manpowerCost) - manpowerCost, 0, tonumber(economy.manpowerMax) or manpowerCost)
+    economy.manpowerActive = math.max(0, economy.manpower - (tonumber(economy.wounded) or 0))
+    economy.manpowerReserve = math.max(0, economy.manpowerActive - (tonumber(economy.deployed) or 0))
+    wd_baseEconomyConsumeResource(base, "ammo", ammoCost)
+    wd_baseEconomyConsumeResource(base, "food", supplyCost * 0.55)
+    wd_baseEconomyConsumeResource(base, "water", supplyCost * 0.45)
+    wd_baseEconomyConsumeResource(base, "medical", medicalCost)
+
+    group.economyReservedAt = tonumber(worldAge) or wd_worldAgeHoursSafe()
+    group.economyManpowerCost = manpowerCost
+    group.economyAmmoCost = ammoCost
+    group.economySupplyCost = supplyCost
+    group.economyMedicalCost = medicalCost
+    group.economyMissionId = group.economyMissionId or ("BE_" .. tostring(group.id or "G"))
+    group.missionOriginBaseId = group.missionOriginBaseId or wd_activityBaseId(base)
+    group.missionType = group.missionType or kind
+    group.homeBaseId = group.homeBaseId or wd_activityBaseId(base)
+    group.homeBaseOwner = group.homeBaseOwner or wd_activityBaseOwner(base)
+    if type(group.members) == "table" then
+        for _, member in pairs(group.members) do
+            if type(member) == "table" then
+                member.economyMissionId = group.economyMissionId
+                member.homeBaseId = member.homeBaseId or group.homeBaseId
+                member.homeBaseOwner = member.homeBaseOwner or group.homeBaseOwner
+            end
+        end
+    end
+    NPCWorldDirectorBridge.BehaviorLog(director, "base_economy_group_reserved", {groupId=tostring(group.id or ""), baseId=tostring(group.homeBaseId or ""), side=tostring(group.side or group.factionSide or group.patrolColor or ""), count=count, mission=kind, manpower=math.floor((tonumber(economy.manpower) or 0) + 0.5), reserve=math.floor((tonumber(economy.manpowerReserve) or 0) + 0.5)})
+    return true
+end
+
+function NPCWorldDirectorBridge.ApplyBaseEconomyGroupUpkeep(director, gmd, group, activityType, dt, nearBase, baseDist)
+    if not (director and director.BASE_LOGISTICS_ECONOMY_ENABLED ~= false and gmd and type(group) == "table") then return false end
+    local baseId = group.homeBaseId or group.missionOriginBaseId or group.originBaseId or group.logisticsBaseId
+    if not baseId then return false end
+    local base = NPCWorldDirectorBridge.GetStrategicBaseById and NPCWorldDirectorBridge.GetStrategicBaseById(gmd, baseId) or nil
+    if type(base) ~= "table" then return false end
+    local count = math.max(1, NPCWorldDirectorBridge.GroupMemberCount(group))
+    dt = wd_clamp(dt, 0, tonumber(director.STRATEGIC_LOGISTICS_MAX_DT_HOURS) or 3.0)
+    if dt <= 0 then return false end
+
+    local economy = NPCWorldDirectorBridge.EnsureBaseEconomy(base, wd_worldAgeHoursSafe())
+    if type(economy) ~= "table" then return false end
+    local supplyCost, ammoCost = wd_activityLogisticsCost(activityType or group.strategicActivityType or group.state)
+    local lineFactor = (tonumber(baseDist) or 0) > (tonumber(director.STRATEGIC_LOGISTICS_SUPPLY_LINE_RANGE) or 1800) and 1.55 or 1.0
+    local drain = count * dt
+    local resupplying = nearBase and tostring(wd_activityBaseId(nearBase) or "") == tostring(baseId) and (tonumber(baseDist) or 999999) <= (tonumber(director.STRATEGIC_LOGISTICS_RESUPPLY_RADIUS) or 220)
+
+    if resupplying then
+        local gain = (tonumber(director.BASE_LOGISTICS_RESUPPLY_GAIN) or 10.0) * dt
+        group.supplyReadiness = wd_clamp((tonumber(group.supplyReadiness) or 65) + gain, 0, 100)
+        group.ammoReadiness = wd_clamp((tonumber(group.ammoReadiness) or 65) + gain * 0.85, 0, 100)
+        group.moraleReadiness = wd_clamp((tonumber(group.moraleReadiness) or 60) + gain * 0.35, 0, 100)
+        return true
+    end
+
+    local foodCost = drain * (tonumber(director.BASE_LOGISTICS_GROUP_SUPPLY_DRAIN) or 0.055) * supplyCost * lineFactor
+    local ammoUse = drain * (tonumber(director.BASE_LOGISTICS_GROUP_AMMO_DRAIN) or 0.050) * ammoCost * lineFactor
+    local medUse = drain * (tonumber(director.BASE_LOGISTICS_GROUP_MEDICAL_DRAIN) or 0.014) * lineFactor
+    local gotFood = wd_baseEconomyConsumeResource(base, "food", foodCost * 0.55) + wd_baseEconomyConsumeResource(base, "water", foodCost * 0.45)
+    local gotAmmo = wd_baseEconomyConsumeResource(base, "ammo", ammoUse)
+    local gotMed = wd_baseEconomyConsumeResource(base, "medical", medUse)
+    local supplyRatio = foodCost > 0 and wd_clamp(gotFood / foodCost, 0, 1) or 1
+    local ammoRatio = ammoUse > 0 and wd_clamp(gotAmmo / ammoUse, 0, 1) or 1
+    if supplyRatio < 0.65 then group.supplyReadiness = wd_clamp((tonumber(group.supplyReadiness) or 100) - (1 - supplyRatio) * 8 * dt, 0, 100) end
+    if ammoRatio < 0.65 then group.ammoReadiness = wd_clamp((tonumber(group.ammoReadiness) or 100) - (1 - ammoRatio) * 10 * dt, 0, 100) end
+    if gotMed < medUse * 0.5 then group.moraleReadiness = wd_clamp((tonumber(group.moraleReadiness) or 100) - 3 * dt, 0, 100) end
+    economy.lastGroupUpkeepAt = wd_worldAgeHoursSafe()
+    base.economy = economy
+    return true
+end
+
+function NPCWorldDirectorBridge.RegisterBaseEconomyLoss(director, gmd, baseId, losses, wounded, worldAge)
+    if not (director and director.BASE_LOGISTICS_ECONOMY_ENABLED ~= false and gmd and baseId) then return false end
+    local base = NPCWorldDirectorBridge.GetStrategicBaseById and NPCWorldDirectorBridge.GetStrategicBaseById(gmd, baseId) or nil
+    if type(base) ~= "table" then return false end
+    local economy = NPCWorldDirectorBridge.EnsureBaseEconomy(base, worldAge)
+    if type(economy) ~= "table" then return false end
+    losses = math.max(0, tonumber(losses) or 0)
+    wounded = math.max(0, tonumber(wounded) or 0)
+    if losses <= 0 and wounded <= 0 then return false end
+    economy.losses = math.max(0, (tonumber(economy.losses) or 0) + losses)
+    economy.wounded = wd_clamp((tonumber(economy.wounded) or 0) + wounded, 0, tonumber(economy.manpowerMax) or 999)
+    economy.manpower = wd_clamp((tonumber(economy.manpower) or 0) - losses, 0, tonumber(economy.manpowerMax) or 999)
+    economy.manpowerActive = math.max(0, economy.manpower - economy.wounded)
+    economy.manpowerReserve = math.max(0, economy.manpowerActive - (tonumber(economy.deployed) or 0))
+    base.updatedAt = tonumber(worldAge) or wd_worldAgeHoursSafe()
+    NPCWorldDirectorBridge.BehaviorLog(director, "base_economy_losses", {baseId=tostring(baseId), losses=losses, wounded=wounded, manpower=math.floor((tonumber(economy.manpower) or 0) + 0.5), reserve=math.floor((tonumber(economy.manpowerReserve) or 0) + 0.5)})
+    return true
+end
+
 function NPCWorldDirectorBridge.EnsureStrategicLogisticsData(gmd)
     if type(gmd) ~= "table" then return nil end
     gmd.WorldDirector = gmd.WorldDirector or {}
@@ -4090,6 +6182,302 @@ function NPCWorldDirectorBridge.FindNearestOwnedStrategicBase(gmd, x, y, side)
     return best, bestDist
 end
 
+
+function NPCWorldDirectorBridge.BaseOwnedGroupSide(group)
+    local side = wd_groupSide(group)
+    if side == "red" or side == "green" then return side end
+    return nil
+end
+
+function NPCWorldDirectorBridge.IsBaseOwnedGlobalSquad(group)
+    if type(group) ~= "table" then return false end
+    if group.mercenary == true or group.mercenaryElite == true or wd_groupSide(group) == "blue" then return false end
+    return group.baseOwnedGlobalSquad == true
+        or group.homeBaseId ~= nil
+        or group.originBaseId ~= nil
+        or group.missionOriginBaseId ~= nil
+        or group.logisticsBaseId ~= nil
+end
+
+function NPCWorldDirectorBridge.GetBaseOwnedBaseId(base)
+    return wd_activityBaseId(base)
+end
+
+function NPCWorldDirectorBridge.GetBaseOwnedHomeBase(gmd, group, side)
+    if not (gmd and type(group) == "table") then return nil end
+    side = side or NPCWorldDirectorBridge.BaseOwnedGroupSide(group)
+    local preferred = group.homeBaseId or group.originBaseId or group.missionOriginBaseId or group.logisticsBaseId
+    if preferred then
+        local base = NPCWorldDirectorBridge.GetStrategicBaseById and NPCWorldDirectorBridge.GetStrategicBaseById(gmd, preferred) or nil
+        if type(base) == "table" and base.x and base.y then
+            local owner = wd_activityBaseOwner(base)
+            if not side or owner == side then return base end
+        end
+    end
+
+    local base = nil
+    local maxDist = tonumber(NPCWorldDirector and NPCWorldDirector.BASE_OWNED_GLOBAL_GROUPS_MAX_BASE_DISTANCE) or 6200
+    local baseDist = 999999
+    if side then
+        base, baseDist = NPCWorldDirectorBridge.FindNearestOwnedStrategicBase(gmd, group.x or group.targetX, group.y or group.targetY, side)
+    end
+    if type(base) == "table" and base.x and base.y and (tonumber(baseDist) or 999999) <= maxDist then return base end
+
+    local best = nil
+    local bestDist = maxDist
+    for _, candidate in pairs(gmd.BaseCamps or {}) do
+        if type(candidate) == "table" and candidate.x and candidate.y then
+            local owner = wd_activityBaseOwner(candidate)
+            if side == nil or owner == side then
+                local dist = NPCWorldDirectorBridge.DistanceToPoint(candidate, {x=group.x or group.targetX, y=group.y or group.targetY})
+                if dist < bestDist then
+                    best = candidate
+                    bestDist = dist
+                end
+            end
+        end
+    end
+    return best
+end
+
+function NPCWorldDirectorBridge.SelectBaseOwnedSpawnBase(gmd, side, fallbackPoint)
+    if not (gmd and type(gmd.BaseCamps) == "table") then return nil end
+    if side ~= "red" and side ~= "green" then return nil end
+
+    local best = nil
+    local bestScore = 999999999
+    local fx = fallbackPoint and tonumber(fallbackPoint.x) or nil
+    local fy = fallbackPoint and tonumber(fallbackPoint.y) or nil
+    for _, base in pairs(gmd.BaseCamps or {}) do
+        if type(base) == "table" and base.x and base.y and wd_activityBaseOwner(base) == side then
+            local baseId = tostring(wd_activityBaseId(base) or "")
+            local owned = 0
+            for _, group in pairs(gmd.VirtualGroups or {}) do
+                if type(group) == "table" and tostring(group.homeBaseId or group.originBaseId or "") == baseId and NPCWorldDirectorBridge.GroupMemberCount(group) > 0 then
+                    owned = owned + 1
+                end
+            end
+            local score = owned * 900
+            if fx and fy then score = score + NPCWorldDirectorBridge.DistanceToPoint(base, {x=fx, y=fy}) * 0.15 end
+            if NPCWorldDirectorBridge.GetBaseEconomySpawnPenalty then score = score + NPCWorldDirectorBridge.GetBaseEconomySpawnPenalty(base) end
+            if base.status == "contested" or base.captureTeam then score = score - 120 end
+            if score < bestScore then
+                best = base
+                bestScore = score
+            end
+        end
+    end
+    return best
+end
+
+function NPCWorldDirectorBridge.MakeBaseOwnedStagingPoint(director, base, roadBias)
+    if type(base) ~= "table" or not base.x or not base.y then return nil end
+    local radius = math.max(1, math.floor(tonumber(director and director.BASE_OWNED_GLOBAL_GROUPS_STAGING_RADIUS) or 42))
+    local point = nil
+    if roadBias and NPCWorldDirectorBridge.GetNearbyRoadPoint then
+        point = NPCWorldDirectorBridge.GetNearbyRoadPoint(director, base.x, base.y, radius * 2)
+    end
+    if not point and NPCWorldDirectorBridge.GetNearbyPreferredPoint then
+        point = NPCWorldDirectorBridge.GetNearbyPreferredPoint(director, base.x, base.y, radius)
+    end
+    if point and point.x and point.y then
+        point.originBaseId = wd_activityBaseId(base)
+        point.originBaseOwner = wd_activityBaseOwner(base)
+        point.baseOwnedStaging = true
+        return point
+    end
+
+    local offX = 0
+    local offY = 0
+    if ZombRand then
+        offX = ZombRand(radius * 2 + 1) - radius
+        offY = ZombRand(radius * 2 + 1) - radius
+    end
+    return {
+        x = math.floor((tonumber(base.x) or 0) + offX),
+        y = math.floor((tonumber(base.y) or 0) + offY),
+        z = tonumber(base.z) or 0,
+        spawnClass = roadBias and "base_road_staging" or "base_staging",
+        zoneScore = 260,
+        urbanAffinity = 180,
+        originBaseId = wd_activityBaseId(base),
+        originBaseOwner = wd_activityBaseOwner(base),
+        baseOwnedStaging = true
+    }
+end
+
+function NPCWorldDirectorBridge.AssignBaseOwnedFields(director, gmd, group, base, worldAge, reason)
+    if not (type(group) == "table" and type(base) == "table" and base.x and base.y) then return false end
+    local side = NPCWorldDirectorBridge.BaseOwnedGroupSide(group)
+    if not side then return false end
+    local owner = wd_activityBaseOwner(base)
+    if owner and owner ~= side then return false end
+
+    local baseId = wd_activityBaseId(base)
+    if not baseId then return false end
+    local changed = false
+    if tostring(group.homeBaseId or "") ~= tostring(baseId) then group.homeBaseId = baseId; changed = true end
+    if not group.originBaseId then group.originBaseId = baseId; changed = true end
+    if not group.missionOriginBaseId and group.economyMissionId then group.missionOriginBaseId = baseId; changed = true end
+    if group.homeBaseOwner ~= owner then group.homeBaseOwner = owner; changed = true end
+    if group.baseOwnedGlobalSquad ~= true then group.baseOwnedGlobalSquad = true; changed = true end
+    group.baseOwnedSince = group.baseOwnedSince or tonumber(worldAge) or wd_worldAgeHoursSafe()
+    group.baseOwnedLastReason = tostring(reason or group.baseOwnedLastReason or "assigned")
+    group.homeBase = group.homeBase or {}
+    if group.homeBase.x ~= base.x then group.homeBase.x = base.x; changed = true end
+    if group.homeBase.y ~= base.y then group.homeBase.y = base.y; changed = true end
+    group.homeBase.z = base.z or group.homeBase.z or 0
+    group.routeOwnerBaseId = group.routeOwnerBaseId or baseId
+    if not group.baseOwnedRole then
+        if group.roadPatrol then group.baseOwnedRole = "patrol"
+        elseif group.targetClass == "base_guard" or group.state == "base_garrison" then group.baseOwnedRole = "garrison"
+        elseif group.targetBaseId then group.baseOwnedRole = "operation"
+        else group.baseOwnedRole = "field" end
+        changed = true
+    end
+
+    if type(group.members) == "table" then
+        for _, member in pairs(group.members) do
+            if type(member) == "table" then
+                member.homeBaseId = member.homeBaseId or baseId
+                member.originBaseId = member.originBaseId or baseId
+                member.homeBaseOwner = member.homeBaseOwner or owner
+                member.baseOwnedGlobalSquad = true
+                member.baseOwnedRole = member.baseOwnedRole or group.baseOwnedRole
+            end
+        end
+    end
+
+    return changed
+end
+
+function NPCWorldDirectorBridge.EnsureBaseOwnedGroup(director, gmd, group, worldAge, reason)
+    if not (director and director.BASE_OWNED_GLOBAL_GROUPS_ENABLED ~= false and gmd and type(group) == "table") then return false end
+    if group.activated == true or group.mercenary == true or group.mercenaryElite == true then return false end
+    local side = NPCWorldDirectorBridge.BaseOwnedGroupSide(group)
+    if not side then return false end
+
+    local base = NPCWorldDirectorBridge.GetBaseOwnedHomeBase(gmd, group, side)
+    if not base then return false end
+    return NPCWorldDirectorBridge.AssignBaseOwnedFields(director, gmd, group, base, worldAge, reason)
+end
+
+function NPCWorldDirectorBridge.RefreshBaseOwnedRouteTarget(director, gmd, group, worldAge, reason)
+    if not (director and director.BASE_OWNED_GLOBAL_GROUPS_ENABLED ~= false and type(group) == "table") then return false end
+    if group.activated == true or group.inBattle == true or group.mercenary == true then return false end
+    if not NPCWorldDirectorBridge.IsBaseOwnedGlobalSquad(group) then return false end
+    gmd = gmd or (director.EnsureData and director.EnsureData()) or nil
+    if not gmd then return false end
+
+    local side = NPCWorldDirectorBridge.BaseOwnedGroupSide(group)
+    local base = NPCWorldDirectorBridge.GetBaseOwnedHomeBase(gmd, group, side)
+    if not base then return false end
+    NPCWorldDirectorBridge.AssignBaseOwnedFields(director, gmd, group, base, worldAge, reason)
+
+    local targetClass = tostring(group.targetClass or "")
+    if group.economyMissionId or group.convoyId or group.economyConvoy or group.bountyHunter then return false end
+    if group.targetBaseId and targetClass ~= "retreat_base" and targetClass ~= "base_guard" and targetClass ~= "checkpoint_road_patrol" then return false end
+    if targetClass == "base_capture" or targetClass == "base_defense" or targetClass == "base_reinforce" then return false end
+
+    if group.targetX and group.targetY then
+        local keepDistance = group.roadPatrol and 45 or 80
+        if NPCWorldDirectorBridge.Dist(group.x, group.y, group.targetX, group.targetY) > keepDistance then return false end
+    end
+
+    local changed = false
+    local target = nil
+    local stepTarget = nil
+    if group.roadPatrol then
+        local patrolRadius = tonumber(director.BASE_OWNED_GLOBAL_GROUPS_PATROL_RADIUS) or tonumber(director.ROAD_PATROL_TARGET_RADIUS) or 480
+        target = NPCWorldDirectorBridge.GetNearbyRoadPoint and NPCWorldDirectorBridge.GetNearbyRoadPoint(director, base.x, base.y, patrolRadius) or nil
+        target = target or (NPCWorldDirectorBridge.GetNearbyPreferredPoint and NPCWorldDirectorBridge.GetNearbyPreferredPoint(director, base.x, base.y, patrolRadius) or nil)
+        if not target then target = {x=base.x, y=base.y, z=base.z or 0, spawnClass="base_patrol_anchor"} end
+        if target and NPCRoadNavBridge and NPCRoadNavBridge.FindNearbyWorldRoadStepToward then
+            stepTarget = NPCRoadNavBridge.FindNearbyWorldRoadStepToward(group.x or base.x, group.y or base.y, target.x, target.y, director.ROAD_PATROL_VIRTUAL_STEP_RADIUS, director.VIRTUAL_TARGET_ATTEMPTS)
+        end
+        stepTarget = stepTarget or target
+        group.routeX = target.x
+        group.routeY = target.y
+        group.routeZ = target.z or 0
+        group.targetX = stepTarget.x
+        group.targetY = stepTarget.y
+        group.targetZ = stepTarget.z or 0
+        group.targetClass = stepTarget == target and "base_owned_road_anchor" or "base_owned_road_step"
+        group.baseOwnedRouteReason = tostring(reason or "base_patrol")
+        group.routeOwnerBaseId = wd_activityBaseId(base)
+        changed = true
+    else
+        if targetClass == "retreat_base" or group.strategicActivityType == "RetreatToBase" then
+            target = {x=base.x, y=base.y, z=base.z or 0, spawnClass="retreat_base"}
+        elseif targetClass == "base_guard" or group.state == "base_garrison" then
+            return false
+        else
+            local patrolRadius = math.min(tonumber(director.BASE_OWNED_GLOBAL_GROUPS_PATROL_RADIUS) or 620, tonumber(director.VIRTUAL_TARGET_RADIUS) or 300)
+            target = NPCWorldDirectorBridge.GetNearbyPreferredPoint and NPCWorldDirectorBridge.GetNearbyPreferredPoint(director, base.x, base.y, patrolRadius) or nil
+            target = target or {x=base.x, y=base.y, z=base.z or 0, spawnClass="base_patrol_anchor"}
+        end
+        group.targetX = target.x
+        group.targetY = target.y
+        group.targetZ = target.z or 0
+        group.targetClass = target.spawnClass or "base_owned_patrol"
+        group.baseOwnedRouteReason = tostring(reason or "base_patrol")
+        group.routeOwnerBaseId = wd_activityBaseId(base)
+        changed = true
+    end
+
+    if changed then
+        group.baseOwnedRouteAt = tonumber(worldAge) or wd_worldAgeHoursSafe()
+        group.directorRetargetReason = nil
+        group.directorRetargetScore = nil
+    end
+    return changed
+end
+
+function NPCWorldDirectorBridge.RepairBaseOwnedGroupLocation(director, group, worldAge)
+    if not (director and director.BASE_OWNED_GLOBAL_GROUPS_REPAIR_PROTECT ~= false and type(group) == "table") then return nil end
+    if director.SP_BOOTSTRAP_GATE_BASE_ECONOMY ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, "base_owned_repair")
+        if gate then npc_wd_recordBootstrapGate("base_owned_repair", retry, reason); return nil end
+    end
+    if group.activated == true or group.mercenary == true or group.mercenaryElite == true then return nil end
+    if not NPCWorldDirectorBridge.IsBaseOwnedGlobalSquad(group) then return nil end
+
+    local gmd = director.EnsureData and director.EnsureData() or nil
+    if not gmd then return nil end
+    local side = NPCWorldDirectorBridge.BaseOwnedGroupSide(group)
+    local base = NPCWorldDirectorBridge.GetBaseOwnedHomeBase(gmd, group, side)
+    if not base then return nil end
+    NPCWorldDirectorBridge.AssignBaseOwnedFields(director, gmd, group, base, worldAge, "repair_protect")
+
+    local changed = false
+    if not group.x or not group.y then
+        local point = NPCWorldDirectorBridge.MakeBaseOwnedStagingPoint(director, base, group.roadPatrol == true)
+        if point then
+            group.x = point.x
+            group.y = point.y
+            group.z = point.z or 0
+            group.preciseX = tonumber(group.x) or 0
+            group.preciseY = tonumber(group.y) or 0
+            group.spawnClass = point.spawnClass or group.spawnClass or "base_staging"
+            changed = true
+        end
+    end
+
+    if group.x and group.y then
+        local now = tonumber(worldAge) or wd_worldAgeHoursSafe()
+        local last = tonumber(group.baseOwnedRepairProtectedAt) or 0
+        local cooldown = tonumber(director.BASE_OWNED_GLOBAL_GROUPS_REPAIR_COOLDOWN_HOURS) or 1.20
+        if last <= 0 or now - last >= cooldown then
+            group.baseOwnedRepairProtectedAt = now
+            group.locationRepairProtected = true
+            group.locationRepairReason = "kept_base_owned_route"
+            changed = NPCWorldDirectorBridge.RefreshBaseOwnedRouteTarget(director, gmd, group, now, "repair_protect") or changed
+            NPCWorldDirectorBridge.BehaviorLog(director, "base_owned_repair_protected", {groupId=tostring(group.id or ""), side=tostring(side or ""), baseId=tostring(group.homeBaseId or ""), x=math.floor(tonumber(group.x) or 0), y=math.floor(tonumber(group.y) or 0), targetX=math.floor(tonumber(group.targetX) or 0), targetY=math.floor(tonumber(group.targetY) or 0)})
+        end
+    end
+    return changed
+end
+
 function NPCWorldDirectorBridge.EstimateStrategicSupplyLine(gmd, group, side)
     if type(group) ~= "table" then return nil, 999999 end
     local base, dist = NPCWorldDirectorBridge.FindNearestOwnedStrategicBase(gmd, group.x or group.targetX, group.y or group.targetY, side)
@@ -4123,6 +6511,12 @@ function NPCWorldDirectorBridge.UpdateStrategicLogistics(director, gmd, worldAge
                 if base.status == "controlled" then basePower = basePower + 0.6 end
                 if base.status == "contested" then basePower = basePower - 0.3 end
                 if base.baseArchetype == "military" or base.baseArchetype == "elite_safehouse" then basePower = basePower + 0.4 end
+                if type(base.economy) == "table" then
+                    if base.economy.status == "critical" then basePower = basePower - 0.45 end
+                    if base.economy.status == "low" then basePower = basePower - 0.20 end
+                    basePower = basePower + math.min(0.40, (tonumber(base.economy.manpowerReserve) or 0) * 0.025)
+                    basePower = basePower + math.min(0.25, ((tonumber(base.economy.supplyReadiness) or 50) - 50) * 0.006)
+                end
                 base.logisticsPower = wd_clamp(basePower * 20, 5, 55)
             end
         end
@@ -4177,6 +6571,9 @@ function NPCWorldDirectorBridge.UpdateStrategicLogistics(director, gmd, worldAge
                 end
                 group.logisticsBaseId = nearBase and wd_activityBaseId(nearBase) or nil
                 group.logisticsBaseDistance = math.floor(baseDist or 999999)
+                if NPCWorldDirectorBridge.ApplyBaseEconomyGroupUpkeep then
+                    NPCWorldDirectorBridge.ApplyBaseEconomyGroupUpkeep(director, gmd, group, activityType, dt, nearBase, baseDist)
+                end
                 group.logisticsUpdatedAt = worldAge
                 if front and front.x and front.y then
                     local distFront = NPCWorldDirectorBridge.DistanceToPoint(group, front)
@@ -4288,6 +6685,498 @@ function NPCWorldDirectorBridge.FindNearestStrategicActivityBase(gmd, x, y, side
     return best, bestScore
 end
 
+
+local function wd_strategyBaseOwner(base)
+    if type(base) ~= "table" then return nil end
+    local owner = base.owner
+    if owner == nil then return nil end
+    owner = tostring(owner)
+    if owner == "" or owner == "neutral" then return nil end
+    return owner
+end
+
+local function wd_strategyBaseIsNeutral(base)
+    return wd_strategyBaseOwner(base) == nil
+end
+
+local function wd_groupStableRoll(group, modulo)
+    modulo = math.max(1, tonumber(modulo) or 1)
+    local key = tostring(group and (group.id or group.groupId or group.name or group.targetBaseId) or "")
+    local sum = 0
+    for i = 1, #key do
+        sum = (sum + string.byte(key, i) * i) % 9973
+    end
+    return sum % modulo
+end
+
+local function wd_strategicManeuverRole(director, group, targetBase, neutralTarget, readiness, sideSupply, sideAmmo, sideMorale)
+    if neutralTarget then return "secure_neutral" end
+    if not (director and director.STRATEGIC_MANEUVER_ENABLED ~= false and group and targetBase) then return "main" end
+    local count = NPCWorldDirectorBridge.GroupMemberCount(group)
+    if count < (tonumber(director.STRATEGIC_MANEUVER_STRIKE_MIN_COUNT) or 3) then return "main" end
+    if (tonumber(readiness) or 0) < (tonumber(director.STRATEGIC_ACTIVITY_LOW_READINESS) or 55) then return "main" end
+    if math.min(tonumber(sideSupply) or 100, tonumber(sideAmmo) or 100, tonumber(sideMorale) or 100) < 48 then return "main" end
+    local dist = NPCWorldDirectorBridge.DistanceToPoint(group, targetBase)
+    if dist < (tonumber(director.STRATEGIC_MANEUVER_MIN_DISTANCE) or 560) then return "main" end
+
+    local roll = wd_groupStableRoll(group, 5)
+    if roll == 1 then return "flank_left" end
+    if roll == 2 then return "flank_right" end
+    if roll == 3 then return "feint" end
+    return "main"
+end
+
+local function wd_strategicManeuverPoint(director, group, targetBase, role)
+    if not (group and targetBase and group.x and group.y and targetBase.x and targetBase.y) then return nil, nil end
+    if role ~= "flank_left" and role ~= "flank_right" and role ~= "feint" then return targetBase.x, targetBase.y end
+
+    local gx = tonumber(group.x) or 0
+    local gy = tonumber(group.y) or 0
+    local tx = tonumber(targetBase.x) or gx
+    local ty = tonumber(targetBase.y) or gy
+    local dx = tx - gx
+    local dy = ty - gy
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist <= 1 then return tx, ty end
+
+    local nx = dx / dist
+    local ny = dy / dist
+    local sign = role == "flank_right" and -1 or 1
+    local approach = math.min(dist * (role == "feint" and 0.34 or 0.58), tonumber(director and director.STRATEGIC_MANEUVER_APPROACH_DISTANCE) or 460)
+    local offsetMax = tonumber(director and director.STRATEGIC_MANEUVER_FLANK_MAX_OFFSET) or 360
+    local offset = math.min(math.max(dist * (role == "feint" and 0.12 or 0.22), 120), offsetMax)
+    local px = gx + nx * approach + (-ny) * offset * sign
+    local py = gy + ny * approach + nx * offset * sign
+
+    return math.floor(px + 0.5), math.floor(py + 0.5)
+end
+
+local function wd_strategicStrikeKey(side, targetBaseId)
+    if not (side and targetBaseId) then return nil end
+    return tostring(side) .. ":" .. tostring(targetBaseId)
+end
+
+local function wd_strategicStrikeInfo(director, side, targetBaseId)
+    local cache = director and director._strategicStrikeCache or nil
+    local key = wd_strategicStrikeKey(side, targetBaseId)
+    return key and type(cache) == "table" and cache[key] or nil
+end
+
+local function wd_strategicStrikeStagingPoint(director, group, targetBase)
+    if not (group and targetBase and group.x and group.y and targetBase.x and targetBase.y) then return nil, nil end
+
+    local gx = tonumber(group.x) or 0
+    local gy = tonumber(group.y) or 0
+    local tx = tonumber(targetBase.x) or gx
+    local ty = tonumber(targetBase.y) or gy
+    local dx = tx - gx
+    local dy = ty - gy
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist <= 1 then return tx, ty end
+
+    local nx = dx / dist
+    local ny = dy / dist
+    local stagingDistance = math.min(dist * 0.45, tonumber(director and director.STRATEGIC_STRIKE_STAGING_DISTANCE) or 360)
+    local offset = math.min(math.max(dist * 0.12, 80), tonumber(director and director.STRATEGIC_STRIKE_STAGING_OFFSET) or 170)
+    local sideRoll = wd_groupStableRoll(group, 2) == 0 and -1 or 1
+    local px = tx - nx * stagingDistance + (-ny) * offset * sideRoll
+    local py = ty - ny * stagingDistance + nx * offset * sideRoll
+
+    return math.floor(px + 0.5), math.floor(py + 0.5)
+end
+
+local function wd_theatreSide(cache, side)
+    if type(cache) ~= "table" or (side ~= "red" and side ~= "green") then return nil end
+    cache[side] = cache[side] or {pressureByBase={}, reinforceByBase={}, ambushByBase={}}
+    cache[side].pressureByBase = cache[side].pressureByBase or {}
+    cache[side].reinforceByBase = cache[side].reinforceByBase or {}
+    cache[side].ambushByBase = cache[side].ambushByBase or {}
+    return cache[side]
+end
+
+local function wd_tableCountInfoAdd(tbl, key, count, power)
+    if type(tbl) ~= "table" or not key then return nil end
+    key = tostring(key)
+    local info = tbl[key] or {count=0, power=0}
+    info.count = info.count + (tonumber(count) or 1)
+    info.power = info.power + (tonumber(power) or 0)
+    tbl[key] = info
+    return info
+end
+
+function NPCWorldDirectorBridge.RebuildStrategicTheatreContext(director, gmd, groupIds, worldAge)
+    if not (director and gmd and type(groupIds) == "table") then return nil end
+    if director.STRATEGIC_ENCIRCLEMENT_ENABLED == false and director.STRATEGIC_REINFORCE_THREATENED_BASE_ENABLED == false and director.STRATEGIC_COUNTER_AMBUSH_ENABLED == false then return nil end
+
+    local cache = {
+        red = {pressureByBase={}, reinforceByBase={}, ambushByBase={}},
+        green = {pressureByBase={}, reinforceByBase={}, ambushByBase={}},
+        updatedAt = worldAge
+    }
+
+    for _, groupId in ipairs(groupIds) do
+        local group = gmd.VirtualGroups and gmd.VirtualGroups[groupId] or nil
+        if type(group) == "table" and not group.activated and not group.inBattle then
+            local side = wd_groupSide(group)
+            local sideRec = wd_theatreSide(cache, side)
+            if sideRec then
+                local activityType = group.strategicActivityType or group.activityType
+                local targetBaseId = group.strategicActivityTargetBaseId or group.targetBaseId or group.strategicStrikeAssemblyBaseId
+                local power = tonumber(group.strategicPower) or ((tonumber(group.count) or NPCWorldDirectorBridge.GroupMemberCount(group)) * 18)
+                if targetBaseId and activityType == "AmbushRoad" then
+                    wd_tableCountInfoAdd(sideRec.ambushByBase, targetBaseId, 1, power)
+                elseif targetBaseId and (activityType == "AssembleStrike" or activityType == "AttackBase" or activityType == "SiegeBase") then
+                    local pressure = wd_tableCountInfoAdd(sideRec.pressureByBase, targetBaseId, 1, power)
+                    pressure.x = (tonumber(pressure.x) or 0) + (tonumber(group.x) or tonumber(group.targetX) or 0)
+                    pressure.y = (tonumber(pressure.y) or 0) + (tonumber(group.y) or tonumber(group.targetY) or 0)
+                    if group.strategicPlanKind == "encircle" then
+                        pressure.encircle = (tonumber(pressure.encircle) or 0) + 1
+                    elseif group.strategicManeuverRole == "screen_reinforce" then
+                        pressure.screen = (tonumber(pressure.screen) or 0) + 1
+                    end
+                elseif targetBaseId and (activityType == "ReinforceBase" or activityType == "DefendBase") then
+                    wd_tableCountInfoAdd(sideRec.reinforceByBase, targetBaseId, 1, power)
+                end
+            end
+        end
+    end
+
+    for _, base in pairs(gmd.BaseCamps or {}) do
+        if type(base) == "table" and base.x and base.y then
+            local owner = wd_strategyBaseOwner(base)
+            if owner == "red" or owner == "green" then
+                local sideRec = wd_theatreSide(cache, owner)
+                local other = owner == "red" and "green" or "red"
+                local otherRec = wd_theatreSide(cache, other)
+                local baseId = wd_activityBaseId(base)
+                if sideRec and otherRec and baseId then
+                    baseId = tostring(baseId)
+                    local enemyPressure = otherRec.pressureByBase[baseId]
+                    local threat = 0
+                    if base.status == "contested" or base.status == "siege_contested" then threat = threat + 520 end
+                    if base.captureTeam and base.captureTeam ~= owner then threat = threat + 420 end
+                    if enemyPressure then threat = threat + (tonumber(enemyPressure.count) or 0) * 150 + (tonumber(enemyPressure.power) or 0) * 0.18 end
+                    local defenseScore = NPCWorldDirectorBridge.EstimateStrategicBaseDefenseScore(director, base)
+                    local lowDefenseScore = tonumber(director.STRATEGIC_REINFORCE_LOW_DEFENSE_SCORE) or 380
+                    if defenseScore < lowDefenseScore then threat = threat + (lowDefenseScore - defenseScore) * 0.55 end
+                    if threat > (tonumber(sideRec.threatenedBaseThreat) or 0) then
+                        sideRec.threatenedBase = base
+                        sideRec.threatenedBaseId = baseId
+                        sideRec.threatenedBaseThreat = threat
+                        sideRec.threatenedEnemyGroups = enemyPressure and tonumber(enemyPressure.count) or 0
+                        sideRec.threatenedEnemyPower = enemyPressure and tonumber(enemyPressure.power) or 0
+                        if enemyPressure and (tonumber(enemyPressure.count) or 0) > 0 then
+                            sideRec.threatenedApproachX = (tonumber(enemyPressure.x) or base.x or 0) / math.max(1, tonumber(enemyPressure.count) or 1)
+                            sideRec.threatenedApproachY = (tonumber(enemyPressure.y) or base.y or 0) / math.max(1, tonumber(enemyPressure.count) or 1)
+                        else
+                            sideRec.threatenedApproachX = nil
+                            sideRec.threatenedApproachY = nil
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    director._strategicTheatreCache = cache
+    return cache
+end
+
+local function wd_strategicPressureInfo(director, side, targetBaseId)
+    local cache = director and director._strategicTheatreCache or nil
+    local sideRec = wd_theatreSide(cache, side)
+    if not (sideRec and targetBaseId) then return nil end
+    return sideRec.pressureByBase[tostring(targetBaseId)]
+end
+
+local function wd_strategicEncirclementRole(director, side, group, targetBase, targetBaseId, neutralTarget, currentRole, committedGroups)
+    if neutralTarget or currentRole == "assemble" then return currentRole end
+    if not (director and director.STRATEGIC_ENCIRCLEMENT_ENABLED ~= false and side and group and targetBase and targetBaseId) then return currentRole end
+    local committed = tonumber(committedGroups) or 0
+    if committed < (tonumber(director.STRATEGIC_ENCIRCLEMENT_MIN_COMMITTED_GROUPS) or 3) then return currentRole end
+    if NPCWorldDirectorBridge.GroupMemberCount(group) < (tonumber(director.STRATEGIC_MANEUVER_STRIKE_MIN_COUNT) or 3) then return currentRole end
+
+    local pressure = wd_strategicPressureInfo(director, side, targetBaseId)
+    local encircleCount = pressure and tonumber(pressure.encircle) or 0
+    local screenCount = pressure and tonumber(pressure.screen) or 0
+    local roll = wd_groupStableRoll(group, 8)
+    if encircleCount < 2 and roll == 0 then return "encircle_left" end
+    if encircleCount < 2 and roll == 1 then return "encircle_right" end
+    if screenCount < 1 and committed >= ((tonumber(director.STRATEGIC_ENCIRCLEMENT_MIN_COMMITTED_GROUPS) or 3) + 1) and roll == 2 then return "screen_reinforce" end
+    return currentRole
+end
+
+local function wd_strategicEncirclementPoint(director, gmd, side, group, targetBase, role)
+    if not (targetBase and targetBase.x and targetBase.y and group and group.x and group.y) then return nil, nil end
+    if role ~= "encircle_left" and role ~= "encircle_right" and role ~= "screen_reinforce" then return nil, nil end
+
+    local tx = tonumber(targetBase.x) or 0
+    local ty = tonumber(targetBase.y) or 0
+    local ref = nil
+    if role == "screen_reinforce" then
+        local other = side == "red" and "green" or "red"
+        ref = NPCWorldDirectorBridge.FindNearestOwnedStrategicBase(gmd, tx, ty, other)
+    end
+    ref = ref or NPCWorldDirectorBridge.FindNearestOwnedStrategicBase(gmd, tx, ty, side) or group
+    local rx = tonumber(ref.x) or tonumber(group.x) or tx
+    local ry = tonumber(ref.y) or tonumber(group.y) or ty
+    local dx = tx - rx
+    local dy = ty - ry
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist <= 1 then
+        dx = tx - (tonumber(group.x) or tx)
+        dy = ty - (tonumber(group.y) or ty)
+        dist = math.sqrt(dx * dx + dy * dy)
+    end
+    if dist <= 1 then return tx, ty end
+
+    local nx = dx / dist
+    local ny = dy / dist
+    local radius = tonumber(director and director.STRATEGIC_ENCIRCLEMENT_RADIUS) or 260
+    local offset = tonumber(director and director.STRATEGIC_ENCIRCLEMENT_OFFSET) or 320
+    local sign = role == "encircle_right" and -1 or 1
+    if role == "screen_reinforce" then
+        local px = tx + nx * math.min(radius * 1.15, 340)
+        local py = ty + ny * math.min(radius * 1.15, 340)
+        return math.floor(px + 0.5), math.floor(py + 0.5)
+    end
+
+    local px = tx - nx * math.min(radius * 0.45, 140) + (-ny) * offset * sign
+    local py = ty - ny * math.min(radius * 0.45, 140) + nx * offset * sign
+    return math.floor(px + 0.5), math.floor(py + 0.5)
+end
+
+local function wd_strategicCounterAmbushPoint(director, sideRec, group, base)
+    if not (base and base.x and base.y and group) then return nil, nil end
+    local bx = tonumber(base.x) or 0
+    local by = tonumber(base.y) or 0
+    local ax = tonumber(sideRec and sideRec.threatenedApproachX) or tonumber(group.x) or bx
+    local ay = tonumber(sideRec and sideRec.threatenedApproachY) or tonumber(group.y) or by
+    local dx = bx - ax
+    local dy = by - ay
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist <= 1 then
+        dx = bx - (tonumber(group.x) or bx)
+        dy = by - (tonumber(group.y) or by)
+        dist = math.sqrt(dx * dx + dy * dy)
+    end
+    if dist <= 1 then return bx, by end
+
+    local nx = dx / dist
+    local ny = dy / dist
+    local offset = math.min(math.max(dist * 0.08, 70), tonumber(director and director.STRATEGIC_COUNTER_AMBUSH_OFFSET) or 180)
+    local sign = wd_groupStableRoll(group, 2) == 0 and 1 or -1
+    local t = wd_clamp(0.54 + (wd_groupStableRoll(group, 5) * 0.035), 0.50, 0.70)
+    local px = ax + dx * t + (-ny) * offset * sign
+    local py = ay + dy * t + nx * offset * sign
+    return math.floor(px + 0.5), math.floor(py + 0.5)
+end
+
+function NPCWorldDirectorBridge.BuildStrategicCounterAmbush(director, gmd, side, group, readiness, sideSupply, sideAmmo, sideMorale, front, worldAge)
+    if not (director and director.STRATEGIC_COUNTER_AMBUSH_ENABLED ~= false and gmd and group and side) then return nil end
+    local cache = director._strategicTheatreCache
+    local sideRec = wd_theatreSide(cache, side)
+    local base = sideRec and sideRec.threatenedBase or nil
+    local baseId = sideRec and sideRec.threatenedBaseId or nil
+    if not (base and baseId and base.x and base.y) then return nil end
+
+    local threat = tonumber(sideRec.threatenedBaseThreat) or 0
+    if threat < (tonumber(director.STRATEGIC_COUNTER_AMBUSH_MIN_THREAT) or 620) then return nil end
+    if (tonumber(readiness) or 0) < (tonumber(director.STRATEGIC_COUNTER_AMBUSH_MIN_READINESS) or 58) then return nil end
+    if math.min(tonumber(sideSupply) or 100, tonumber(sideAmmo) or 100, tonumber(sideMorale) or 100) < 48 then return nil end
+    if NPCWorldDirectorBridge.GroupMemberCount(group) < math.max(2, tonumber(director.STRATEGIC_ACTIVITY_ROAD_PATROL_MIN_COUNT) or 1) then return nil end
+
+    local ambushInfo = sideRec.ambushByBase and sideRec.ambushByBase[tostring(baseId)] or nil
+    local assigned = ambushInfo and tonumber(ambushInfo.count) or 0
+    if assigned >= (tonumber(director.STRATEGIC_COUNTER_AMBUSH_MAX_PER_SIDE) or 2) then return nil end
+
+    local activityType = group.strategicActivityType or group.activityType
+    local isCommittedAttack = activityType == "AssembleStrike" or activityType == "AttackBase" or activityType == "SiegeBase"
+    if isCommittedAttack and threat < (tonumber(director.STRATEGIC_REINFORCE_BREAK_STRIKE_THREAT) or 980) then return nil end
+
+    local dist = NPCWorldDirectorBridge.DistanceToPoint(group, base)
+    if dist > (tonumber(director.STRATEGIC_COUNTER_AMBUSH_RADIUS) or 2400) and wd_groupStableRoll(group, 5) ~= 0 then return nil end
+    if wd_groupStableRoll(group, 4) == 3 and assigned > 0 then return nil end
+
+    local x, y = wd_strategicCounterAmbushPoint(director, sideRec, group, base)
+    if not (x and y) then return nil end
+    return {
+        type="AmbushRoad",
+        x=x,
+        y=y,
+        z=base.z or 0,
+        targetBaseId=baseId,
+        priority=wd_activityTypePriority("AmbushRoad") - (threat >= (tonumber(director.STRATEGIC_REINFORCE_BREAK_STRIKE_THREAT) or 980) and 16 or 8),
+        logisticsSupply=sideSupply,
+        logisticsAmmo=sideAmmo,
+        logisticsMorale=sideMorale,
+        strategicPlanKind="counter_ambush",
+        strategicManeuverRole="counter_ambush",
+        strategicManeuverTargetX=base.x,
+        strategicManeuverTargetY=base.y,
+        strategicManeuverTargetBaseId=baseId,
+        strategicManeuverAssignedAt=worldAge
+    }
+end
+
+function NPCWorldDirectorBridge.BuildStrategicThreatResponse(director, gmd, side, group, readiness, sideSupply, sideAmmo, sideMorale, front, worldAge)
+    if not (director and director.STRATEGIC_REINFORCE_THREATENED_BASE_ENABLED ~= false and gmd and group and side) then return nil end
+    local cache = director._strategicTheatreCache
+    local sideRec = wd_theatreSide(cache, side)
+    local base = sideRec and sideRec.threatenedBase or nil
+    local baseId = sideRec and sideRec.threatenedBaseId or nil
+    if not (base and baseId and base.x and base.y) then return nil end
+
+    local lowReadiness = tonumber(director.STRATEGIC_ACTIVITY_LOW_READINESS) or 55
+    if (tonumber(readiness) or 0) < lowReadiness then return nil end
+    if math.min(tonumber(sideSupply) or 100, tonumber(sideAmmo) or 100, tonumber(sideMorale) or 100) < 45 then return nil end
+
+    local reinforceInfo = sideRec.reinforceByBase and sideRec.reinforceByBase[tostring(baseId)] or nil
+    local assigned = reinforceInfo and tonumber(reinforceInfo.count) or 0
+    local enemyGroups = tonumber(sideRec.threatenedEnemyGroups) or 0
+    local required = math.max(1, enemyGroups + 1)
+    local maxGroups = tonumber(director.STRATEGIC_REINFORCE_THREATENED_BASE_MAX_GROUPS) or 3
+    if required > maxGroups then required = maxGroups end
+    if assigned >= required then return nil end
+
+    local activityType = group.strategicActivityType or group.activityType
+    local isCommittedAttack = activityType == "AssembleStrike" or activityType == "AttackBase" or activityType == "SiegeBase"
+    local threat = tonumber(sideRec.threatenedBaseThreat) or 0
+    local breakThreat = tonumber(director.STRATEGIC_REINFORCE_BREAK_STRIKE_THREAT) or 980
+    local strongThreat = threat >= breakThreat
+    if isCommittedAttack and not strongThreat then return nil end
+    if not strongThreat and wd_groupStableRoll(group, 3) ~= 0 then return nil end
+
+    local dist = NPCWorldDirectorBridge.DistanceToPoint(group, base)
+    local radius = tonumber(director.STRATEGIC_REINFORCE_THREATENED_BASE_RADIUS) or 2600
+    if dist > radius and wd_groupStableRoll(group, 4) ~= 0 then return nil end
+
+    return {
+        type="ReinforceBase",
+        x=base.x,
+        y=base.y,
+        z=base.z or 0,
+        targetBaseId=baseId,
+        priority=wd_activityTypePriority("ReinforceBase") - (threat >= (tonumber(director.STRATEGIC_REINFORCE_BREAK_STRIKE_THREAT) or 980) and 8 or 0),
+        logisticsSupply=sideSupply,
+        logisticsAmmo=sideAmmo,
+        logisticsMorale=sideMorale,
+        strategicPlanKind="threat_response",
+        strategicManeuverRole="reinforce_threatened_base",
+        strategicManeuverTargetX=base.x,
+        strategicManeuverTargetY=base.y,
+        strategicManeuverTargetBaseId=baseId,
+        strategicManeuverAssignedAt=worldAge
+    }
+end
+
+function NPCWorldDirectorBridge.RebuildStrategicStrikeContext(director, gmd, groupIds, worldAge)
+    if not (director and director.STRATEGIC_STRIKE_ASSEMBLY_ENABLED ~= false and gmd and type(groupIds) == "table") then return nil end
+    local cache = {}
+    for _, groupId in ipairs(groupIds) do
+        local group = gmd.VirtualGroups and gmd.VirtualGroups[groupId] or nil
+        if type(group) == "table" and not group.activated and not group.inBattle then
+            local activityType = group.strategicActivityType
+            if activityType == "AssembleStrike" or activityType == "AttackBase" or activityType == "SiegeBase" then
+                local side = wd_groupSide(group)
+                local targetBaseId = group.strategicStrikeAssemblyBaseId or group.strategicActivityTargetBaseId or group.targetBaseId
+                local key = wd_strategicStrikeKey(side, targetBaseId)
+                if key then
+                    local info = cache[key] or {count=0, power=0, assembling=0, attacking=0, oldestAt=worldAge}
+                    info.count = info.count + 1
+                    info.power = info.power + (tonumber(group.strategicPower) or ((tonumber(group.count) or NPCWorldDirectorBridge.GroupMemberCount(group)) * 18))
+                    if activityType == "AssembleStrike" then info.assembling = info.assembling + 1 else info.attacking = info.attacking + 1 end
+                    local at = tonumber(group.strategicStrikeAssemblyAt) or tonumber(group.strategicActivityUpdatedAt) or worldAge
+                    if at < (tonumber(info.oldestAt) or worldAge) then info.oldestAt = at end
+                    cache[key] = info
+                end
+            end
+        end
+    end
+    director._strategicStrikeCache = cache
+    return cache
+end
+
+function NPCWorldDirectorBridge.BuildStrategicBaseActivity(director, gmd, side, group, targetBase, readiness, sideSupply, sideAmmo, sideMorale, homeEconomy, worldAge)
+    if not (targetBase and targetBase.x and targetBase.y and group) then return nil end
+    local dist = NPCWorldDirectorBridge.DistanceToPoint(group, targetBase)
+    local neutralTarget = wd_strategyBaseIsNeutral(targetBase)
+    local targetBaseId = wd_activityBaseId(targetBase)
+    local role = wd_strategicManeuverRole(director, group, targetBase, neutralTarget, readiness, sideSupply, sideAmmo, sideMorale)
+    local activityType = dist <= (tonumber(director.STRATEGIC_ACTIVITY_SIEGE_RADIUS) or 420) and "SiegeBase" or "AttackBase"
+    local targetX, targetY = nil, nil
+    local planKind = "contact"
+    local strikeCommitted = nil
+    local strikeRequired = nil
+    local strikeReady = nil
+
+    if neutralTarget then
+        planKind = "expansion"
+        targetX, targetY = wd_strategicManeuverPoint(director, group, targetBase, role)
+    else
+        local info = targetBaseId and wd_strategicStrikeInfo(director, side, targetBaseId) or nil
+        local existingAttack = (group.strategicActivityType == "AttackBase" or group.strategicActivityType == "SiegeBase") and tostring(group.strategicActivityTargetBaseId or group.targetBaseId or "") == tostring(targetBaseId or "")
+        if director and director.STRATEGIC_STRIKE_ASSEMBLY_ENABLED ~= false and targetBaseId and not existingAttack then
+            strikeCommitted = info and tonumber(info.count) or 0
+            strikeRequired = math.max(1, tonumber(director.STRATEGIC_STRIKE_ASSEMBLY_MIN_GROUPS) or 2)
+            local maxGroups = math.max(strikeRequired, tonumber(director.STRATEGIC_STRIKE_ASSEMBLY_MAX_GROUPS) or 4)
+            if strikeCommitted > maxGroups then strikeCommitted = maxGroups end
+            local sameAssembly = group.strategicActivityType == "AssembleStrike" and tostring(group.strategicStrikeAssemblyBaseId or group.strategicActivityTargetBaseId or group.targetBaseId or "") == tostring(targetBaseId or "")
+            local assemblyAt = tonumber(group.strategicStrikeAssemblyAt) or tonumber(group.strategicActivityUpdatedAt) or worldAge
+            local waited = sameAssembly and ((tonumber(worldAge) or 0) - assemblyAt) or 0
+            local maxWait = tonumber(director.STRATEGIC_STRIKE_ASSEMBLY_MAX_WAIT_HOURS) or 1.25
+            strikeReady = strikeCommitted >= strikeRequired or waited >= maxWait
+            if not strikeReady then
+                activityType = "AssembleStrike"
+                planKind = "strike_group"
+                role = "assemble"
+                targetX, targetY = wd_strategicStrikeStagingPoint(director, group, targetBase)
+            end
+        end
+
+        if activityType ~= "AssembleStrike" then
+            local committedForRole = tonumber(strikeCommitted) or (info and tonumber(info.count)) or 0
+            role = wd_strategicEncirclementRole(director, side, group, targetBase, targetBaseId, neutralTarget, role, committedForRole)
+            if role == "encircle_left" or role == "encircle_right" or role == "screen_reinforce" then
+                targetX, targetY = wd_strategicEncirclementPoint(director, gmd, side, group, targetBase, role)
+            else
+                targetX, targetY = wd_strategicManeuverPoint(director, group, targetBase, role)
+            end
+            if role == "flank_left" or role == "flank_right" then
+                planKind = "flank"
+            elseif role == "feint" then
+                planKind = "feint"
+            elseif role == "encircle_left" or role == "encircle_right" or role == "screen_reinforce" then
+                planKind = "encircle"
+            elseif NPCWorldDirectorBridge.GroupMemberCount(group) >= (tonumber(director.STRATEGIC_MANEUVER_STRIKE_MIN_COUNT) or 3) then
+                planKind = "strike_group"
+            end
+        end
+    end
+
+    return {
+        type = activityType,
+        x = targetX or targetBase.x,
+        y = targetY or targetBase.y,
+        z = targetBase.z or 0,
+        targetBaseId = targetBaseId,
+        priority = wd_activityTypePriority(activityType) + (neutralTarget and -6 or 0) + (role == "feint" and 8 or 0),
+        logisticsSupply = sideSupply,
+        logisticsAmmo = sideAmmo,
+        logisticsMorale = sideMorale,
+        baseEconomyStatus = homeEconomy and homeEconomy.status,
+        strategicPlanKind = planKind,
+        strategicManeuverRole = role,
+        strategicManeuverTargetX = targetBase.x,
+        strategicManeuverTargetY = targetBase.y,
+        strategicManeuverTargetBaseId = targetBaseId,
+        strategicManeuverAssignedAt = worldAge,
+        strategicStrikeCommittedGroups = strikeCommitted,
+        strategicStrikeRequiredGroups = strikeRequired,
+        strategicStrikeReady = strikeReady
+    }
+end
+
 function NPCWorldDirectorBridge.CanAssignStrategicActivity(group)
     if type(group) ~= "table" then return false end
     if group.activated or group.inBattle or group.mercenary then return false end
@@ -4314,6 +7203,13 @@ function NPCWorldDirectorBridge.ResolveStrategicActivityForGroup(director, gmd, 
     local lowLogistics = sideSupply <= (tonumber(director.STRATEGIC_LOGISTICS_LOW_SUPPLY) or 42) or sideAmmo <= (tonumber(director.STRATEGIC_LOGISTICS_LOW_AMMO) or 38) or sideMorale <= (tonumber(director.STRATEGIC_LOGISTICS_LOW_MORALE) or 35)
     local criticalLogistics = sideSupply <= (tonumber(director.STRATEGIC_LOGISTICS_CRITICAL_SUPPLY) or 22) or sideAmmo <= (tonumber(director.STRATEGIC_LOGISTICS_CRITICAL_AMMO) or 20) or sideMorale <= (tonumber(director.STRATEGIC_LOGISTICS_CRITICAL_MORALE) or 18)
     local isRoadActivityGroup = group.roadPatrol or group.checkpointId
+    local homeEconomy = home and home.economy or nil
+    local homeEconomyCritical = type(homeEconomy) == "table" and (homeEconomy.status == "critical" or (tonumber(homeEconomy.manpowerReserve) or 0) <= 0)
+    local homeEconomyLow = type(homeEconomy) == "table" and (homeEconomy.status == "low" or (tonumber(homeEconomy.supplyReadiness) or 100) <= (tonumber(director.BASE_LOGISTICS_LOW_READINESS) or 52))
+
+    if homeEconomyCritical and home then
+        return {type="RetreatToBase", x=home.x, y=home.y, z=home.z or 0, targetBaseId=wd_activityBaseId(home), priority=wd_activityTypePriority("RetreatToBase"), logisticsSupply=sideSupply, logisticsAmmo=sideAmmo, logisticsMorale=sideMorale, baseEconomyStatus=homeEconomy.status}
+    end
 
     if group.economyConvoy or group.convoyId then
         return {type="EscortConvoy", x=group.targetX or group.x, y=group.targetY or group.y, z=group.targetZ or group.z or 0, targetGroupId=group.convoyId or group.id, priority=wd_activityTypePriority("EscortConvoy")}
@@ -4362,14 +7258,22 @@ function NPCWorldDirectorBridge.ResolveStrategicActivityForGroup(director, gmd, 
         return {type="ReinforceBase", x=friendlyNeed.x, y=friendlyNeed.y, z=friendlyNeed.z or 0, targetBaseId=wd_activityBaseId(friendlyNeed), priority=wd_activityTypePriority("ReinforceBase")}
     end
 
+    local threatResponse = NPCWorldDirectorBridge.BuildStrategicThreatResponse(director, gmd, side, group, readiness, sideSupply, sideAmmo, sideMorale, front, worldAge)
+    if threatResponse then return threatResponse end
+
+    local counterAmbush = NPCWorldDirectorBridge.BuildStrategicCounterAmbush(director, gmd, side, group, readiness, sideSupply, sideAmmo, sideMorale, front, worldAge)
+    if counterAmbush then return counterAmbush end
+
     local targetBase = NPCWorldDirectorBridge.FindStrategicFrontTargetBase(gmd, side, front, group, director) or NPCWorldDirectorBridge.FindNearestStrategicActivityBase(gmd, group.x, group.y, side, "enemy", front)
     if targetBase then
-        local dist = NPCWorldDirectorBridge.DistanceToPoint(group, targetBase)
         if lowLogistics and front and front.x and front.y then
             return {type="ScoutFront", x=front.x, y=front.y, z=front.z or 0, priority=wd_activityTypePriority("ScoutFront"), logisticsSupply=sideSupply, logisticsAmmo=sideAmmo, logisticsMorale=sideMorale}
         end
-        local activityType = dist <= (tonumber(director.STRATEGIC_ACTIVITY_SIEGE_RADIUS) or 420) and "SiegeBase" or "AttackBase"
-        return {type=activityType, x=targetBase.x, y=targetBase.y, z=targetBase.z or 0, targetBaseId=wd_activityBaseId(targetBase), priority=wd_activityTypePriority(activityType), logisticsSupply=sideSupply, logisticsAmmo=sideAmmo, logisticsMorale=sideMorale}
+        if homeEconomyLow and front and front.x and front.y then
+            return {type="ScoutFront", x=front.x, y=front.y, z=front.z or 0, priority=wd_activityTypePriority("ScoutFront"), logisticsSupply=sideSupply, logisticsAmmo=sideAmmo, logisticsMorale=sideMorale, baseEconomyStatus=homeEconomy and homeEconomy.status}
+        end
+        local baseActivity = NPCWorldDirectorBridge.BuildStrategicBaseActivity(director, gmd, side, group, targetBase, readiness, sideSupply, sideAmmo, sideMorale, homeEconomy, worldAge)
+        if baseActivity then return baseActivity end
     end
 
     if front and front.x and front.y then
@@ -4405,6 +7309,14 @@ function NPCWorldDirectorBridge.UpsertStrategicActivity(director, gmd, activity,
     record.z = activity.z or 0
     record.targetBaseId = activity.targetBaseId
     record.targetGroupId = activity.targetGroupId
+    record.strategicPlanKind = activity.strategicPlanKind
+    record.strategicManeuverRole = activity.strategicManeuverRole
+    record.strategicManeuverTargetX = activity.strategicManeuverTargetX
+    record.strategicManeuverTargetY = activity.strategicManeuverTargetY
+    record.strategicManeuverTargetBaseId = activity.strategicManeuverTargetBaseId
+    record.strategicStrikeCommittedGroups = activity.strategicStrikeCommittedGroups
+    record.strategicStrikeRequiredGroups = activity.strategicStrikeRequiredGroups
+    record.strategicStrikeReady = activity.strategicStrikeReady
     record.logisticsSupply = activity.logisticsSupply
     record.logisticsAmmo = activity.logisticsAmmo
     record.logisticsMorale = activity.logisticsMorale
@@ -4436,6 +7348,14 @@ function NPCWorldDirectorBridge.UpsertStrategicActivity(director, gmd, activity,
         marker.strategicActivityPriority = record.priority
         marker.targetBaseId = record.targetBaseId
         marker.targetGroupId = record.targetGroupId
+        marker.strategicPlanKind = record.strategicPlanKind
+        marker.strategicManeuverRole = record.strategicManeuverRole
+        marker.strategicManeuverTargetX = record.strategicManeuverTargetX
+        marker.strategicManeuverTargetY = record.strategicManeuverTargetY
+        marker.strategicManeuverTargetBaseId = record.strategicManeuverTargetBaseId
+        marker.strategicStrikeCommittedGroups = record.strategicStrikeCommittedGroups
+        marker.strategicStrikeRequiredGroups = record.strategicStrikeRequiredGroups
+        marker.strategicStrikeReady = record.strategicStrikeReady
         marker.logisticsSupply = record.logisticsSupply
         marker.logisticsAmmo = record.logisticsAmmo
         marker.logisticsMorale = record.logisticsMorale
@@ -4489,6 +7409,21 @@ function NPCWorldDirectorBridge.ApplyStrategicActivityToGroup(director, gmd, gro
     if activity.targetBaseId and tostring(group.targetBaseId or "") ~= tostring(activity.targetBaseId) then group.targetBaseId = activity.targetBaseId; changed = true end
     if activity.targetBaseId and tostring(group.strategicActivityTargetBaseId or "") ~= tostring(activity.targetBaseId) then group.strategicActivityTargetBaseId = activity.targetBaseId; changed = true end
     if activity.targetGroupId and tostring(group.strategicActivityTargetGroupId or "") ~= tostring(activity.targetGroupId) then group.strategicActivityTargetGroupId = activity.targetGroupId; changed = true end
+    if group.strategicPlanKind ~= activity.strategicPlanKind then group.strategicPlanKind = activity.strategicPlanKind; changed = true end
+    if group.strategicManeuverRole ~= activity.strategicManeuverRole then group.strategicManeuverRole = activity.strategicManeuverRole; changed = true end
+    if group.strategicManeuverTargetX ~= activity.strategicManeuverTargetX then group.strategicManeuverTargetX = activity.strategicManeuverTargetX; changed = true end
+    if group.strategicManeuverTargetY ~= activity.strategicManeuverTargetY then group.strategicManeuverTargetY = activity.strategicManeuverTargetY; changed = true end
+    if group.strategicManeuverTargetBaseId ~= activity.strategicManeuverTargetBaseId then group.strategicManeuverTargetBaseId = activity.strategicManeuverTargetBaseId; changed = true end
+    if group.strategicManeuverAssignedAt ~= activity.strategicManeuverAssignedAt then group.strategicManeuverAssignedAt = activity.strategicManeuverAssignedAt; changed = true end
+    if group.strategicStrikeCommittedGroups ~= activity.strategicStrikeCommittedGroups then group.strategicStrikeCommittedGroups = activity.strategicStrikeCommittedGroups; changed = true end
+    if group.strategicStrikeRequiredGroups ~= activity.strategicStrikeRequiredGroups then group.strategicStrikeRequiredGroups = activity.strategicStrikeRequiredGroups; changed = true end
+    if group.strategicStrikeReady ~= activity.strategicStrikeReady then group.strategicStrikeReady = activity.strategicStrikeReady; changed = true end
+    if activity.type == "AssembleStrike" then
+        if not group.strategicStrikeAssemblyAt or tostring(group.strategicStrikeAssemblyBaseId or "") ~= tostring(activity.targetBaseId or "") then group.strategicStrikeAssemblyAt = worldAge; changed = true end
+        if group.strategicStrikeAssemblyBaseId ~= activity.targetBaseId then group.strategicStrikeAssemblyBaseId = activity.targetBaseId; changed = true end
+    elseif group.strategicStrikeAssemblyAt ~= nil and activity.type ~= "AttackBase" and activity.type ~= "SiegeBase" then
+        group.strategicStrikeAssemblyAt = nil; group.strategicStrikeAssemblyBaseId = nil; changed = true
+    end
     if activity.type == "AttackBase" or activity.type == "SiegeBase" then group.strategicFrontOrder = true end
     group.strategicActivityUpdatedAt = worldAge
 
@@ -4498,6 +7433,9 @@ function NPCWorldDirectorBridge.ApplyStrategicActivityToGroup(director, gmd, gro
                 member.strategicActivityId = group.strategicActivityId
                 member.strategicActivityType = group.strategicActivityType
                 member.strategicActivityState = group.strategicActivityState
+                member.strategicPlanKind = group.strategicPlanKind
+                member.strategicManeuverRole = group.strategicManeuverRole
+                member.strategicStrikeReady = group.strategicStrikeReady
                 member.targetBaseId = group.targetBaseId
                 member.supplyLineState = group.supplyLineState
                 member.logisticsBaseId = group.logisticsBaseId
@@ -4520,7 +7458,7 @@ function NPCWorldDirectorBridge.ApplyStrategicActivityToGroup(director, gmd, gro
         NPCWorldDirectorBridge.SendDebugMapUpdate(marker)
     end
     if changed then
-        NPCWorldDirectorBridge.BehaviorLog(director, "activity_assigned", {groupId=tostring(groupId or group.id), side=side, activity=activity.type, targetBaseId=activity.targetBaseId, targetGroupId=activity.targetGroupId, x=math.floor(tonumber(activity.x) or 0), y=math.floor(tonumber(activity.y) or 0), readiness=wd_groupReadiness(group), supply=activity.logisticsSupply, ammo=activity.logisticsAmmo, morale=activity.logisticsMorale})
+        NPCWorldDirectorBridge.BehaviorLog(director, "activity_assigned", {groupId=tostring(groupId or group.id), side=side, activity=activity.type, plan=activity.strategicPlanKind, role=activity.strategicManeuverRole, targetBaseId=activity.targetBaseId, targetGroupId=activity.targetGroupId, x=math.floor(tonumber(activity.x) or 0), y=math.floor(tonumber(activity.y) or 0), readiness=wd_groupReadiness(group), supply=activity.logisticsSupply, ammo=activity.logisticsAmmo, morale=activity.logisticsMorale})
     end
     return changed
 end
@@ -4589,6 +7527,8 @@ function NPCWorldDirectorBridge.UpdateStrategicActivityGraph(director, gmd, worl
     end
     table.sort(groupIds, function(a, b) return tostring(a or "") < tostring(b or "") end)
     if #groupIds == 0 then return changed end
+    NPCWorldDirectorBridge.RebuildStrategicStrikeContext(director, gmd, groupIds, worldAge)
+    NPCWorldDirectorBridge.RebuildStrategicTheatreContext(director, gmd, groupIds, worldAge)
 
     local cursor = math.floor(tonumber(wd.strategicActivityCursor) or 1)
     if cursor < 1 or cursor > #groupIds then cursor = 1 end
@@ -4691,12 +7631,14 @@ function NPCWorldDirectorBridge.ApplyStrategicSiegeAttrition(director, gmd, grou
         group.count = count
         group.siegeCasualties = (tonumber(group.siegeCasualties) or 0) + attackerLoss
         NPCWorldDirectorBridge.TrimStrategicGroupAfterLoss(group)
+        if NPCWorldDirectorBridge.RegisterBaseEconomyLoss then NPCWorldDirectorBridge.RegisterBaseEconomyLoss(director, gmd, group.homeBaseId or group.missionOriginBaseId or group.originBaseId, attackerLoss, 0, worldAge) end
         if NPCStrategicAIBridge and NPCStrategicAIBridge.ApplyBattleStress then pcall(function() NPCStrategicAIBridge.ApplyBattleStress(group, attackerLoss) end) end
     end
     if defenderLoss > 0 then
         base.virtualGarrisonLosses = math.max(0, (tonumber(base.virtualGarrisonLosses) or 0) + defenderLoss)
         base.defenseReadiness = math.max(0, (tonumber(base.defenseReadiness) or 70) - defenderLoss * 4)
         base.updatedAt = worldAge
+        if NPCWorldDirectorBridge.RegisterBaseEconomyLoss then NPCWorldDirectorBridge.RegisterBaseEconomyLoss(director, gmd, wd_activityBaseId(base), defenderLoss, 0, worldAge) end
         if NPCBaseCampServerBridge and NPCBaseCampServerBridge.UpdateVirtualGarrisonPower then pcall(function() NPCBaseCampServerBridge.UpdateVirtualGarrisonPower(base, worldAge) end) end
         if NPCBaseCampServerBridge and NPCBaseCampServerBridge.SendBaseMarker then pcall(function() NPCBaseCampServerBridge.SendBaseMarker(base) end) end
     end
@@ -4742,7 +7684,7 @@ function NPCWorldDirectorBridge.UpdateStrategicSieges(director, gmd, worldAge)
 end
 
 function NPCWorldDirectorBridge.CountStrategicActivityTypes(gmd)
-    local out = {AttackBase=0, SiegeBase=0, DefendBase=0, ReinforceBase=0, RetreatToBase=0, ScoutFront=0, Patrol=0, AmbushRoad=0, EscortConvoy=0, HuntPlayer=0}
+    local out = {AttackBase=0, SiegeBase=0, AssembleStrike=0, DefendBase=0, ReinforceBase=0, RetreatToBase=0, ScoutFront=0, Patrol=0, AmbushRoad=0, EscortConvoy=0, HuntPlayer=0}
     for _, group in pairs(gmd and gmd.VirtualGroups or {}) do
         if type(group) == "table" and not group.activated then
             local key = group.strategicActivityType or "Patrol"
@@ -4766,12 +7708,13 @@ function NPCWorldDirectorBridge.WriteStrategicBehaviorSnapshot(director, gmd, wo
     local front = war.front or {}
     local logistics = war.logistics or {}
     local acts = NPCWorldDirectorBridge.CountStrategicActivityTypes(gmd)
-    NPCWorldDirectorBridge.BehaviorLog(director, "strategic_snapshot", {redBases=redBases, greenBases=greenBases, neutralBases=neutralBases, redGroups=redGroups, greenGroups=greenGroups, frontX=front.x, frontY=front.y, redSupply=logistics.red and logistics.red.supply, greenSupply=logistics.green and logistics.green.supply, redAmmo=logistics.red and logistics.red.ammo, greenAmmo=logistics.green and logistics.green.ammo, attack=acts.AttackBase, siege=acts.SiegeBase, defend=acts.DefendBase, reinforce=acts.ReinforceBase, retreat=acts.RetreatToBase, scout=acts.ScoutFront, patrol=acts.Patrol, ambush=acts.AmbushRoad})
+    NPCWorldDirectorBridge.BehaviorLog(director, "strategic_snapshot", {redBases=redBases, greenBases=greenBases, neutralBases=neutralBases, redGroups=redGroups, greenGroups=greenGroups, frontX=front.x, frontY=front.y, redSupply=logistics.red and logistics.red.supply, greenSupply=logistics.green and logistics.green.supply, redAmmo=logistics.red and logistics.red.ammo, greenAmmo=logistics.green and logistics.green.ammo, attack=acts.AttackBase, siege=acts.SiegeBase, defend=acts.DefendBase, reinforce=acts.ReinforceBase, retreat=acts.RetreatToBase, scout=acts.ScoutFront, patrol=acts.Patrol, ambush=acts.AmbushRoad, assemble=acts.AssembleStrike})
     return true
 end
 
 function NPCWorldDirectorBridge.UpdateStrategicWar(director, gmd, worldAge)
     local changed = NPCWorldDirectorBridge.EnsureStrategicWarState(director, gmd, worldAge) or false
+    changed = NPCWorldDirectorBridge.UpdateBaseEconomy(director, gmd, worldAge) or changed
     changed = NPCWorldDirectorBridge.UpdateStrategicLogistics(director, gmd, worldAge) or changed
     changed = NPCWorldDirectorBridge.ApplyStrategicFrontOrders(director, gmd, worldAge) or changed
     changed = NPCWorldDirectorBridge.EnsureStrategicFrontPressure(director, gmd, worldAge) or changed
@@ -4812,6 +7755,22 @@ function NPCWorldDirectorBridge.CreateRoadPatrol(director, hostile, force, point
     local mercenaryPatrol = (not event.hostile) and NPCMercenaryContract and NPCMercenaryContract.RollBlueRoadPatrol and NPCMercenaryContract.RollBlueRoadPatrol()
     local patrolSide = mercenaryPatrol and "blue" or (event.hostile and "red" or "green")
     if mercenaryPatrol then event.program = {name="Looter", stage="Prepare"} end
+
+    local originBase = nil
+    if director.BASE_OWNED_GLOBAL_GROUPS_SPAWN_ENABLED ~= false and not mercenaryPatrol and not pointOverride and (patrolSide == "red" or patrolSide == "green") then
+        originBase = NPCWorldDirectorBridge.SelectBaseOwnedSpawnBase(gmd, patrolSide, point)
+        local staging = originBase and NPCWorldDirectorBridge.MakeBaseOwnedStagingPoint(director, originBase, true) or nil
+        if staging then
+            point = staging
+            target = targetOverride
+                or (NPCWorldDirectorBridge.GetNearbyRoadPoint and NPCWorldDirectorBridge.GetNearbyRoadPoint(director, point.x, point.y, director.ROAD_PATROL_TARGET_RADIUS))
+                or (NPCWorldDirectorBridge.GetNearbyPreferredPoint and NPCWorldDirectorBridge.GetNearbyPreferredPoint(director, point.x, point.y, director.VIRTUAL_TARGET_RADIUS))
+            stepTarget = target
+            if target and NPCRoadNavBridge and NPCRoadNavBridge.FindNearbyWorldRoadStepToward then
+                stepTarget = NPCRoadNavBridge.FindNearbyWorldRoadStepToward(point.x, point.y, target.x, target.y, director.ROAD_PATROL_VIRTUAL_STEP_RADIUS, director.VIRTUAL_TARGET_ATTEMPTS) or target
+            end
+        end
+    end
 
     local nextId = tonumber(gmd.WorldDirector.nextGroupId) or 1
     local groupId = "RP" .. tostring(nextId)
@@ -4892,13 +7851,23 @@ function NPCWorldDirectorBridge.CreateRoadPatrol(director, hostile, force, point
         inBattle = false,
         battleId = nil,
         enemyGroupId = nil,
-        battleCasualties = 0
+        battleCasualties = 0,
+        baseOwnedGlobalSquad = originBase ~= nil,
+        originBaseId = originBase and wd_activityBaseId(originBase) or nil,
+        homeBaseId = originBase and wd_activityBaseId(originBase) or nil,
+        homeBaseOwner = originBase and wd_activityBaseOwner(originBase) or nil,
+        routeOwnerBaseId = originBase and wd_activityBaseId(originBase) or nil,
+        baseOwnedRole = originBase and "road_patrol" or nil
     }
 
     if mercenaryPatrol and NPCMercenaryContract and NPCMercenaryContract.ApplyEliteToGroup then
         NPCMercenaryContract.ApplyEliteToGroup(group)
     end
     if NPCStrategicAIBridge and NPCStrategicAIBridge.EnsureGroupBase then NPCStrategicAIBridge.EnsureGroupBase(gmd, group) end
+    if NPCWorldDirectorBridge.EnsureBaseOwnedGroup then NPCWorldDirectorBridge.EnsureBaseOwnedGroup(director, gmd, group, worldAge, "road_patrol_created") end
+    if NPCWorldDirectorBridge.TryConsumeBaseEconomyForGroup and originBase then
+        NPCWorldDirectorBridge.TryConsumeBaseEconomyForGroup(director, gmd, originBase, group, "road_patrol", worldAge)
+    end
     if NPCBaseSupplyServer and NPCBaseSupplyServer.ApplyGearToGroup and group.homeBaseId then
         local home = NPCStrategicAIBridge and NPCStrategicAIBridge.GetBaseById and NPCStrategicAIBridge.GetBaseById(gmd, group.homeBaseId) or nil
         if home then NPCBaseSupplyServer.ApplyGearToGroup(home, group) end
@@ -4917,7 +7886,7 @@ function NPCWorldDirectorBridge.CreateRoadPatrol(director, hostile, force, point
         NPCWorldDirectorBridge.SendDebugMapUpdate(marker)
     end
     NPCWorldDirectorBridge.Log(director, "[NPCWorldDirector] Created " .. tostring(group.patrolColor) .. " road patrol " .. tostring(groupId) .. " at " .. tostring(group.x) .. "," .. tostring(group.y))
-    if TransmitNPCModData then TransmitNPCModData() end
+    if TransmitNPCModData and not director._suppressWorldDirectorTransmit then TransmitNPCModData() end
     return group
 end
 
@@ -4985,32 +7954,44 @@ function NPCWorldDirectorBridge.CreateRoadPatrolEncounterPair(director, force)
     gmd.VirtualGroups[green.id] = green
     NPCWorldDirectorBridge.UpdateRoadPatrolMarker(director, gmd, red)
     NPCWorldDirectorBridge.UpdateRoadPatrolMarker(director, gmd, green)
-    if TransmitNPCModData then TransmitNPCModData() end
+    if TransmitNPCModData and not director._suppressWorldDirectorTransmit then TransmitNPCModData() end
     return red, green
 end
 
-function NPCWorldDirectorBridge.EnsureRoadPatrols(director, force)
+function NPCWorldDirectorBridge.EnsureRoadPatrols(director, force, budget)
     if type(director) ~= "table" then return false end
+    if director.SP_BOOTSTRAP_GATE_VIRTUAL_GROUPS ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, force and "road_patrol_bootstrap" or "road_patrol_growth")
+        if gate then npc_wd_recordBootstrapGate(force and "road_patrol_bootstrap" or "road_patrol_growth", retry, reason); return false end
+    end
     local redTarget = tonumber(director.STARTUP_ROAD_PATROLS_RED) or 0
     local greenTarget = tonumber(director.STARTUP_ROAD_PATROLS_GREEN) or 0
     local redCount = NPCWorldDirectorBridge.GetRoadPatrolCount(director, true)
     local greenCount = NPCWorldDirectorBridge.GetRoadPatrolCount(director, false)
     local changed = false
+    local budgetLeft = tonumber(budget)
 
-    while redCount < redTarget and greenCount < greenTarget do
+    local function consumeBudget()
+        if budgetLeft == nil then return true end
+        if budgetLeft <= 0 then return false end
+        budgetLeft = budgetLeft - 1
+        return true
+    end
+
+    while redCount < redTarget and greenCount < greenTarget and consumeBudget() do
         local red, green = NPCWorldDirectorBridge.CreateRoadPatrolEncounterPair(director, true)
         if not red or not green then break end
         redCount = redCount + 1
         greenCount = greenCount + 1
         changed = true
     end
-    while redCount < redTarget do
+    while redCount < redTarget and consumeBudget() do
         local group = NPCWorldDirectorBridge.CreateRoadPatrol(director, true, true)
         if not group then break end
         redCount = redCount + 1
         changed = true
     end
-    while greenCount < greenTarget do
+    while greenCount < greenTarget and consumeBudget() do
         local group = NPCWorldDirectorBridge.CreateRoadPatrol(director, false, true)
         if not group then break end
         greenCount = greenCount + 1
@@ -5019,7 +8000,8 @@ function NPCWorldDirectorBridge.EnsureRoadPatrols(director, force)
 
     local encounterTarget = tonumber(director.STARTUP_ROAD_PATROL_ENCOUNTERS) or 0
     while NPCWorldDirectorBridge.GetRoadPatrolEncounterCount(director) < encounterTarget
-        and NPCWorldDirectorBridge.GetAnyRoadPatrolCount(director) + 2 <= (tonumber(director.MAX_ROAD_PATROLS) or 0) do
+        and NPCWorldDirectorBridge.GetAnyRoadPatrolCount(director) + 2 <= (tonumber(director.MAX_ROAD_PATROLS) or 0)
+        and consumeBudget() do
         local red, green = NPCWorldDirectorBridge.CreateRoadPatrolEncounterPair(director, true)
         if not red or not green then break end
         changed = true
@@ -5116,6 +8098,10 @@ function NPCWorldDirectorBridge.AreRoadPatrolEnemies(_director, a, b)
 end
 
 function NPCWorldDirectorBridge.StartRoadPatrolBattle(director, gmd, a, b, worldAge)
+    if director and director.SP_BOOTSTRAP_GATE_ROAD_BATTLES ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, "road_battle_start")
+        if gate then npc_wd_recordBootstrapGate("road_battle_start", retry, reason); return false end
+    end
     if not NPCWorldDirectorBridge.AreRoadPatrolEnemies(director, a, b) then return false end
 
     local battleId = NPCWorldDirectorBridge.RoadBattleId(a.id, b.id)
@@ -5125,6 +8111,14 @@ function NPCWorldDirectorBridge.StartRoadPatrolBattle(director, gmd, a, b, world
     local reengageCooldown = tonumber(director.ROAD_PATROL_BATTLE_REENGAGE_COOLDOWN_HOURS) or 0
     if lastPairBattle > 0 and reengageCooldown > 0 and worldAge - lastPairBattle < reengageCooldown then return false end
     gmd.WorldDirector.roadBattlePairCooldowns[battleId] = worldAge
+    a.preBattleTargetX = a.targetX
+    a.preBattleTargetY = a.targetY
+    a.preBattleTargetZ = a.targetZ
+    a.preBattleTargetClass = a.targetClass
+    b.preBattleTargetX = b.targetX
+    b.preBattleTargetY = b.targetY
+    b.preBattleTargetZ = b.targetZ
+    b.preBattleTargetClass = b.targetClass
     a.inBattle = true
     b.inBattle = true
     a.battleId = battleId
@@ -5171,6 +8165,20 @@ function NPCWorldDirectorBridge.ClearRoadPatrolBattle(director, gmd, group, reas
     group.battleId = nil
     group.enemyGroupId = nil
     group.lastBattleAt = nil
+    if reason == "battle_won" and group.preBattleTargetX and group.preBattleTargetY then
+        group.targetX = group.preBattleTargetX
+        group.targetY = group.preBattleTargetY
+        group.targetZ = group.preBattleTargetZ or group.targetZ or 0
+        group.targetClass = group.preBattleTargetClass or group.targetClass
+    elseif group.targetClass == "battle_hold" then
+        group.targetX = nil
+        group.targetY = nil
+        group.targetClass = nil
+    end
+    group.preBattleTargetX = nil
+    group.preBattleTargetY = nil
+    group.preBattleTargetZ = nil
+    group.preBattleTargetClass = nil
     group.state = NPCStrategicAIBridge and NPCStrategicAIBridge.ResumeGroupState and NPCStrategicAIBridge.ResumeGroupState(group) or (group.hostile and "red_road_patrol" or "green_road_patrol")
     for _, member in pairs(group.members or {}) do
         member.virtualBattle = false
@@ -5223,6 +8231,64 @@ function NPCWorldDirectorBridge.ApplyRoadPatrolBattleDamage(director, group, att
     return casualties
 end
 
+function NPCWorldDirectorBridge.RoadPatrolBattleScore(group)
+    if not group then return 0 end
+    local count = tonumber(group.count) or #(group.members or {}) or 0
+    local power = tonumber(group.strategicPower) or 0
+    local readiness = tonumber(group.combatReadiness) or tonumber(group.supplyReadiness) or 55
+    local morale = tonumber(group.moraleReadiness) or readiness
+    local ammo = tonumber(group.ammoReadiness) or readiness
+    local score = power
+    if score <= 0 then score = count * 22 end
+    score = score + count * 8 + readiness * 0.35 + morale * 0.20 + ammo * 0.20
+    if group.mercenary or group.mercenaryElite then score = score + 12 end
+    if group.homeBaseId then score = score + 6 end
+    if ZombRand then score = score + ZombRand(26) else score = score + 13 end
+    return score
+end
+
+function NPCWorldDirectorBridge.ResolveRoadPatrolBattleDecisive(director, gmd, a, b, battleId, worldAge)
+    if not (director and gmd and a and b and a.id and b.id) then return false end
+
+    local scoreA = NPCWorldDirectorBridge.RoadPatrolBattleScore(a)
+    local scoreB = NPCWorldDirectorBridge.RoadPatrolBattleScore(b)
+    local winner, loser = a, b
+    if scoreB > scoreA then
+        winner, loser = b, a
+    elseif scoreA == scoreB and ZombRand and ZombRand(2) == 0 then
+        winner, loser = b, a
+    end
+
+    local loserMembers = NPCWorldDirectorBridge.Copy(loser.members or {})
+    local winnerCount = tonumber(winner.count) or #(winner.members or {}) or 0
+    local loserCount = tonumber(loser.count) or #(loser.members or {}) or 0
+    local winnerLoss = 0
+    if loserCount > 0 then
+        winnerLoss = math.floor(loserCount / 3)
+        if ZombRand and loserCount > 1 then winnerLoss = winnerLoss + ZombRand(2) end
+    end
+    if winnerLoss >= winnerCount then winnerLoss = math.max(0, winnerCount - 1) end
+    if winnerLoss > 0 then
+        winner.count = winnerCount - winnerLoss
+        winner.battleCasualties = (tonumber(winner.battleCasualties) or 0) + winnerLoss
+        NPCWorldDirectorBridge.TrimGroupMembers(winner)
+    end
+
+    loser.count = 0
+    loser.battleCasualties = (tonumber(loser.battleCasualties) or 0) + loserCount
+    NPCWorldDirectorBridge.CreateBattleRemains(director, gmd, loser, winner, battleId, loserMembers, worldAge)
+    NPCWorldDirectorBridge.RemoveWorldGroup(director, loser.id, "road_collision_battle_lost")
+    NPCWorldDirectorBridge.ClearRoadPatrolBattle(director, gmd, winner, "battle_won")
+    if NPCWorldDirectorBridge.EnsureVirtualTarget then NPCWorldDirectorBridge.EnsureVirtualTarget(director, winner) end
+    winner.updatedAt = worldAge
+    gmd.VirtualGroups[tostring(winner.id)] = winner
+    NPCWorldDirectorBridge.UpdateRoadPatrolMarker(director, gmd, winner)
+
+    NPCWorldDirectorBridge.BehaviorLog(director, "road_collision_battle_resolved", {battleId=battleId, winner=tostring(winner.id), loser=tostring(loser.id), scoreA=math.floor(scoreA), scoreB=math.floor(scoreB), winnerLoss=winnerLoss})
+    NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " Road collision battle resolved " .. tostring(battleId) .. " winner=" .. tostring(winner.id) .. " loser=" .. tostring(loser.id))
+    return true
+end
+
 function NPCWorldDirectorBridge.ProcessRoadPatrolBattlePair(director, gmd, a, b, worldAge, processed)
     if not a or not b or not a.id or not b.id then return false end
     processed = processed or {}
@@ -5252,6 +8318,10 @@ function NPCWorldDirectorBridge.ProcessRoadPatrolBattlePair(director, gmd, a, b,
     b.lastBattleAt = worldAge
     a.state = "road_battle"
     b.state = "road_battle"
+
+    if director.ROAD_PATROL_BATTLE_DECISIVE ~= false then
+        return NPCWorldDirectorBridge.ResolveRoadPatrolBattleDecisive(director, gmd, a, b, battleId, worldAge)
+    end
 
     local membersA = NPCWorldDirectorBridge.Copy(a.members or {})
     local membersB = NPCWorldDirectorBridge.Copy(b.members or {})
@@ -5412,6 +8482,10 @@ end
 
 function NPCWorldDirectorBridge.CreateVirtualGroup(director, force)
     if type(director) ~= "table" or not director.EnsureData then return false end
+    if director.SP_BOOTSTRAP_GATE_VIRTUAL_GROUPS ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, force and "virtual_group_bootstrap" or "virtual_group_growth")
+        if gate then npc_wd_recordBootstrapGate(force and "virtual_group_bootstrap" or "virtual_group_growth", retry, reason); return false end
+    end
     local gmd = director.EnsureData()
     if type(gmd) ~= "table" then return false end
     if type(gmd.WorldDirector) ~= "table" then return false end
@@ -5454,6 +8528,13 @@ function NPCWorldDirectorBridge.CreateVirtualGroup(director, force)
         groupSide = NPCWorldDirectorBridge.BalanceSpawnSideForStrategicWar(director, gmd, event, groupSide)
     end
 
+    local originBase = nil
+    if director.BASE_OWNED_GLOBAL_GROUPS_SPAWN_ENABLED ~= false and not mercenaryGroup and (groupSide == "red" or groupSide == "green") then
+        originBase = NPCWorldDirectorBridge.SelectBaseOwnedSpawnBase(gmd, groupSide, point)
+        local staging = originBase and NPCWorldDirectorBridge.MakeBaseOwnedStagingPoint(director, originBase, true) or nil
+        if staging then point = staging end
+    end
+
     local groupId = "WG" .. tostring(gmd.WorldDirector.nextGroupId or 1)
     gmd.WorldDirector.nextGroupId = (tonumber(gmd.WorldDirector.nextGroupId) or 1) + 1
 
@@ -5472,6 +8553,8 @@ function NPCWorldDirectorBridge.CreateVirtualGroup(director, force)
         x = point.x,
         y = point.y,
         z = point.z,
+        preciseX = tonumber(point.x) or 0,
+        preciseY = tonumber(point.y) or 0,
         clanId = wave.clanId,
         count = #members,
         hostile = event.hostile,
@@ -5503,7 +8586,12 @@ function NPCWorldDirectorBridge.CreateVirtualGroup(director, force)
         blueMercenaryRouteAt = mercenaryGroup and worldAge or nil,
         blueMercenaryBattleGraceUntil = mercenaryGroup and (worldAge + (tonumber(director.BLUE_MERCENARY_PATROL_BATTLE_GRACE_HOURS) or 4.0)) or nil,
         blueMercenaryMapDwellUntil = mercenaryGroup and (worldAge + (tonumber(director.BLUE_MERCENARY_PATROL_MAP_DWELL_HOURS) or 5.0)) or nil,
-        roadBias = true
+        roadBias = true,
+        baseOwnedGlobalSquad = originBase ~= nil,
+        originBaseId = originBase and wd_activityBaseId(originBase) or nil,
+        homeBaseId = originBase and wd_activityBaseId(originBase) or nil,
+        homeBaseOwner = originBase and wd_activityBaseOwner(originBase) or nil,
+        routeOwnerBaseId = originBase and wd_activityBaseId(originBase) or nil
     }
 
     if mercenaryGroup and NPCMercenaryContract and NPCMercenaryContract.ApplyEliteToGroup then
@@ -5511,6 +8599,9 @@ function NPCWorldDirectorBridge.CreateVirtualGroup(director, force)
     end
 
     NPCWorldDirectorBridge.ApplyVirtualGroupStrategicState(director, gmd, group)
+    if NPCWorldDirectorBridge.TryConsumeBaseEconomyForGroup and originBase then
+        NPCWorldDirectorBridge.TryConsumeBaseEconomyForGroup(director, gmd, originBase, group, "field", worldAge)
+    end
 
     gmd.VirtualGroups[groupId] = group
     gmd.WorldDirector.lastSpawn = worldAge
@@ -5539,7 +8630,7 @@ function NPCWorldDirectorBridge.CreateVirtualGroup(director, force)
     })
     NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " Created virtual group " .. tostring(groupId) .. " at " .. tostring(group.x) .. "," .. tostring(group.y) .. " class=" .. tostring(group.spawnClass) .. " count=" .. tostring(group.count))
 
-    if TransmitNPCModData then TransmitNPCModData() end
+    if TransmitNPCModData and not director._suppressWorldDirectorTransmit then TransmitNPCModData() end
     return group
 end
 
@@ -5591,6 +8682,72 @@ function NPCWorldDirectorBridge.IsSquareUsable(_director, square)
     end
 
     return true
+end
+
+
+function NPCWorldDirectorBridge.IsCompanionLeashSquareUsable(_director, square, playerBuilding)
+    if not square then return false end
+
+    local ok, result = pcall(function() return square:isFree(false) end)
+    if ok and not result then return false end
+
+    if playerBuilding then
+        ok, result = pcall(function() return square:getBuilding() end)
+        if (not ok) or result ~= playerBuilding then return false end
+    end
+
+    if SafeHouse and SafeHouse.isSafeHouse then
+        ok, result = pcall(function() return SafeHouse.isSafeHouse(square, nil, true) end)
+        if ok and result and not playerBuilding then return false end
+    end
+
+    return true
+end
+
+function NPCWorldDirectorBridge.FindLoadedCompanionLeashSquareNear(director, player, x, y, z, radius)
+    local cell = getCell and getCell() or nil
+    if not (cell and player) then return nil end
+
+    x = math.floor(tonumber(x) or 0)
+    y = math.floor(tonumber(y) or 0)
+    z = math.floor(tonumber(z) or (player.getZ and player:getZ()) or 0)
+    radius = tonumber(radius) or 8
+    if radius < 2 then radius = 2 end
+    if radius > 18 then radius = 18 end
+
+    local playerSquare = player.getSquare and player:getSquare() or nil
+    local playerBuilding = nil
+    if playerSquare and playerSquare.getBuilding then
+        local ok, building = pcall(function() return playerSquare:getBuilding() end)
+        if ok then playerBuilding = building end
+    end
+
+    local square = cell:getGridSquare(x, y, z)
+    if NPCWorldDirectorBridge.IsCompanionLeashSquareUsable(director, square, playerBuilding) then
+        return square
+    end
+
+    local px = player.getX and math.floor(tonumber(player:getX()) or x) or x
+    local py = player.getY and math.floor(tonumber(player:getY()) or y) or y
+    square = cell:getGridSquare(px, py, z)
+    if NPCWorldDirectorBridge.IsCompanionLeashSquareUsable(director, square, playerBuilding) then
+        return square
+    end
+
+    for r = 1, radius do
+        for dx = -r, r do
+            for dy = -r, r do
+                if r == 0 or math.abs(dx) == r or math.abs(dy) == r then
+                    square = cell:getGridSquare(px + dx, py + dy, z)
+                    if NPCWorldDirectorBridge.IsCompanionLeashSquareUsable(director, square, playerBuilding) then
+                        return square
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
 end
 
 function NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, x, y, z, radius)
@@ -5792,6 +8949,18 @@ function NPCWorldDirectorBridge.FindHiredMercenaryLeashSquare(director, player, 
     y = y + (tonumber(slot.y) or 0) * 0.35
 
     local radius = tonumber(director and director.MERCENARY_FOLLOW_CLOSE_RADIUS) or 8
+    local playerSquare = player.getSquare and player:getSquare() or nil
+    local playerBuilding = nil
+    if playerSquare and playerSquare.getBuilding then
+        local ok, building = pcall(function() return playerSquare:getBuilding() end)
+        if ok then playerBuilding = building end
+    end
+    if playerBuilding then
+        return NPCWorldDirectorBridge.FindLoadedCompanionLeashSquareNear(director, player, x, y, pz, radius)
+            or NPCWorldDirectorBridge.FindLoadedCompanionLeashSquareNear(director, player, px, py, pz, radius)
+            or NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, x, y, pz, radius)
+            or NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, px, py, pz, radius)
+    end
     return NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, x, y, pz, radius)
         or NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, px, py, pz, radius)
 end
@@ -5835,7 +9004,8 @@ function NPCWorldDirectorBridge.MarkGroupMaterializeFailed(director, group, play
     marker.x = group.x
     marker.y = group.y
     marker.z = group.z or 0
-    marker.name = group.roadPatrol and ((group.hostile and "Red Road Patrol " or "Green Road Patrol ") .. tostring(group.id)) or "NPC Group " .. tostring(group.id)
+    marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(group.id, group, marker.name)
+    marker.displayName = marker.name
     marker.count = group.count
     marker.hostile = group.hostile
     marker.friendly = not group.hostile
@@ -5893,12 +9063,29 @@ function NPCWorldDirectorBridge.MaterializeGroup(director, group, player)
     local entryTargetZ = group.z or 0
     local debugTeleportEntry = NPCWorldDirectorBridge.IsPlayerOnDebugMarker(director, group, player)
     local forceMercenaryLeashEntry = group.forceMercenaryLeashMaterialize == true and NPCWorldDirectorBridge.IsHiredFollowGroup(group)
+    local checkpointAnchorEntry = group.checkpointGuardGroup == true and group.checkpointAnchorMaterialize == true
+    local worldGroupAnchorEntry = group.anchorMaterializeAtGroup == true
     if forceMercenaryLeashEntry and group.id then
         NPCWorldDirectorBridge.CancelPendingGroupSpawnQueue(group.id, "mercenary_leash_materialize_cancel_pending_spawn")
     end
     local square = nil
 
-    if forceMercenaryLeashEntry then
+    if checkpointAnchorEntry then
+        square = NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, entryTargetX, entryTargetY, entryTargetZ, tonumber(group.checkpointSpawnRadius) or 7)
+    end
+
+    if worldGroupAnchorEntry and not square then
+        square = NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, entryTargetX, entryTargetY, entryTargetZ, tonumber(group.anchorSpawnRadius) or 12)
+        if not square and group.roadBias and NPCRoadNavBridge and NPCRoadNavBridge.FindLoadedRoadAround then
+            local road = NPCRoadNavBridge.FindLoadedRoadAround(entryTargetX, entryTargetY, entryTargetZ, tonumber(group.anchorRoadRadius) or 36)
+            square = road and road.square or nil
+        end
+        if not square then
+            return NPCWorldDirectorBridge.MarkGroupMaterializeFailed(director, group, player, "anchor_square_unloaded")
+        end
+    end
+
+    if forceMercenaryLeashEntry and not square then
         square = NPCWorldDirectorBridge.FindHiredMercenaryLeashSquare(director, player, 1)
     end
 
@@ -5910,7 +9097,7 @@ function NPCWorldDirectorBridge.MaterializeGroup(director, group, player)
     if not square then
         square = NPCWorldDirectorBridge.FindOffscreenMaterializeSquare(director, group, player)
     end
-    local offscreenEntry = square ~= nil and not debugTeleportEntry and not forceMercenaryLeashEntry
+    local offscreenEntry = square ~= nil and not debugTeleportEntry and not forceMercenaryLeashEntry and not checkpointAnchorEntry and not worldGroupAnchorEntry
 
     if not square and group.roadPatrol and NPCRoadNavBridge and NPCRoadNavBridge.FindLoadedRoadAround then
         local road = NPCRoadNavBridge.FindLoadedRoadAround(group.x, group.y, group.z or 0, 80)
@@ -5920,10 +9107,10 @@ function NPCWorldDirectorBridge.MaterializeGroup(director, group, player)
     square = square or NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, group.x, group.y, group.z or 0, 36)
 
     if not square and player then
-        if NPCWorldDirectorBridge.IsPlayerActivationCoolingDown(director, player) then
+        square = NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, player:getX(), player:getY(), player:getZ(), 42)
+        if not square and NPCWorldDirectorBridge.IsPlayerActivationCoolingDown(director, player) then
             return NPCWorldDirectorBridge.DeferGroupActivation(director, group, "teleport_loaded_square_cooldown")
         end
-        square = NPCWorldDirectorBridge.FindLoadedSpawnSquareNear(director, player:getX(), player:getY(), player:getZ(), 42)
     end
 
     if not square then
@@ -5973,6 +9160,8 @@ function NPCWorldDirectorBridge.MaterializeGroup(director, group, player)
         offscreenEntry = offscreenEntry,
         debugTeleportEntry = debugTeleportEntry,
         mercenaryLeashEntry = forceMercenaryLeashEntry or nil,
+        checkpointAnchorEntry = checkpointAnchorEntry or nil,
+        anchorMaterializeEntry = worldGroupAnchorEntry or nil,
         entryTargetX = entryTargetX,
         entryTargetY = entryTargetY,
         entryTargetZ = entryTargetZ,
@@ -6044,7 +9233,13 @@ function NPCWorldDirectorBridge.MaterializeGroup(director, group, player)
     group.materializedAt = group.updatedAt
     NPCWorldDirectorBridge.InvalidateMercenaryLoadedCountCache(director, group.id)
     group.forceMercenaryLeashMaterialize = nil
+    group.checkpointAnchorMaterialize = nil
+    group.anchorMaterializeAtGroup = nil
+    group.anchorSpawnRadius = nil
+    group.anchorRoadRadius = nil
     group.proxyHoldUntil = nil
+    group.restorePhysicalBubble = nil
+    group.restorePhysicalBubbleUntil = nil
 
     local gmd = director.EnsureData()
     if type(gmd.VirtualGroups) ~= "table" then gmd.VirtualGroups = {} end
@@ -6061,7 +9256,8 @@ function NPCWorldDirectorBridge.MaterializeGroup(director, group, player)
     marker.x = group.x
     marker.y = group.y
     marker.z = group.z
-    marker.name = group.roadPatrol and ((group.hostile and "Red Road Patrol " or "Green Road Patrol ") .. tostring(group.id)) or "NPC Group " .. tostring(group.id)
+    marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(group.id, group, marker.name)
+    marker.displayName = marker.name
     marker.count = group.count
     marker.hostile = group.hostile
     marker.friendly = not group.hostile
@@ -6137,10 +9333,6 @@ function NPCWorldDirectorBridge.ActivateGroupsNearPlayers(director)
 
     NPCWorldDirectorBridge.EnsureStrategicMarkerGroups(director, gmd, worldAge)
 
-    if NPCWorldDirectorBridge.GetPhysicalGroupCount(director) >= director.MAX_PHYSICAL_GROUPS then
-        return
-    end
-
     local budgets = NPCWorldDirectorBridge.PrepareActivationBudgets(director, gmd, worldAge)
     local candidates = {}
 
@@ -6148,18 +9340,26 @@ function NPCWorldDirectorBridge.ActivateGroupsNearPlayers(director)
 
     for _, group in pairs(gmd.VirtualGroups) do
         if group and not group.activated then
+            if group.restorePhysicalBubble == true and group.restorePhysicalBubbleUntil and worldAge > tonumber(group.restorePhysicalBubbleUntil) then
+                group.restorePhysicalBubble = nil
+                group.restorePhysicalBubbleUntil = nil
+                group.state = NPCWorldDirectorBridge.ResumeVirtualState(group)
+            end
             if not group.retryAfter or worldAge >= tonumber(group.retryAfter) then
-                local player, dist = NPCWorldDirectorBridge.GetNearestPlayer(director, group.x, group.y, director.ACTIVATION_RADIUS)
+                local activationRadius = NPCWorldDirectorBridge.GetActivationRadiusForGroup(director, group)
+                local player, dist = NPCWorldDirectorBridge.GetNearestPlayer(director, group.x, group.y, activationRadius)
                 if player then
                     local key = NPCWorldDirectorBridge.PlayerKey(player)
                     local budget = key and budgets[key] or nil
                     if budget then
+                        local priority = NPCWorldDirectorBridge.GetActivationPriority(director, group, player, dist)
+                        if group.restorePhysicalBubble == true then priority = priority - 250 end
                         table.insert(candidates, {
                             group = group,
                             player = player,
                             budget = budget,
                             distance = dist or 999999,
-                            priority = NPCWorldDirectorBridge.GetActivationPriority(director, group, player, dist)
+                            priority = priority
                         })
                     end
                 end
@@ -6176,22 +9376,24 @@ function NPCWorldDirectorBridge.ActivateGroupsNearPlayers(director)
 
     local totalActivations = 0
     local battlePairs = 0
+    local restoreActivations = 0
+    local restoreMax = math.max(1, tonumber(director.PERSISTENCE_RESTORE_MAX_GROUPS_PER_RUN) or 1)
 
     for i=1, #candidates do
-        if totalActivations >= (tonumber(director.MAX_GROUP_ACTIVATIONS_PER_UPDATE) or 1) then
-            break
-        end
-        if NPCWorldDirectorBridge.GetPhysicalGroupCount(director) >= director.MAX_PHYSICAL_GROUPS then
-            break
-        end
-
         local candidate = candidates[i]
         local group = candidate.group
+        local criticalCheckpoint = NPCWorldDirectorBridge.IsCriticalCheckpointActivation(director, group, candidate.player, candidate.distance)
+        local teleportMarkerEntry = director.TELEPORT_MARKER_BYPASS_DEFERS ~= false and NPCWorldDirectorBridge.IsPlayerOnDebugMarker(director, group, candidate.player)
+        local restoreBubbleActivation = group and group.restorePhysicalBubble == true
+        local restoreBudgetBlocked = restoreBubbleActivation and restoreActivations >= restoreMax
+        local urgentMarkerActivation = criticalCheckpoint or teleportMarkerEntry or (restoreBubbleActivation and not restoreBudgetBlocked)
+        local blockedByActivationBudget = totalActivations >= (tonumber(director.MAX_GROUP_ACTIVATIONS_PER_UPDATE) or 1) and not urgentMarkerActivation
+        local blockedByPhysicalBudget = NPCWorldDirectorBridge.GetPhysicalGroupCount(director) >= director.MAX_PHYSICAL_GROUPS and not urgentMarkerActivation
         local player = candidate.player
         local budget = candidate.budget
 
-        if group and not group.activated and player and budget then
-            if NPCWorldDirectorBridge.CanActivateGroupForPlayer(director, group, player, budget, totalActivations) then
+        if not (blockedByActivationBudget or blockedByPhysicalBudget or restoreBudgetBlocked) and group and not group.activated and player and budget then
+            if NPCWorldDirectorBridge.CanActivateGroupForPlayer(director, group, player, budget, totalActivations, candidate.distance) then
                 local done = false
                 if group.inBattle and group.enemyGroupId then
                     local enemy = gmd.VirtualGroups[tostring(group.enemyGroupId)]
@@ -6209,6 +9411,7 @@ function NPCWorldDirectorBridge.ActivateGroupsNearPlayers(director)
 
                 if done then
                     totalActivations = totalActivations + 1
+                    if restoreBubbleActivation then restoreActivations = restoreActivations + 1 end
                     budget.activations = (tonumber(budget.activations) or 0) + 1
                     budget.npcNear = (tonumber(budget.npcNear) or 0) + NPCWorldDirectorBridge.GetGroupMemberCount(director, group)
                 end
@@ -6227,6 +9430,254 @@ local function npc_wd_stage52_worldAge()
         if ok then return tonumber(value) or 0 end
     end
     return 0
+end
+
+local NPC_WORLD_DIRECTOR_STAGE411_MEMBER_FIELDS = {
+    "uid", "persistentId", "memberIndex", "fullname", "name", "female", "voice", "outfit", "appearanceSeed", "faceProfile",
+    "skinTexture", "skinColor", "hairStyle", "hairColor", "beardStyle", "beardColor", "humanVisualLocked", "humanVisualSignature", "humanVisualNormalized", "humanVisualNormalizedAt",
+    "health", "maxHealth", "endurance", "infection", "role", "tacticalRole", "relationship", "relationshipToPlayer",
+    "clan", "faction", "factionSide", "side", "factionState", "hostile", "friendly", "master", "isPlayerGuard", "followPlayer", "guardPlayer",
+    "mercenary", "mercenaryElite", "mercenaryHired", "mercenaryHiredBy", "mercenaryHiredByName", "mercenarySquadLeader", "mercenarySquadLeaderName",
+    "wounded", "woundedDowned", "woundedState", "woundedReason", "woundedAt", "woundedExpiresAt", "woundedForPlayerId", "woundedForPlayerName", "woundedX", "woundedY", "woundedZ", "woundedStabilized", "woundedStabilizedAt", "woundedEvacuating", "woundedEvacuatedAt", "woundedEvacTarget", "woundedEvacBaseId", "woundedAbandoned", "woundedAbandonedAt", "woundedNoDespawn", "woundedKeepRuntime",
+    "spy", "spyForPlayerId", "spyForPlayerName", "spyOriginalSide", "spyBribedAt", "spyState", "spyDefected", "spyDefectedAt", "spySabotage", "spyAlliedGroup", "spyPaymentKind", "spyDefectionReason",
+    "homeBaseId", "homeBase", "homeBaseZoneId", "homeBaseZoneType", "homeBaseZone", "baseZoneId", "baseZoneType", "baseDuty", "baseDutyState", "baseDutyReason", "baseDutyGroupId", "baseDutyOwner",
+    "guardPoint", "patrolPoint", "medicalPoint", "restPoint", "foodPoint", "ammoPoint", "storagePoint", "returnPoint",
+    "currentWeapon", "ammo", "weapons", "inventoryLite", "wornLite", "gearLite", "loot", "key", "baseGear", "baseGearWear", "baseGearWeaponKits", "baseGearWeaponParts", "baseGearMagazines", "baseGearBaseId",
+    "needs", "stock", "skills", "xp", "morale", "fear", "aggression", "discipline", "lastKnownEnemyPosition", "order", "fireMode", "program", "programName", "programStage", "lastTask",
+    "roadPatrol", "roadBias", "preferRoads", "patrolColor", "encounterId", "inBattle", "virtualBattle", "battleId", "enemyGroupId", "battleEnemyGroupId", "worldGroupId", "groupId"
+}
+
+local NPC_WORLD_DIRECTOR_STAGE411_GROUP_TRANSIENT_FIELDS = {
+    "physicalIds", "spawnPending", "spawnQueued", "spawnFailed", "retryAfter", "lastSpawnFailReason", "spawnFailReason", "debugTeleportEntry",
+    "proxyHoldUntil", "proxyDematerializedAt", "forceMercenaryLeashMaterialize", "checkpointAnchorMaterialize", "anchorMaterializeAtGroup", "anchorSpawnRadius", "anchorRoadRadius",
+    "currentPath", "path", "pathTarget", "pathFind", "pathRequest", "roadPath", "roadStep", "roadStepExpireAt", "mapPath", "mapRoute", "mapNodes", "cachedRoute", "runtime", "ai", "debug",
+    "lastActivationAt", "lastActivationPlayer", "lastSpawnAttemptAt", "lastSpawnedRuntimeIds", "spawnBatch", "spawnStart", "spawnLimit"
+}
+
+function NPCWorldDirectorBridge.CompactMemberForStrategicPersistence(member)
+    if type(member) ~= "table" then return nil end
+    local out = {}
+    for _, key in ipairs(NPC_WORLD_DIRECTOR_STAGE411_MEMBER_FIELDS) do
+        local value = member[key]
+        if value ~= nil then
+            out[key] = type(value) == "table" and NPCWorldDirectorBridge.Copy(value) or value
+        end
+    end
+    out.uid = out.uid or out.persistentId
+    out.persistentId = out.persistentId or out.uid
+    out.name = out.name or out.fullname
+    out.fullname = out.fullname or out.name
+    out.groupId = out.groupId or out.worldGroupId
+    out.worldGroupId = out.worldGroupId or out.groupId
+    return out
+end
+
+function NPCWorldDirectorBridge.CompactGroupMembersForStrategicPersistence(group)
+    if type(group) ~= "table" or type(group.members) ~= "table" then return 0 end
+    local compact = {}
+    local seen = {}
+    for _, member in ipairs(group.members) do
+        local out = NPCWorldDirectorBridge.CompactMemberForStrategicPersistence(member)
+        if out then
+            local key = tostring(out.uid or out.persistentId or out.memberIndex or (#compact + 1))
+            if not seen[key] then
+                seen[key] = true
+                compact[#compact + 1] = out
+            end
+        end
+    end
+    group.members = compact
+    if #compact > 0 then group.count = #compact end
+    return #compact
+end
+
+function NPCWorldDirectorBridge.CompactVirtualGroupForStrategicPersistence(director, gmd, groupId, group, reason)
+    if type(group) ~= "table" then return false end
+    groupId = tostring(groupId or group.id or "")
+    if groupId == "" then return false end
+
+    local wasPhysicalBubble = group.persistPhysicalBubble == true or group.restorePhysicalBubble == true
+    NPCWorldDirectorBridge.CompactGroupMembersForStrategicPersistence(group)
+    for _, key in ipairs(NPC_WORLD_DIRECTOR_STAGE411_GROUP_TRANSIENT_FIELDS) do
+        group[key] = nil
+    end
+
+    if not wasPhysicalBubble then
+        group.activated = false
+        group.virtual = true
+        group.state = NPCWorldDirectorBridge.ResumeVirtualState(group)
+        group.persistPhysicalBubble = nil
+        group.restorePhysicalBubble = nil
+        group.restorePhysicalBubbleUntil = nil
+    end
+
+    group.id = group.id or groupId
+    group.count = tonumber(group.count) or NPCWorldDirectorBridge.GroupMemberCount(group)
+    group.updatedAt = npc_wd_stage52_worldAge()
+    group.compactStrategicPersistence = true
+    group.compactStrategicPersistenceReason = tostring(reason or "strategic_compact")
+
+    if gmd and type(gmd.VirtualGroups) == "table" then
+        gmd.VirtualGroups[groupId] = group
+    end
+    return true
+end
+
+function NPCWorldDirectorBridge.EnsurePhysicalBubbleStore(gmd)
+    if not gmd then return nil end
+    gmd.WorldDirector = gmd.WorldDirector or {}
+    if type(gmd.WorldDirector.PhysicalBubbleGroups) ~= "table" then gmd.WorldDirector.PhysicalBubbleGroups = {} end
+    return gmd.WorldDirector.PhysicalBubbleGroups
+end
+
+function NPCWorldDirectorBridge.GetPersistedPhysicalBubble(gmd, groupId)
+    local store = gmd and gmd.WorldDirector and gmd.WorldDirector.PhysicalBubbleGroups or nil
+    if type(store) ~= "table" or groupId == nil then return nil end
+    return store[tostring(groupId)]
+end
+
+function NPCWorldDirectorBridge.IsGroupNearAnyPlayer(director, group, radius)
+    if not (director and group and group.x and group.y) then return false, nil, nil end
+    local player, dist = NPCWorldDirectorBridge.GetNearestPlayer(director, group.x, group.y, tonumber(radius) or 160)
+    return player ~= nil, player, dist
+end
+
+function NPCWorldDirectorBridge.SnapshotPhysicalBubbleGroups(director, reason, maxGroups)
+    if not (director and director.PERSISTENCE_PHYSICAL_BUBBLE_ENABLED ~= false and director.EnsureData) then return 0 end
+    local gmd = director.EnsureData()
+    if not (gmd and type(gmd.VirtualGroups) == "table") then return 0 end
+
+    local radius = tonumber(director.PERSISTENCE_PHYSICAL_BUBBLE_RADIUS) or 170
+    local limit = tonumber(maxGroups) or tonumber(director.PERSISTENCE_PHYSICAL_BUBBLE_MAX_GROUPS) or 8
+    if limit <= 0 then return 0 end
+    local store = NPCWorldDirectorBridge.EnsurePhysicalBubbleStore(gmd)
+    if not store then return 0 end
+    local worldAge = npc_wd_stage52_worldAge()
+    local changed = 0
+
+    for groupId, group in pairs(gmd.VirtualGroups) do
+        if changed >= limit then break end
+        if type(group) == "table" and group.activated == true and group.virtual == false then
+            local nearPlayer = NPCWorldDirectorBridge.IsGroupNearAnyPlayer(director, group, radius)
+            if nearPlayer then
+                local members, _queueIds, avgX, avgY, avgZ = NPCWorldDirectorBridge.GetPhysicalMemberSnapshots(director, groupId)
+                if #members > 0 then
+                    group.members = members
+                    NPCWorldDirectorBridge.CompactGroupMembersForStrategicPersistence(group)
+                    group.count = #group.members
+                    group.x = avgX or group.x
+                    group.y = avgY or group.y
+                    group.z = avgZ or group.z or 0
+                    group.persistPhysicalBubble = true
+                    group.persistPhysicalBubbleAt = worldAge
+                    group.persistPhysicalBubbleReason = tostring(reason or "physical_bubble_snapshot")
+                    group.persistPhysicalBubbleRadius = radius
+                    group.persistPhysicalBubbleCount = group.count
+                    group.compactStrategicPersistence = true
+                    gmd.VirtualGroups[tostring(groupId)] = group
+                    store[tostring(groupId)] = {
+                        id = tostring(groupId),
+                        x = group.x,
+                        y = group.y,
+                        z = group.z or 0,
+                        count = group.count,
+                        members = NPCWorldDirectorBridge.Copy(group.members),
+                        updatedAt = worldAge,
+                        reason = tostring(reason or "physical_bubble_snapshot")
+                    }
+                    if NPCPersistentNPCBridge and NPCPersistentNPCBridge.RegisterGroup then
+                        pcall(function() NPCPersistentNPCBridge.RegisterGroup(gmd, group) end)
+                    end
+                    changed = changed + 1
+                end
+            end
+        end
+    end
+
+    gmd.WorldDirector.lastPhysicalBubbleSnapshotAt = worldAge
+    gmd.WorldDirector.lastPhysicalBubbleSnapshotReason = tostring(reason or "physical_bubble_snapshot")
+    gmd.WorldDirector.lastPhysicalBubbleSnapshotCount = changed
+    return changed
+end
+
+function NPCWorldDirectorBridge.CompactStrategicPersistence(director, reason, maxGroups)
+    if not (director and director.PERSISTENCE_COMPACT_VIRTUAL_GROUPS ~= false and director.EnsureData) then return 0 end
+    local gmd = director.EnsureData()
+    if not (gmd and type(gmd.VirtualGroups) == "table") then return 0 end
+
+    local ids = {}
+    for groupId, _ in pairs(gmd.VirtualGroups) do ids[#ids + 1] = tostring(groupId) end
+    table.sort(ids)
+
+    local budget = tonumber(maxGroups) or tonumber(director.PERSISTENCE_COMPACT_GROUPS_PER_RUN) or 32
+    if budget <= 0 then return 0 end
+    local state = gmd.WorldDirector or {}
+    gmd.WorldDirector = state
+    local cursor = tonumber(state.strategicPersistenceCursor) or 1
+    if cursor > #ids then cursor = 1 end
+
+    local changed = 0
+    local scanned = 0
+    while #ids > 0 and scanned < #ids and changed < budget do
+        local groupId = ids[cursor]
+        cursor = cursor + 1
+        if cursor > #ids then cursor = 1 end
+        scanned = scanned + 1
+        local group = gmd.VirtualGroups[groupId]
+        if type(group) == "table" and group.activated ~= true then
+            if NPCWorldDirectorBridge.CompactVirtualGroupForStrategicPersistence(director, gmd, groupId, group, reason) then
+                changed = changed + 1
+            end
+        end
+    end
+
+    state.strategicPersistenceCursor = cursor
+    state.lastStrategicPersistenceCompactAt = npc_wd_stage52_worldAge()
+    state.lastStrategicPersistenceCompactReason = tostring(reason or "strategic_compact")
+    state.lastStrategicPersistenceCompactCount = changed
+    return changed
+end
+
+function NPCWorldDirectorBridge.PreparePhysicalBubbleGroupForRestore(director, gmd, groupId, group, bubble, worldAge)
+    if not (gmd and groupId and type(group) == "table" and type(bubble) == "table") then return false end
+    local members = type(bubble.members) == "table" and NPCWorldDirectorBridge.Copy(bubble.members) or group.members
+    if type(members) ~= "table" or #members <= 0 then return false end
+    group.members = members
+    NPCWorldDirectorBridge.CompactGroupMembersForStrategicPersistence(group)
+    group.count = #group.members
+    group.x = tonumber(bubble.x) or group.x
+    group.y = tonumber(bubble.y) or group.y
+    group.z = tonumber(bubble.z) or group.z or 0
+    group.activated = false
+    group.virtual = true
+    group.physicalIds = nil
+    group.spawnPending = false
+    group.spawnQueued = 0
+    group.spawnFailed = false
+    group.retryAfter = nil
+    group.lastSpawnFailReason = nil
+    group.persistPhysicalBubble = true
+    group.restorePhysicalBubble = true
+    group.restorePhysicalBubbleAt = worldAge
+    group.restorePhysicalBubbleUntil = worldAge + 1.5
+    group.state = "restore_pending"
+    group.updatedAt = worldAge
+    gmd.VirtualGroups[tostring(groupId)] = group
+    return true
+end
+
+function NPCWorldDirectorBridge.GetActivationRadiusForGroup(director, group)
+    if group and group.restorePhysicalBubble == true then
+        return tonumber(director.PERSISTENCE_RESTORE_BUBBLE_RADIUS) or tonumber(director.ACTIVATION_RADIUS) or 150
+    end
+    return tonumber(director.ACTIVATION_RADIUS) or 150
+end
+
+function NPCWorldDirectorBridge.FlushStrategicPersistence(director, reason)
+    if not (director and director.EnsureData) then return 0 end
+    local physical = NPCWorldDirectorBridge.SnapshotPhysicalBubbleGroups(director, reason or "flush")
+    local compact = NPCWorldDirectorBridge.CompactStrategicPersistence(director, reason or "flush", tonumber(director.PERSISTENCE_COMPACT_GROUPS_PER_RUN) or 32)
+    return (tonumber(physical) or 0) + (tonumber(compact) or 0)
 end
 
 function NPCWorldDirectorBridge.GetPhysicalMemberSnapshots(director, groupId)
@@ -6252,12 +9703,16 @@ function NPCWorldDirectorBridge.GetPhysicalMemberSnapshots(director, groupId)
                 queueIds[#queueIds + 1] = id
             else
                 if memberKey then seenMembers[memberKey] = true end
+                local runtimeZombie = nil
+                if NPCWorldDirectorBridge.FindLoadedNPCZombieForBrain then
+                    runtimeZombie = NPCWorldDirectorBridge.FindLoadedNPCZombieForBrain(director, id, brain, groupId)
+                end
                 if NPCPersistentNPCBridge and NPCPersistentNPCBridge.TouchFromRuntime then
-                local ok, err = pcall(function() NPCPersistentNPCBridge.TouchFromRuntime(gmd, brain, id) end)
-                if not ok then NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " TouchFromRuntime failed: " .. tostring(err)) end
-            end
+                    local ok, err = pcall(function() NPCPersistentNPCBridge.TouchFromRuntime(gmd, brain, id, runtimeZombie) end)
+                    if not ok then NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " TouchFromRuntime failed: " .. tostring(err)) end
+                end
 
-            local x = brain.debugCoords and tonumber(brain.debugCoords.x) or tonumber(brain.x)
+                local x = brain.debugCoords and tonumber(brain.debugCoords.x) or tonumber(brain.x)
             local y = brain.debugCoords and tonumber(brain.debugCoords.y) or tonumber(brain.y)
             local z = brain.debugCoords and tonumber(brain.debugCoords.z) or tonumber(brain.z) or 0
             if not x and brain.bornCoords then x = tonumber(brain.bornCoords.x) end
@@ -6277,16 +9732,40 @@ function NPCWorldDirectorBridge.GetPhysicalMemberSnapshots(director, groupId)
                 voice = brain.voice,
                 femaleChance = brain.female and 100 or 0,
                 outfit = brain.outfit,
+                appearanceSeed = brain.appearanceSeed,
+                faceProfile = brain.faceProfile,
                 skinTexture = brain.skinTexture,
+                skinColor = brain.skinColor,
                 hairStyle = brain.hairStyle,
                 hairColor = brain.hairColor,
                 beardStyle = brain.beardStyle,
                 beardColor = brain.beardColor,
+                humanVisualLocked = brain.humanVisualLocked,
+                humanVisualSignature = brain.humanVisualSignature,
+                humanVisualNormalized = brain.humanVisualNormalized,
+                humanVisualNormalizedAt = brain.humanVisualNormalizedAt,
                 health = brain.health or brain.maxHealth or 3.0,
                 maxHealth = brain.maxHealth or brain.health or 3.0,
                 role = brain.role,
                 tacticalRole = brain.tacticalRole,
+                master = brain.master,
+                mercenary = brain.mercenary,
+                mercenaryElite = brain.mercenaryElite,
+                mercenaryHired = brain.mercenaryHired,
+                mercenaryHiredBy = brain.mercenaryHiredBy,
+                mercenaryHiredByName = brain.mercenaryHiredByName,
+                mercenarySquadLeader = brain.mercenarySquadLeader,
+                mercenarySquadLeaderName = brain.mercenarySquadLeaderName,
+                isPlayerGuard = brain.isPlayerGuard,
+                followPlayer = brain.followPlayer,
+                guardPlayer = brain.guardPlayer,
+                friendly = brain.friendly,
+                relationship = brain.relationship,
                 relationshipToPlayer = brain.relationshipToPlayer,
+                factionState = brain.factionState,
+                factionSide = brain.factionSide,
+                faction = brain.faction,
+                side = brain.side,
                 currentWeapon = brain.currentWeapon,
                 ammo = brain.ammo,
                 inventoryLite = brain.inventoryLite,
@@ -6376,6 +9855,8 @@ end
 function NPCWorldDirectorBridge.PreserveWorldGroupAsVirtual(director, gmd, groupId, group, reason)
     if not (director and gmd and groupId and type(group) == "table") then return false end
     if NPCWorldDirectorBridge.IsWorldGroupTrueDeathReason(reason) then return false end
+
+    if group.blackMarketDefenseQuestGroup == true or group.blackMarketDefenseQuestId ~= nil or group.spawnClass == "black_market_defense_enemy" then return false end
 
     local count = NPCWorldDirectorBridge.GroupMemberCount(group)
     if count <= 0 then return false end
@@ -6542,7 +10023,8 @@ function NPCWorldDirectorBridge.DematerializeFarPhysicalGroup(director, groupId,
     marker.x = group.x
     marker.y = group.y
     marker.z = group.z or 0
-    marker.name = group.roadPatrol and ((group.hostile and "Red Road Patrol " or "Green Road Patrol ") .. groupId) or ("NPC Group " .. groupId)
+    marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group, marker.name)
+    marker.displayName = marker.name
     marker.count = group.count
     marker.hostile = group.hostile
     marker.friendly = not group.hostile
@@ -7023,6 +10505,15 @@ function NPCWorldDirectorBridge.PlaceHiredMercenaryRuntime(director, groupId, ru
         brain.isPlayerGuard = true
         brain.followPlayer = brain.followPlayer or (brain.order and brain.order.master)
         brain.updatedAt = getGameTime and getGameTime():getWorldAgeHours() or brain.updatedAt
+        if zombie and NPCPersistentNPCBridge and NPCPersistentNPCBridge.TouchFromRuntime then
+            pcall(function()
+                local gmd = director and director.EnsureData and director.EnsureData() or nil
+                if gmd then NPCPersistentNPCBridge.TouchFromRuntime(gmd, brain, runtimeId, zombie) end
+            end)
+        end
+        if zombie and NPCCreatorBridge and NPCCreatorBridge.ApplyHumanFacePresetToBrain then
+            pcall(function() NPCCreatorBridge.ApplyHumanFacePresetToBrain(brain, zombie, brain, false) end)
+        end
         if brain.fsm then
             brain.fsm.targetId = nil
             brain.fsm.targetKind = nil
@@ -7052,8 +10543,10 @@ function NPCWorldDirectorBridge.EnforceHiredMercenaryFollowLeash(director, reaso
 
     local changed = false
     local worldAge = getGameTime and getGameTime():getWorldAgeHours() or 0
-    local teleportDistance = tonumber(director.MERCENARY_FOLLOW_TELEPORT_DISTANCE) or 34
-    local virtualDistance = tonumber(director.MERCENARY_FOLLOW_VIRTUAL_TELEPORT_DISTANCE) or 42
+    local teleportDistance = tonumber(director.MERCENARY_FOLLOW_TELEPORT_DISTANCE) or 44
+    local virtualDistance = tonumber(director.MERCENARY_FOLLOW_VIRTUAL_TELEPORT_DISTANCE) or 56
+    local hardRestoreDistance = tonumber(director.MERCENARY_FOLLOW_HARD_RESTORE_DISTANCE) or 140
+    if hardRestoreDistance < teleportDistance + 32 then hardRestoreDistance = teleportDistance + 32 end
 
     for groupId, group in pairs(gmd.VirtualGroups) do
         if NPCWorldDirectorBridge.IsHiredFollowGroup(group) then
@@ -7074,7 +10567,7 @@ function NPCWorldDirectorBridge.EnforceHiredMercenaryFollowLeash(director, reaso
                 local lastPx = tonumber(group._lastFollowPlayerX)
                 local lastPy = tonumber(group._lastFollowPlayerY)
                 local jumpDistance = (lastPx and lastPy) and NPCWorldDirectorBridge.Dist(lastPx, lastPy, px, py) or 0
-                local playerTeleportDistance = tonumber(director.MERCENARY_FOLLOW_PLAYER_TELEPORT_DISTANCE) or 48
+                local playerTeleportDistance = tonumber(director.MERCENARY_FOLLOW_PLAYER_TELEPORT_DISTANCE) or 72
                 local playerTeleported = jumpDistance > playerTeleportDistance
                 group._lastFollowPlayerX = px
                 group._lastFollowPlayerY = py
@@ -7101,17 +10594,27 @@ function NPCWorldDirectorBridge.EnforceHiredMercenaryFollowLeash(director, reaso
                 local cooldownUntil = tonumber(group._mercenaryLeashCleanupUntil) or 0
                 local rematerializeCoolingDown = cooldownUntil > worldAge
                 local cooldownBlocksRematerialize = rematerializeCoolingDown and not playerTeleported
-                local needsSafeRematerialize = alive > 0 and not spawnPending and not cooldownBlocksRematerialize and not hireGraceActive and (playerTeleported or loadedAlive < alive or loadedAlive <= 0 or (dist and dist > teleportDistance))
+                local needsSafeRematerialize = alive > 0 and not spawnPending and not cooldownBlocksRematerialize and not hireGraceActive and (playerTeleported or loadedAlive < alive or loadedAlive <= 0 or (dist and dist > hardRestoreDistance))
 
                 if alive > 0 and not needsSafeRematerialize and group.activated and not hireGraceActive then
                     for _, brain in pairs(gmd.Queue or {}) do
                         local brainGroupId = NPCWorldDirectorBridge.BrainGroupId(brain)
                         if type(brain) == "table" and brainGroupId and tostring(brainGroupId) == groupId then
                             local bx, by = NPCWorldDirectorBridge.BrainCoords(brain)
-                            local memberDist = (bx and by) and NPCWorldDirectorBridge.Dist(bx, by, px, py) or (teleportDistance + 1)
-                            if memberDist > teleportDistance then
+                            local memberDist = (bx and by) and NPCWorldDirectorBridge.Dist(bx, by, px, py) or 0
+                            if memberDist > hardRestoreDistance then
                                 needsSafeRematerialize = true
                                 break
+                            elseif memberDist > teleportDistance then
+                                brain.followPlayer = ownerId
+                                brain.isPlayerGuard = true
+                                brain.guardPlayer = nil
+                                brain.order = type(brain.order) == "table" and brain.order or {name="Follow"}
+                                brain.order.name = "Follow"
+                                brain.order.master = brain.order.master or ownerId
+                                brain.order.followDistance = brain.order.followDistance or 3.0
+                                brain.order.fireMode = brain.order.fireMode or brain.fireMode or "Defensive"
+                                brain.forceFollowRefreshAt = worldAge
                             end
                         end
                     end
@@ -7145,7 +10648,7 @@ function NPCWorldDirectorBridge.EnforceHiredMercenaryFollowLeash(director, reaso
                         end
                     end
 
-                    if dist and dist <= teleportDistance then
+                    if cx and cy then
                         group.x = cx or group.x
                         group.y = cy or group.y
                         group.z = cz or group.z or pz
@@ -7166,6 +10669,7 @@ function NPCWorldDirectorBridge.EnforceHiredMercenaryFollowLeash(director, reaso
                     local cooldownBlocksRematerialize = rematerializeCoolingDown and not playerTeleported
                     local needsVirtualResync = groupDist > virtualDistance or group.virtual == true or not group.activated
                     if playerTeleported and groupDist > teleportDistance then needsVirtualResync = true end
+                    if (not playerTeleported) and group.activated == true and groupDist <= hardRestoreDistance then needsVirtualResync = false end
                     if needsVirtualResync and not spawnPending and not cooldownBlocksRematerialize then
                         NPCWorldDirectorBridge.InvalidateMercenaryLoadedCountCache(director, groupId)
                         NPCWorldDirectorBridge.CancelPendingGroupSpawnQueue(groupId, "mercenary_follow_virtual_resync_cancel_pending_spawn")
@@ -7239,6 +10743,13 @@ function NPCWorldDirectorBridge.EnsureVirtualTarget(director, group)
         end
     end
 
+    if NPCWorldDirectorBridge.IsBaseOwnedGlobalSquad and NPCWorldDirectorBridge.IsBaseOwnedGlobalSquad(group) then
+        local gmd = director and director.EnsureData and director.EnsureData() or nil
+        local now = wd_worldAgeHoursSafe()
+        local changed = NPCWorldDirectorBridge.RefreshBaseOwnedRouteTarget and NPCWorldDirectorBridge.RefreshBaseOwnedRouteTarget(director, gmd, group, now, "ensure_target") or false
+        if changed or (group.targetX and group.targetY) then return end
+    end
+
     if group.roadPatrol then
         if NPCWorldDirectorBridge.IsRecruitableBlueMercenaryPatrol(group) and group.targetX and group.targetY then
             local now = wd_worldAgeHoursSafe()
@@ -7277,6 +10788,9 @@ function NPCWorldDirectorBridge.EnsureVirtualTarget(director, group)
         end
         if not step and group.routeX and group.routeY and NPCRoadNavBridge and NPCRoadNavBridge.FindNearbyWorldRoadStepToward then
             step = NPCRoadNavBridge.FindNearbyWorldRoadStepToward(group.x, group.y, group.routeX, group.routeY, director.ROAD_PATROL_VIRTUAL_STEP_RADIUS, director.VIRTUAL_TARGET_ATTEMPTS)
+        end
+        if step and NPCRoadNavBridge and NPCRoadNavBridge.IsBlockedSegment and NPCRoadNavBridge.IsBlockedSegment(group.x, group.y, step.x, step.y, 8) then
+            step = nil
         end
         step = step or NPCWorldDirectorBridge.GetNearbyRoadPoint(director, group.x, group.y, director.ROAD_PATROL_VIRTUAL_STEP_RADIUS)
 
@@ -7339,6 +10853,11 @@ end
 function NPCWorldDirectorBridge.RepairVirtualGroupLocation(director, group)
     if not group or group.activated then return false end
 
+    if NPCWorldDirectorBridge.RepairBaseOwnedGroupLocation then
+        local protectedRepair = NPCWorldDirectorBridge.RepairBaseOwnedGroupLocation(director, group, wd_worldAgeHoursSafe())
+        if protectedRepair ~= nil then return protectedRepair == true end
+    end
+
     if NPCWorldDirectorBridge.IsVirtualGroupUrbanPlaced(director, group) then
         local score, reason = NPCWorldDirectorBridge.ScoreWorldPoint(director, group.x, group.y)
         group.spawnClass = group.spawnClass or reason
@@ -7384,6 +10903,8 @@ function NPCWorldDirectorBridge.RepairVirtualGroupLocation(director, group)
     group.x = point.x
     group.y = point.y
     group.z = point.z or 0
+    group.preciseX = tonumber(group.x) or 0
+    group.preciseY = tonumber(group.y) or 0
     group.spawnClass = point.spawnClass or "urban"
     group.zoneScore = point.zoneScore or 0
     group.urbanAffinity = point.urbanAffinity or 0
@@ -7408,6 +10929,7 @@ function NPCWorldDirectorBridge.TryDirectorRetargetGroup(director, group, worldA
     if group.bountyHunter or group.targetClass == "bounty_hunt" then return false end
     if group.leaderId or group.isFactionLeader then return false end
     if group.economyConvoy or group.convoyId then return false end
+    if NPCWorldDirectorBridge.IsBaseOwnedGlobalSquad and NPCWorldDirectorBridge.IsBaseOwnedGlobalSquad(group) then return false end
     if NPCWorldDirectorBridge.IsRecruitableBlueMercenaryPatrol(group) then
         local now = tonumber(worldAge) or wd_worldAgeHoursSafe()
         local dwellUntil = tonumber(group.blueMercenaryMapDwellUntil) or 0
@@ -7473,9 +10995,163 @@ function NPCWorldDirectorBridge.TryDirectorRetargetGroup(director, group, worldA
     return true
 end
 
-function NPCWorldDirectorBridge.UpdateVirtualGroup(director, group, worldAge)
+function NPCWorldDirectorBridge.ShouldVirtualGroupFollowRoads(group)
+    if type(group) ~= "table" then return false end
+    if group.disableRoadRouting == true then return false end
+    if group.roadPatrol == true or group.roadBias == true or group.preferRoads == true then return true end
+    if group.counterIntelHunter == true then return true end
+    if group.routeOwnerBaseId or group.homeBaseId or group.baseId then return true end
+    if group.strategicActivityType or group.strategicActivityId then return true end
+    local targetClass = tostring(group.targetClass or "")
+    if targetClass == "base_capture" or targetClass == "front_patrol" or targetClass == "activity" or targetClass == "road_step" then return true end
+    return false
+end
+
+function NPCWorldDirectorBridge.ResolveVirtualRoadMoveTarget(director, group, x, y, targetX, targetY, worldAge)
+    if not (director and group and director.VIRTUAL_ROAD_FOLLOWING_ENABLED ~= false) then return targetX, targetY, false end
+    if not (NPCRoadNavBridge and NPCRoadNavBridge.FindNearbyWorldRoadStepToward) then return targetX, targetY, false end
+    if not NPCWorldDirectorBridge.ShouldVirtualGroupFollowRoads(group) then return targetX, targetY, false end
+
+    x = tonumber(x); y = tonumber(y); targetX = tonumber(targetX); targetY = tonumber(targetY)
+    if not (x and y and targetX and targetY) then return targetX, targetY, false end
+
+    local distToFinal = NPCWorldDirectorBridge.Dist(x, y, targetX, targetY)
+    local minDistance = tonumber(director.VIRTUAL_ROAD_FOLLOWING_MIN_DISTANCE) or 95
+    local finalApproach = tonumber(director.VIRTUAL_ROAD_FOLLOWING_FINAL_APPROACH_DISTANCE) or 70
+    if distToFinal <= finalApproach or distToFinal < minDistance then return targetX, targetY, false end
+
+    local now = tonumber(worldAge) or wd_worldAgeHoursSafe()
+    local reuseDistance = tonumber(director.VIRTUAL_ROAD_FOLLOWING_STEP_REUSE_DISTANCE) or 18
+    local expireHours = tonumber(director.VIRTUAL_ROAD_FOLLOWING_STEP_EXPIRE_HOURS) or 0.12
+    local stepX = tonumber(group.virtualRoadStepX)
+    local stepY = tonumber(group.virtualRoadStepY)
+    if stepX and stepY then
+        local stepAge = now - (tonumber(group.virtualRoadStepAt) or now)
+        local stillUseful = stepAge <= expireHours and NPCWorldDirectorBridge.Dist(x, y, stepX, stepY) > reuseDistance and NPCWorldDirectorBridge.Dist(stepX, stepY, targetX, targetY) < distToFinal + 24
+        if stillUseful then
+            return stepX, stepY, true
+        end
+        group.virtualRoadStepX = nil
+        group.virtualRoadStepY = nil
+        group.virtualRoadStepAt = nil
+    end
+
+    local radius = tonumber(director.ROAD_PATROL_VIRTUAL_STEP_RADIUS) or 360
+    local attempts = tonumber(director.VIRTUAL_TARGET_ATTEMPTS) or 240
+    local okStep, step = pcall(function()
+        return NPCRoadNavBridge.FindNearbyWorldRoadStepToward(x, y, targetX, targetY, radius, attempts)
+    end)
+    if okStep and step and step.x and step.y then
+        local sx = tonumber(step.x)
+        local sy = tonumber(step.y)
+        if sx and sy and NPCWorldDirectorBridge.Dist(sx, sy, targetX, targetY) < distToFinal + 24 then
+            group.virtualRoadStepX = sx
+            group.virtualRoadStepY = sy
+            group.virtualRoadStepAt = now
+            group.mapRouteX = targetX
+            group.mapRouteY = targetY
+            group.mapRouteZ = group.targetZ or 0
+            group.roadFollowing = true
+            return sx, sy, true
+        end
+    end
+
+    return targetX, targetY, false
+end
+
+
+function NPCWorldDirectorBridge.AdvanceVirtualGroupMapMotion(director, group, worldAge)
+    if not group or group.activated or group.inBattle then return false end
+
+    if group.preciseX == nil then group.preciseX = tonumber(group.x) or 0 end
+    if group.preciseY == nil then group.preciseY = tonumber(group.y) or 0 end
+
+    if not group.targetX or not group.targetY then
+        NPCWorldDirectorBridge.EnsureVirtualTarget(director, group)
+        if not group.targetX or not group.targetY then return false end
+    end
+
+    local lastUpdate = tonumber(group.updatedAt) or worldAge
+    local dt = worldAge - lastUpdate
+    if dt <= 0 then return false end
+    if dt > 0.25 then dt = 0.25 end
+
+    local x = tonumber(group.preciseX) or tonumber(group.x) or 0
+    local y = tonumber(group.preciseY) or tonumber(group.y) or 0
+    local moveX, moveY, intermediateRoadStep = NPCWorldDirectorBridge.ResolveVirtualRoadMoveTarget(director, group, x, y, group.targetX, group.targetY, worldAge)
+    local dx = moveX - x
+    local dy = moveY - y
+    local dist = math.sqrt(dx * dx + dy * dy)
+
+    if dist < 1 then
+        group.preciseX = tonumber(moveX) or x
+        group.preciseY = tonumber(moveY) or y
+        group.x = math.floor(group.preciseX)
+        group.y = math.floor(group.preciseY)
+        group.updatedAt = worldAge
+        if intermediateRoadStep then
+            group.virtualRoadStepX = nil
+            group.virtualRoadStepY = nil
+            group.virtualRoadStepAt = nil
+            return true
+        end
+        if group.economyMissionId then
+            group.state = "eco_arrived"
+            return true
+        end
+        if group.targetClass == "base_capture" and group.targetBaseId then
+            group.state = "holding_base"
+            return true
+        end
+        if group.targetClass == "strike_staging" then
+            group.state = "activity_assemble_strike"
+            return true
+        end
+        group.targetX = nil
+        group.targetY = nil
+        NPCWorldDirectorBridge.EnsureVirtualTarget(director, group)
+        return true
+    end
+
+    local baseSpeed = tonumber(director.VIRTUAL_MOVE_SPEED_TILES_PER_HOUR) or 120
+    local speed = tonumber(group.speed) or baseSpeed
+    if speed <= 0 then speed = baseSpeed end
+    if NPCWorldDirectorBridge.IsRecruitableBlueMercenaryPatrol(group) then
+        local blueSpeed = tonumber(director.BLUE_MERCENARY_PATROL_MOVE_SPEED) or 22
+        local blueCap = blueSpeed + 12
+        if speed > blueCap then speed = blueCap end
+    else
+        if speed < baseSpeed then speed = baseSpeed end
+        local speedCap = group.roadPatrol and (baseSpeed + 240) or (baseSpeed + 120)
+        if speed > speedCap then speed = speedCap end
+    end
+
+    local step = speed * dt
+    if step > dist then step = dist end
+
+    local newX = x + (dx / dist) * step
+    local newY = y + (dy / dist) * step
+    group.preciseX = newX
+    group.preciseY = newY
+    group.x = math.floor(newX)
+    group.y = math.floor(newY)
+    group.z = 0
+    group.updatedAt = worldAge
+    if group.economyMissionId then
+        group.state = "eco_" .. tostring(group.missionType or "mission")
+    elseif group.strategicActivityState then
+        group.state = group.strategicActivityState
+    else
+        group.state = group.roadPatrol and (group.hostile and "red_road_patrol" or "green_road_patrol") or (group.homeBaseId and "base_patrol" or "roaming")
+    end
+
+    return true
+end
+
+function NPCWorldDirectorBridge.UpdateVirtualGroup(director, group, worldAge, opts)
     if not group or group.activated then return false end
-    if NPCAILODTraderBridge and NPCAILODTraderBridge.ShouldUpdateVirtualGroup then
+    opts = type(opts) == "table" and opts or {}
+    if opts.forceLOD ~= true and NPCAILODTraderBridge and NPCAILODTraderBridge.ShouldUpdateVirtualGroup then
         local okLOD, allowed = pcall(function() return NPCAILODTraderBridge.ShouldUpdateVirtualGroup(group, worldAge) end)
         if okLOD and allowed == false then return false end
     end
@@ -7489,6 +11165,9 @@ function NPCWorldDirectorBridge.UpdateVirtualGroup(director, group, worldAge)
     if NPCStrategicAIBridge and NPCStrategicAIBridge.EnsureGroupBase then
         NPCStrategicAIBridge.EnsureGroupBase(gmd, group)
     end
+    if NPCWorldDirectorBridge.EnsureBaseOwnedGroup then
+        NPCWorldDirectorBridge.EnsureBaseOwnedGroup(director, gmd, group, worldAge, "virtual_update")
+    end
     if NPCStrategicAIBridge and NPCStrategicAIBridge.EvaluateGroupCombatPower then
         NPCStrategicAIBridge.EvaluateGroupCombatPower(gmd, group)
     end
@@ -7501,11 +11180,25 @@ function NPCWorldDirectorBridge.UpdateVirtualGroup(director, group, worldAge)
     if dt <= 0 then return false end
     if dt > 1.0 then dt = 1.0 end
 
-    local dx = group.targetX - group.x
-    local dy = group.targetY - group.y
+    local x = tonumber(group.preciseX) or tonumber(group.x) or 0
+    local y = tonumber(group.preciseY) or tonumber(group.y) or 0
+    local moveX, moveY, intermediateRoadStep = NPCWorldDirectorBridge.ResolveVirtualRoadMoveTarget(director, group, x, y, group.targetX, group.targetY, worldAge)
+    local dx = moveX - x
+    local dy = moveY - y
     local dist = math.sqrt(dx * dx + dy * dy)
 
     if dist < 1 then
+        group.preciseX = tonumber(moveX) or x
+        group.preciseY = tonumber(moveY) or y
+        group.x = math.floor(group.preciseX)
+        group.y = math.floor(group.preciseY)
+        if intermediateRoadStep then
+            group.virtualRoadStepX = nil
+            group.virtualRoadStepY = nil
+            group.virtualRoadStepAt = nil
+            group.updatedAt = worldAge
+            return true
+        end
         if group.economyMissionId then
             group.state = "eco_arrived"
             group.updatedAt = worldAge
@@ -7516,22 +11209,38 @@ function NPCWorldDirectorBridge.UpdateVirtualGroup(director, group, worldAge)
             group.updatedAt = worldAge
             return true
         end
+        if group.targetClass == "strike_staging" then
+            group.state = "activity_assemble_strike"
+            group.updatedAt = worldAge
+            return true
+        end
         group.targetX = nil
         group.targetY = nil
         NPCWorldDirectorBridge.EnsureVirtualTarget(director, group)
         return false
     end
 
-    local speed = tonumber(group.speed) or director.VIRTUAL_MOVE_SPEED_TILES_PER_HOUR
+    local baseSpeed = tonumber(director.VIRTUAL_MOVE_SPEED_TILES_PER_HOUR) or 120
+    local speed = tonumber(group.speed) or baseSpeed
+    if speed <= 0 then speed = baseSpeed end
     if NPCWorldDirectorBridge.IsRecruitableBlueMercenaryPatrol(group) then
-        local maxBlueSpeed = tonumber(director.BLUE_MERCENARY_PATROL_MOVE_SPEED) or 34
-        if speed > maxBlueSpeed then speed = maxBlueSpeed end
+        local blueSpeed = tonumber(director.BLUE_MERCENARY_PATROL_MOVE_SPEED) or 22
+        local blueCap = blueSpeed + 12
+        if speed > blueCap then speed = blueCap end
+    else
+        if speed < baseSpeed then speed = baseSpeed end
+        local speedCap = group.roadPatrol and (baseSpeed + 240) or (baseSpeed + 120)
+        if speed > speedCap then speed = speedCap end
     end
     local step = speed * dt
     if step > dist then step = dist end
 
-    group.x = math.floor(group.x + (dx / dist) * step)
-    group.y = math.floor(group.y + (dy / dist) * step)
+    local newX = x + (dx / dist) * step
+    local newY = y + (dy / dist) * step
+    group.preciseX = newX
+    group.preciseY = newY
+    group.x = math.floor(newX)
+    group.y = math.floor(newY)
     group.z = 0
     group.updatedAt = worldAge
     if group.economyMissionId then
@@ -7556,7 +11265,8 @@ function NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker(gmd, groupId, grou
     marker.x = group.x
     marker.y = group.y
     marker.z = group.z or 0
-    marker.name = group.roadPatrol and ((group.hostile and "Red Road Patrol " or "Green Road Patrol ") .. tostring(groupId)) or "NPC Group " .. tostring(groupId)
+    marker.name = NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group, marker.name)
+    marker.displayName = marker.name
     marker.count = group.count
     marker.hostile = group.hostile
     marker.friendly = not group.hostile
@@ -7589,6 +11299,12 @@ function NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker(gmd, groupId, grou
     marker.originBaseId = group.missionOriginBaseId or group.originBaseId
     marker.targetBaseId = group.missionTargetBaseId or group.targetBaseId
     marker.homeBaseId = group.homeBaseId
+    marker.homeBaseOwner = group.homeBaseOwner
+    marker.baseOwnedGlobalSquad = group.baseOwnedGlobalSquad == true
+    marker.baseOwnedRole = group.baseOwnedRole
+    marker.routeOwnerBaseId = group.routeOwnerBaseId
+    marker.baseOwnedRouteReason = group.baseOwnedRouteReason
+    marker.locationRepairProtected = group.locationRepairProtected == true
     marker.strategicPower = group.strategicPower
     marker.combatReadiness = group.combatReadiness
     marker.influenceScore = group.influenceScore
@@ -7605,6 +11321,18 @@ function NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker(gmd, groupId, grou
     marker.strategicActivityLogisticsSupply = group.strategicActivityLogisticsSupply
     marker.strategicActivityLogisticsAmmo = group.strategicActivityLogisticsAmmo
     marker.strategicActivityLogisticsMorale = group.strategicActivityLogisticsMorale
+    marker.strategicActivityType = group.strategicActivityType
+    marker.strategicActivityState = group.strategicActivityState or group.state
+    marker.strategicActivityTargetBaseId = group.strategicActivityTargetBaseId
+    marker.strategicActivityTargetGroupId = group.strategicActivityTargetGroupId
+    marker.strategicPlanKind = group.strategicPlanKind
+    marker.strategicManeuverRole = group.strategicManeuverRole
+    marker.strategicManeuverTargetX = group.strategicManeuverTargetX
+    marker.strategicManeuverTargetY = group.strategicManeuverTargetY
+    marker.strategicManeuverTargetBaseId = group.strategicManeuverTargetBaseId
+    marker.strategicStrikeCommittedGroups = group.strategicStrikeCommittedGroups
+    marker.strategicStrikeRequiredGroups = group.strategicStrikeRequiredGroups
+    marker.strategicStrikeReady = group.strategicStrikeReady
     marker.convoyFaction = group.convoyFaction or group.patrolColor
     marker.leader = group.leader == true or group.isFactionLeader == true or group.leaderId ~= nil
     marker.isFactionLeader = group.isFactionLeader == true or group.leaderId ~= nil
@@ -7621,11 +11349,15 @@ function NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker(gmd, groupId, grou
     marker.strategicActivityTargetBaseId = group.strategicActivityTargetBaseId
     marker.strategicActivityTargetGroupId = group.strategicActivityTargetGroupId
     marker.updatedAt = group.updatedAt
-    return marker
+    return NPCWorldDirectorBridge.ApplyVirtualGroupMapMotionFields(nil, marker, group)
 end
 
 function NPCWorldDirectorBridge.MaintainPersistentStrategicMarkers(director, gmd, worldAge)
     if not (director and director.STRATEGIC_MARKER_PERSISTENCE_ENABLED ~= false and gmd) then return false end
+    if director.SP_BOOTSTRAP_GATE_MARKER_SYNC ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, "strategic_markers")
+        if gate then npc_wd_recordBootstrapGate("strategic_markers", retry, reason); return false end
+    end
     if type(gmd.DebugMapMarkers) ~= "table" then gmd.DebugMapMarkers = {} end
     local changed = false
 
@@ -7725,27 +11457,48 @@ function NPCWorldDirectorBridge.MaintainPersistentStrategicMarkers(director, gmd
         changed = true
     end
 
+    if NPCWorldDirectorBridge.ReconcileDebugMarkers(gmd, "persistent_strategic_markers", 96) > 0 then changed = true end
+
     return changed
 end
 
-function NPCWorldDirectorBridge.UpdateVirtualGroups(director)
+function NPCWorldDirectorBridge.UpdateVirtualGroups(director, opts)
     local gmd = director.EnsureData and director.EnsureData() or nil
     if not (gmd and gmd.VirtualGroups and gmd.DebugMapMarkers) then return false end
+    if director and director.SP_BOOTSTRAP_GATE_VIRTUAL_GROUPS ~= false then
+        local gate, retry, reason = NPCWorldDirectorBridge.ShouldBootstrapGate(director, "virtual_group_update")
+        if gate then NPCWorldDirectorBridge.RecordBootstrapGate("virtual_group_update", retry, reason); return false end
+    end
 
+    opts = type(opts) == "table" and opts or {}
     local worldAge = getGameTime():getWorldAgeHours()
     local changed = false
     local retargetBudget = NPCWorldDirectorBridge.DirectorRetargetBudget(director)
+    if opts.retarget == false then retargetBudget = 0 end
     local retargetedCount = 0
+    local maxGroups = tonumber(opts.maxGroups) or 0
+    local scanned = 0
+    local cursorKey = opts.cursorKey and tostring(opts.cursorKey) or nil
+    local startAfter = opts.startAfter and tostring(opts.startAfter) or nil
+    if not startAfter and cursorKey and gmd.WorldDirector then startAfter = gmd.WorldDirector[cursorKey] and tostring(gmd.WorldDirector[cursorKey]) or nil end
+    local passedStart = startAfter == nil
+    local lastGroupId = nil
 
     for groupId, group in pairs(gmd.VirtualGroups) do
-        if group and not group.activated then
+        groupId = tostring(groupId)
+        if not passedStart then
+            if groupId == startAfter then passedStart = true end
+        elseif group and not group.activated then
+            if maxGroups > 0 and scanned >= maxGroups then break end
+            scanned = scanned + 1
+            lastGroupId = groupId
             local repaired = NPCWorldDirectorBridge.RepairVirtualGroupLocation(director, group)
             local retargeted = false
             if retargetedCount < retargetBudget then
                 retargeted = NPCWorldDirectorBridge.TryDirectorRetargetGroup(director, group, worldAge)
                 if retargeted then retargetedCount = retargetedCount + 1 end
             end
-            local moved = NPCWorldDirectorBridge.UpdateVirtualGroup(director, group, worldAge)
+            local moved = NPCWorldDirectorBridge.UpdateVirtualGroup(director, group, worldAge, opts)
             if repaired or retargeted or moved then
                 gmd.VirtualGroups[groupId] = group
 
@@ -7762,61 +11515,455 @@ function NPCWorldDirectorBridge.UpdateVirtualGroups(director)
         end
     end
 
-    if changed and TransmitNPCModData then
+    if cursorKey and maxGroups > 0 then
+        gmd.WorldDirector = gmd.WorldDirector or {}
+        if scanned < maxGroups then
+            gmd.WorldDirector[cursorKey] = nil
+        else
+            gmd.WorldDirector[cursorKey] = lastGroupId
+        end
+    end
+
+    if changed and TransmitNPCModData and not director._suppressWorldDirectorTransmit then
         TransmitNPCModData()
     end
     return changed
 end
 
+function NPCWorldDirectorBridge.UpdateVirtualMapHeartbeat(director, reason)
+    if director and director.SP_BOOTSTRAP_GATE_MARKER_SYNC ~= false then
+        local gate, retry, qReason = npc_wd_shouldBootstrapGate(director, "virtual_map_heartbeat")
+        if gate then npc_wd_recordBootstrapGate("virtual_map_heartbeat", retry, qReason); return false end
+    end
+    local gmd = director and director.EnsureData and director.EnsureData() or nil
+    if not (gmd and gmd.WorldDirector and gmd.WorldDirector.enabled) then return false end
+    gmd.VirtualGroups = gmd.VirtualGroups or {}
+    gmd.DebugMapMarkers = gmd.DebugMapMarkers or {}
+
+    local changed = false
+
+    -- Force a bounded marker refresh without advancing virtual movement. The
+    -- strategic simulation keeps the original BanditsRemaster movement cadence,
+    -- while the player-facing global map still receives fresh marker payloads.
+    local refreshed = 0
+    local budget = tonumber(director.VIRTUAL_MAP_HEARTBEAT_MARKER_BUDGET) or 36
+    local markerCursor = gmd.WorldDirector.virtualMapHeartbeatMarkerCursor and tostring(gmd.WorldDirector.virtualMapHeartbeatMarkerCursor) or nil
+    local markerPassed = markerCursor == nil
+    local markerLastId = nil
+    for groupId, group in pairs(gmd.VirtualGroups or {}) do
+        groupId = tostring(groupId)
+        if not markerPassed then
+            if groupId == markerCursor then markerPassed = true end
+        elseif refreshed < budget and type(group) == "table" and group.activated ~= true then
+            local marker = NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker and NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker(gmd, groupId, group) or nil
+            if marker and marker.id then
+                marker.heartbeat = true
+                marker.heartbeatReason = tostring(reason or "tick")
+                marker.updatedAt = getGameTime and getGameTime():getWorldAgeHours() or marker.updatedAt
+                gmd.DebugMapMarkers[groupId] = marker
+                NPCWorldDirectorBridge.SendDebugMapUpdate(marker)
+                refreshed = refreshed + 1
+                markerLastId = groupId
+            end
+        end
+        if refreshed >= budget then break end
+    end
+    if markerLastId then
+        gmd.WorldDirector.virtualMapHeartbeatMarkerCursor = markerLastId
+    else
+        gmd.WorldDirector.virtualMapHeartbeatMarkerCursor = nil
+    end
+
+    if refreshed > 0 or changed then
+        gmd.WorldDirector.lastVirtualMapHeartbeat = getGameTime and getGameTime():getWorldAgeHours() or 0
+        if NPCDiagnosticsBridge and NPCDiagnosticsBridge.LogWorld then
+            NPCDiagnosticsBridge.LogWorld("WORLD_SNAPSHOT", "virtual_map_heartbeat", {
+                reason = tostring(reason or "tick"),
+                groups = NPCWorldDirectorBridge.CountTable(gmd.VirtualGroups or {}),
+                markers = NPCWorldDirectorBridge.CountTable(gmd.DebugMapMarkers or {}),
+                refreshed = refreshed,
+                changed = changed == true,
+                cursor = tostring(gmd.WorldDirector.virtualMapHeartbeatCursor or "")
+            }, "world-virtual-map-heartbeat", false)
+        end
+    end
+    return changed or refreshed > 0
+end
+
+
+function NPCWorldDirectorBridge.RefreshVirtualMapForSync(director, reason, maxGroups)
+    if director and director.SP_BOOTSTRAP_GATE_MARKER_SYNC ~= false then
+        local gate, retry, qReason = npc_wd_shouldBootstrapGate(director, "virtual_map_sync")
+        if gate then npc_wd_recordBootstrapGate("virtual_map_sync", retry, qReason); return 0, 0 end
+    end
+    local gmd = director and director.EnsureData and director.EnsureData() or nil
+    if not (gmd and gmd.WorldDirector and gmd.WorldDirector.enabled) then return 0, 0 end
+    gmd.VirtualGroups = gmd.VirtualGroups or {}
+    gmd.DebugMapMarkers = gmd.DebugMapMarkers or {}
+
+    local worldAge = getGameTime and getGameTime():getWorldAgeHours() or 0
+    local limit = tonumber(maxGroups or director.VIRTUAL_MAP_SYNC_GROUP_BUDGET) or 650
+    local scanned = 0
+    local changed = 0
+    local refreshed = 0
+
+    for groupId, group in pairs(gmd.VirtualGroups or {}) do
+        if limit > 0 and scanned >= limit then break end
+        groupId = tostring(groupId)
+        if type(group) == "table" and group.activated ~= true then
+            scanned = scanned + 1
+            if group.preciseX == nil then group.preciseX = tonumber(group.x) or 0 end
+            if group.preciseY == nil then group.preciseY = tonumber(group.y) or 0 end
+
+            local repaired = NPCWorldDirectorBridge.RepairVirtualGroupLocation and NPCWorldDirectorBridge.RepairVirtualGroupLocation(director, group) or false
+            if repaired then
+                changed = changed + 1
+            end
+
+            gmd.VirtualGroups[groupId] = group
+            local marker = NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker and NPCWorldDirectorBridge.BuildVirtualGroupUpdateMarker(gmd, groupId, group) or nil
+            if marker and marker.id then
+                marker.mapSync = true
+                marker.mapSyncReason = tostring(reason or "debug_map_request")
+                marker.updatedAt = worldAge
+                gmd.DebugMapMarkers[groupId] = marker
+                refreshed = refreshed + 1
+            end
+        end
+    end
+
+    if refreshed > 0 then
+        gmd.WorldDirector.lastVirtualMapSyncRefresh = worldAge
+        gmd.WorldDirector.lastVirtualMapSyncReason = tostring(reason or "debug_map_request")
+    end
+    return changed, refreshed
+end
+
 function NPCWorldDirectorBridge.SyncMarkers(director)
+    if director and director.SP_BOOTSTRAP_GATE_MARKER_SYNC ~= false then
+        local gate, retry, reason = npc_wd_shouldBootstrapGate(director, "marker_sync")
+        if gate then npc_wd_recordBootstrapGate("marker_sync", retry, reason); return false end
+    end
     local gmd = director.EnsureData()
+    NPCWorldDirectorBridge.ReconcileDebugMarkers(gmd, "sync_markers", 180)
+    if NPCWorldDirectorBridge.DebugMapDirtySync and type(gmd.DebugMapMarkers) == "table" then
+        local now = npc_wd_nowMs()
+        NPCWorldDirectorBridge.DebugMapDirtySync.sent = NPCWorldDirectorBridge.DebugMapDirtySync.sent or {}
+        for id, marker in pairs(gmd.DebugMapMarkers) do
+            if type(marker) == "table" then
+                NPCWorldDirectorBridge.DebugMapDirtySync.sent[tostring(id)] = {sig=npc_wd_markerSignature(marker), t=now}
+            end
+        end
+    end
     NPCWorldDirectorBridge.SendDebugMap('Sync', {markers = gmd.DebugMapMarkers})
 end
 
-function NPCWorldDirectorBridge.Bootstrap(director)
-    director.RevirtualizePersistedRuntimeState()
+
+-- Stage452/453: runtime-only calendar queue for non-critical world-director work.
+-- It spreads optional maintenance jobs across ticks instead of letting several
+-- heavy periodic tasks collide in the same frame. It does not alter save data,
+-- marker payload formats, mercenary commands, bases, contracts or Black Market.
+NPCWorldDirectorBridge.CalendarQueue = NPCWorldDirectorBridge.CalendarQueue or {tasks={}, tick=-1, ranThisTick=0, stats={ran=0,deferred=0,scheduled=0,disabled=0,quarantined=0}}
+
+local function npc_wd_calendarHash(value)
+    local s = tostring(value or "")
+    local h = 0
+    for i = 1, #s do h = (h * 33 + string.byte(s, i)) % 10007 end
+    return h
+end
+
+local function npc_wd_perfRecord(name, amount)
+    if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+        pcall(function() NPCPerformanceTelemetryBridge.Record(name, amount or 1) end)
+    end
+end
+
+function NPCWorldDirectorBridge.GetCalendarDiagnostics(reset)
+    local q = NPCWorldDirectorBridge.CalendarQueue or {tasks={}, stats={}}
+    local stats = q.stats or {}
+    local out = {ran=tonumber(stats.ran) or 0, deferred=tonumber(stats.deferred) or 0, scheduled=tonumber(stats.scheduled) or 0, disabled=tonumber(stats.disabled) or 0, quarantined=tonumber(stats.quarantined) or 0, tasks=0}
+    for _, _ in pairs(q.tasks or {}) do out.tasks = out.tasks + 1 end
+    out.ranThisTick = tonumber(q.ranThisTick) or 0
+    if reset == true then q.stats = {ran=0,deferred=0,scheduled=0,disabled=0,quarantined=0}; NPCWorldDirectorBridge.CalendarQueue = q end
+    return out
+end
+
+
+local function npc_wd_quarantineRecord(taskName, retryTicks, reason)
+    if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+        pcall(function() NPCPerformanceTelemetryBridge.Record("world_quarantine_deferred", 1) end)
+    end
+    if NPCDiagnosticsBridge and NPCDiagnosticsBridge.Verbose then
+        NPCDiagnosticsBridge.Verbose("WORLD_QUARANTINE", "defer_world_task", {task=tostring(taskName or ""), retryTicks=retryTicks, reason=reason}, "world-quarantine:" .. tostring(taskName or ""))
+    end
+end
+
+local function npc_wd_shouldWorldQuarantine(director, taskName)
+    if not director or director.SP_HARD_STREAMING_QUARANTINE_ENABLED == false then return false end
+    if not npc_wd_isSinglePlayerRuntime() then return false end
+    if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldQuarantineWorldTask then
+        local ok, defer, retryTicks, reason = pcall(function() return NPCStreamingRuntimeBridge.ShouldQuarantineWorldTask(taskName) end)
+        if ok and defer then return true, tonumber(retryTicks) or tonumber(director.WORLD_CALENDAR_DEFER_TICKS) or 9, reason end
+    end
+    return false
+end
+
+npc_wd_shouldBootstrapGate = function(director, taskName)
+    if not director or director.SP_BOOTSTRAP_HARD_GATE_ENABLED == false then return false end
+    if not npc_wd_isSinglePlayerRuntime() then return false end
+    if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldGateWorldBootstrapTask then
+        local ok, gate, retryTicks, reason = pcall(function() return NPCStreamingRuntimeBridge.ShouldGateWorldBootstrapTask(taskName) end)
+        if ok and gate then return true, tonumber(retryTicks) or tonumber(director.SP_QUARANTINE_WORLD_UPDATE_DEFER_TICKS) or 600, reason end
+    end
+    return false
+end
+
+npc_wd_recordBootstrapGate = function(taskName, retryTicks, reason)
+    if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+        pcall(function() NPCPerformanceTelemetryBridge.Record("world_bootstrap_gate_deferred", 1) end)
+    end
+    if NPCDiagnosticsBridge and NPCDiagnosticsBridge.Verbose then
+        NPCDiagnosticsBridge.Verbose("WORLD_QUARANTINE", "gate_bootstrap_task", {task=tostring(taskName or ""), retryTicks=retryTicks, reason=reason}, "world-bootstrap-gate:" .. tostring(taskName or ""))
+    end
+end
+
+function NPCWorldDirectorBridge.ShouldBootstrapGate(director, taskName)
+    if npc_wd_shouldBootstrapGate then return npc_wd_shouldBootstrapGate(director, taskName) end
+    return false
+end
+
+function NPCWorldDirectorBridge.RecordBootstrapGate(taskName, retryTicks, reason)
+    if npc_wd_recordBootstrapGate then return npc_wd_recordBootstrapGate(taskName, retryTicks, reason) end
+end
+
+function NPCWorldDirectorBridge.CalendarDue(director, key, intervalTicks, jitterTicks)
+    if not director then return true end
+    if director.WORLD_CALENDAR_QUEUE_ENABLED == false then
+        local q = NPCWorldDirectorBridge.CalendarQueue or {stats={}}
+        q.stats = q.stats or {}; q.stats.disabled = (tonumber(q.stats.disabled) or 0) + 1; NPCWorldDirectorBridge.CalendarQueue = q
+        return true
+    end
+
+    local tick = tonumber(director._tick) or 0
+    intervalTicks = math.max(1, math.floor(tonumber(intervalTicks) or 1))
+    jitterTicks = math.max(0, math.floor(tonumber(jitterTicks) or tonumber(director.WORLD_CALENDAR_JITTER_TICKS) or 0))
+
+    local q = NPCWorldDirectorBridge.CalendarQueue or {tasks={}, tick=-1, ranThisTick=0, stats={}}
+    q.tasks = q.tasks or {}; q.stats = q.stats or {}
+    if q.tick ~= tick then q.tick = tick; q.ranThisTick = 0 end
+
+    key = tostring(key or "world_task")
+    local task = q.tasks[key]
+    if not task then
+        local offset = jitterTicks > 0 and (npc_wd_calendarHash(key) % math.min(intervalTicks, jitterTicks)) or 0
+        task = {nextAt = tick + intervalTicks + offset, interval = intervalTicks}
+        q.tasks[key] = task
+        q.stats.scheduled = (tonumber(q.stats.scheduled) or 0) + 1
+        NPCWorldDirectorBridge.CalendarQueue = q
+        return false
+    end
+
+    if tick < (tonumber(task.nextAt) or tick) then
+        NPCWorldDirectorBridge.CalendarQueue = q
+        return false
+    end
+
+    local qDefer, qRetry, qReason = npc_wd_shouldWorldQuarantine(director, key)
+    if qDefer then
+        task.nextAt = tick + math.max(1, math.floor(tonumber(qRetry) or tonumber(director.WORLD_CALENDAR_DEFER_TICKS) or 9))
+        q.stats.quarantined = (tonumber(q.stats.quarantined) or 0) + 1
+        NPCWorldDirectorBridge.CalendarQueue = q
+        npc_wd_quarantineRecord(key, qRetry, qReason)
+        return false
+    end
+
+    local maxPerTick = math.max(1, math.floor(tonumber(director.WORLD_CALENDAR_MAX_TASKS_PER_TICK) or 2))
+    if (tonumber(q.ranThisTick) or 0) >= maxPerTick then
+        local deferTicks = math.max(1, math.floor(tonumber(director.WORLD_CALENDAR_DEFER_TICKS) or 7))
+        task.nextAt = tick + deferTicks
+        q.stats.deferred = (tonumber(q.stats.deferred) or 0) + 1
+        NPCWorldDirectorBridge.CalendarQueue = q
+        npc_wd_perfRecord("world_calendar_deferred", 1)
+        return false
+    end
+
+    local spread = jitterTicks > 0 and (npc_wd_calendarHash(key .. ":" .. tostring(tick)) % (jitterTicks + 1)) or 0
+    task.nextAt = tick + intervalTicks + spread
+    task.interval = intervalTicks
+    q.ranThisTick = (tonumber(q.ranThisTick) or 0) + 1
+    q.stats.ran = (tonumber(q.stats.ran) or 0) + 1
+    NPCWorldDirectorBridge.CalendarQueue = q
+    npc_wd_perfRecord("world_calendar_run", 1)
+    return true
+end
+
+local function npc_wd_transmitOnce(director, changed)
+    if not changed then return end
+    if TransmitNPCModData then TransmitNPCModData() end
+end
+
+function NPCWorldDirectorBridge.BoundedBootstrap(director, mode)
     local gmd = director.EnsureData()
     if not gmd.WorldDirector.enabled then return end
 
-    if not gmd.WorldDirector.initialized then
-        local existing = NPCWorldDirectorBridge.CountTable(gmd.VirtualGroups)
-        local target = director.STARTUP_GROUPS
+    mode = tostring(mode or (npc_wd_isSinglePlayerRuntime() and "singleplayer" or "server"))
+    local isSP = mode == "singleplayer"
+    local bootstrapQuarantine = false
+    local bootstrapRetryTicks = 0
+    local bootstrapQuarantineReason = nil
+    if isSP then
+        bootstrapQuarantine, bootstrapRetryTicks, bootstrapQuarantineReason = npc_wd_shouldWorldQuarantine(director, "bootstrap_sync")
+    end
+    local startupTarget = tonumber(director.STARTUP_GROUPS) or 0
+    if gmd.WorldDirector.initialized and startupTarget > 0 and NPCWorldDirectorBridge.CountTable(gmd.VirtualGroups) <= 0 then
+        gmd.WorldDirector.initialized = false
+    end
 
-        for i=existing + 1, target do
-            director.CreateVirtualGroup(true)
+    local worldAge = getGameTime and getGameTime():getWorldAgeHours() or 0
+    local changed = false
+    local revirtDone = true
+    if not director._startupRuntimeRevirtualized then
+        local revirtBudget = isSP and 8 or 12
+        local revirtChanged
+        revirtChanged, revirtDone = NPCWorldDirectorBridge.RevirtualizePersistedRuntimeStateStep(director, revirtBudget)
+        changed = revirtChanged or changed
+    end
+
+    if isSP then
+        local hardGate, hardGateRetry, hardGateReason = npc_wd_shouldBootstrapGate(director, "bootstrap_world_init")
+        if hardGate then
+            gmd.WorldDirector.spBootstrapInProgress = true
+            gmd.WorldDirector.lastUpdate = gmd.WorldDirector.lastUpdate or worldAge
+            npc_wd_recordBootstrapGate("bootstrap_world_init", hardGateRetry, hardGateReason)
+            return
+        end
+    end
+
+    if not gmd.WorldDirector.initialized then
+        director._suppressWorldDirectorTransmit = true
+        local okBootstrap, bootstrapError = pcall(function()
+            local existing = NPCWorldDirectorBridge.CountTable(gmd.VirtualGroups)
+            local target = startupTarget
+            local groupBudget = isSP
+                and npc_wd_spBudget(director.SINGLEPLAYER_BOOTSTRAP_GROUPS_PER_STEP, 4, 1, 24)
+                or npc_wd_spBudget(director.SERVER_BOOTSTRAP_GROUPS_PER_STEP, 6, 1, 32)
+            if isSP and bootstrapQuarantine then
+                groupBudget = math.max(0, math.min(groupBudget, tonumber(director.SP_QUARANTINE_BOOTSTRAP_GROUPS_PER_STEP) or 1))
+            end
+            local created = 0
+            while existing < target and created < groupBudget do
+                if not director.CreateVirtualGroup(true) then break end
+                existing = existing + 1
+                created = created + 1
+                changed = true
+            end
+
+            local patrolBudget = isSP
+                and npc_wd_spBudget(director.SINGLEPLAYER_BOOTSTRAP_ROAD_PATROLS_PER_STEP, 4, 1, 24)
+                or npc_wd_spBudget(director.SERVER_BOOTSTRAP_ROAD_PATROLS_PER_STEP, 4, 1, 32)
+            if isSP and bootstrapQuarantine then
+                patrolBudget = math.max(0, math.min(patrolBudget, tonumber(director.SP_QUARANTINE_BOOTSTRAP_ROAD_PATROLS_PER_STEP) or 0))
+            end
+            if patrolBudget > 0 and director.EnsureRoadPatrols(true, patrolBudget) then changed = true end
+        end)
+        director._suppressWorldDirectorTransmit = nil
+        if not okBootstrap then
+            NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " Bounded bootstrap failed: " .. tostring(bootstrapError))
         end
 
-        director.EnsureRoadPatrols(true)
-        NPCWorldDirectorBridge.UpdateStrategicWar(director, gmd, getGameTime():getWorldAgeHours())
-        NPCWorldDirectorBridge.MaintainPersistentStrategicMarkers(director, gmd, getGameTime():getWorldAgeHours())
+        local groupsReady = NPCWorldDirectorBridge.CountTable(gmd.VirtualGroups) >= startupTarget
+        local redReady = NPCWorldDirectorBridge.GetRoadPatrolCount(director, true) >= (tonumber(director.STARTUP_ROAD_PATROLS_RED) or 0)
+        local greenReady = NPCWorldDirectorBridge.GetRoadPatrolCount(director, false) >= (tonumber(director.STARTUP_ROAD_PATROLS_GREEN) or 0)
+        local encountersReady = NPCWorldDirectorBridge.GetRoadPatrolEncounterCount(director) >= (tonumber(director.STARTUP_ROAD_PATROL_ENCOUNTERS) or 0)
 
-        gmd.WorldDirector.initialized = true
-        gmd.WorldDirector.lastUpdate = getGameTime():getWorldAgeHours()
-        TransmitNPCModData()
-        director.SyncMarkers()
-        NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " Bootstrap completed. Virtual groups=" .. tostring(NPCWorldDirectorBridge.CountTable(gmd.VirtualGroups)))
+        if groupsReady and redReady and greenReady and encountersReady and revirtDone and not bootstrapQuarantine then
+            NPCWorldDirectorBridge.UpdateStrategicWar(director, gmd, worldAge)
+            NPCWorldDirectorBridge.MaintainPersistentStrategicMarkers(director, gmd, worldAge)
+            gmd.WorldDirector.initialized = true
+            gmd.WorldDirector.spBootstrapInProgress = nil
+            gmd.WorldDirector.serverBootstrapInProgress = nil
+            gmd.WorldDirector.lastUpdate = worldAge
+            changed = true
+            NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " Bounded bootstrap completed. Virtual groups=" .. tostring(NPCWorldDirectorBridge.CountTable(gmd.VirtualGroups)))
+            if director.SyncMarkers then director.SyncMarkers() end
+        else
+            if isSP then
+                gmd.WorldDirector.spBootstrapInProgress = true
+            else
+                gmd.WorldDirector.serverBootstrapInProgress = true
+            end
+            gmd.WorldDirector.lastUpdate = gmd.WorldDirector.lastUpdate or worldAge
+        end
     end
+
+    if not (isSP and bootstrapQuarantine) then
+        local syncBudget = isSP
+            and npc_wd_spBudget(director.SINGLEPLAYER_MAP_SYNC_GROUP_BUDGET, 90, 24, 240)
+            or npc_wd_spBudget(director.SERVER_MAP_SYNC_GROUP_BUDGET, 120, 24, 260)
+        local _, refreshed = NPCWorldDirectorBridge.RefreshVirtualMapForSync(director, mode .. "_bootstrap", syncBudget)
+        if tonumber(refreshed) and refreshed > 0 then changed = true end
+
+        npc_wd_transmitOnce(director, changed)
+    else
+        npc_wd_quarantineRecord("bootstrap_sync", bootstrapRetryTicks, bootstrapQuarantineReason)
+    end
+end
+
+function NPCWorldDirectorBridge.SinglePlayerBootstrap(director)
+    return NPCWorldDirectorBridge.BoundedBootstrap(director, "singleplayer")
+end
+
+function NPCWorldDirectorBridge.Bootstrap(director)
+    return NPCWorldDirectorBridge.BoundedBootstrap(director, npc_wd_isSinglePlayerRuntime() and "singleplayer" or "server")
 end
 
 function NPCWorldDirectorBridge.UpdateWorld(director)
     local gmd = director.EnsureData()
     if not gmd.WorldDirector.enabled then return end
 
+    local qWorld, qWorldRetry, qWorldReason = npc_wd_shouldWorldQuarantine(director, "world_update")
+    local hardGateWorld, hardGateWorldRetry, hardGateWorldReason = npc_wd_shouldBootstrapGate(director, "world_update")
+    if hardGateWorld and not qWorld then qWorld, qWorldRetry, qWorldReason = true, hardGateWorldRetry, hardGateWorldReason end
+    if qWorld then
+        npc_wd_quarantineRecord("world_update", qWorldRetry, qWorldReason)
+        if director.EnforceHiredMercenaryFollowLeash then director.EnforceHiredMercenaryFollowLeash("world_update_quarantine") end
+        if director.CleanupDeadPhysicalGroups then director.CleanupDeadPhysicalGroups() end
+        if director.EnforceProxyLODPhysicalCaps then director.EnforceProxyLODPhysicalCaps("world_update_quarantine") end
+        gmd.WorldDirector.lastUpdate = getGameTime():getWorldAgeHours()
+        return
+    end
     director.Bootstrap()
-    director.UpdateVirtualGroups()
+    local updateBudget = npc_wd_isSinglePlayerRuntime()
+        and npc_wd_spBudget(director.SINGLEPLAYER_WORLD_UPDATE_GROUP_BUDGET, 18, 4, 80)
+        or npc_wd_spBudget(director.SERVER_WORLD_UPDATE_GROUP_BUDGET, 36, 8, 140)
+    local updateCursor = npc_wd_isSinglePlayerRuntime() and "spWorldUpdateCursor" or "serverWorldUpdateCursor"
+    NPCWorldDirectorBridge.UpdateVirtualGroups(director, {forceLOD = true, maxGroups = updateBudget, cursorKey = updateCursor})
     director.UpdateRoadPatrolBattles()
     NPCWorldDirectorBridge.UpdateStrategicWar(director, gmd, getGameTime():getWorldAgeHours())
     if NPCInfluenceFieldBridge and NPCInfluenceFieldBridge.UpdateFromWorld then
         NPCInfluenceFieldBridge.UpdateFromWorld(gmd)
     end
-    director.CreateVirtualGroup(false)
-    director.EnsureRoadPatrols(false)
+    director._suppressWorldDirectorTransmit = true
+    local okWorldGrowth, worldGrowthError = pcall(function()
+        director.CreateVirtualGroup(false)
+        director.EnsureRoadPatrols(false, npc_wd_isSinglePlayerRuntime() and 1 or 2)
+    end)
+    director._suppressWorldDirectorTransmit = nil
+    if not okWorldGrowth then
+        NPCWorldDirectorBridge.Log(director, NPC_WORLD_DIRECTOR_LOG_PREFIX .. " World growth tick failed: " .. tostring(worldGrowthError))
+    end
     director.EnforceHiredMercenaryFollowLeash("world_update")
     director.CleanupDeadPhysicalGroups()
     director.EnforceProxyLODPhysicalCaps("world_update")
     director.UpdateBattleRemains()
-    director.ActivateGroupsNearPlayers()
+    NPCWorldDirectorBridge.UpdateUrbanCoverProps(director)
+    if director.BATTLEFIELD_CLEANUP_ENABLED then NPCWorldDirectorBridge.CleanupBattlefieldClutter(director) end
+    if not npc_wd_shouldSkipSPActivationScan("world_update", director._tick or 0) then
+        director.ActivateGroupsNearPlayers()
+    end
     NPCWorldDirectorBridge.MaintainPersistentStrategicMarkers(director, gmd, getGameTime():getWorldAgeHours())
+    NPCWorldDirectorBridge.SnapshotPhysicalBubbleGroups(director, "world_update_physical_bubble")
+    NPCWorldDirectorBridge.CompactStrategicPersistence(director, "world_update_strategic_compact")
 
     gmd.WorldDirector.lastUpdate = getGameTime():getWorldAgeHours()
     TransmitNPCModData()
@@ -7834,7 +11981,31 @@ function NPCWorldDirectorBridge.OnTick(director)
     end
 
     if director._tick == 1 then
-        director.RevirtualizePersistedRuntimeState()
+        NPCWorldDirectorBridge.RevirtualizePersistedRuntimeStateStep(director, npc_wd_isSinglePlayerRuntime() and 6 or 12)
+    end
+
+    local bootstrapInterval = npc_wd_isSinglePlayerRuntime()
+        and math.max(15, tonumber(director.SINGLEPLAYER_BOOTSTRAP_TICK_INTERVAL) or 45)
+        or math.max(20, tonumber(director.SERVER_BOOTSTRAP_TICK_INTERVAL) or 30)
+    if npc_wd_isSinglePlayerRuntime() then
+        local qBoot = npc_wd_shouldWorldQuarantine(director, "bootstrap_sync")
+        if qBoot then
+            bootstrapInterval = math.max(bootstrapInterval, tonumber(director.SP_QUARANTINE_BOOTSTRAP_MIN_INTERVAL_TICKS) or 90)
+        end
+    end
+    local gmdForBootstrap = director.EnsureData and director.EnsureData() or nil
+    if director._tick > 1 and bootstrapInterval > 0 and gmdForBootstrap and gmdForBootstrap.WorldDirector and gmdForBootstrap.WorldDirector.initialized ~= true and director._tick % bootstrapInterval == 0 and not qBoot then
+        director.Bootstrap()
+    elseif qBoot and director._tick % math.max(30, math.min(bootstrapInterval, 180)) == 0 then
+        npc_wd_recordBootstrapGate("bootstrap_tick", bootstrapInterval, "sp_bootstrap_gate")
+    end
+
+    if npc_wd_isSinglePlayerRuntime() then
+        local spActivationInterval = math.max(30, tonumber(director.SINGLEPLAYER_ACTIVATION_TICK_INTERVAL) or 120)
+        local qActivation = npc_wd_shouldWorldQuarantine(director, "activation_scan")
+        if director._tick > 120 and director._tick % spActivationInterval == 0 and not qActivation and not npc_wd_shouldSkipSPActivationScan("sp_tick", director._tick) then
+            director.ActivateGroupsNearPlayers()
+        end
     end
 
     local mercenaryLeashInterval = math.max(30, tonumber(director.MERCENARY_FOLLOW_LEASH_INTERVAL_TICKS) or 75)
@@ -7847,23 +12018,70 @@ function NPCWorldDirectorBridge.OnTick(director)
         director.CleanupDeadPhysicalGroups()
     end
 
-    local proxyInterval = math.max(60, tonumber(director.PROXY_LOD_ENFORCE_INTERVAL_TICKS) or 240)
+    local proxyInterval = math.max(15, tonumber(director.PROXY_LOD_ENFORCE_INTERVAL_TICKS) or 30)
+    local loadLevel = NPCWorldDirectorBridge.PhysicalLoadLevel()
+    if loadLevel >= 3 then
+        proxyInterval = math.min(proxyInterval, 15)
+    elseif loadLevel >= 2 then
+        proxyInterval = math.min(proxyInterval, 30)
+    end
     if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.IsTravelUnloading then
         local ok, active = pcall(function() return NPCStreamingRuntimeBridge.IsTravelUnloading() end)
-        if ok and active then proxyInterval = math.min(proxyInterval, 45) end
+        if ok and active then proxyInterval = math.min(proxyInterval, 15) end
     end
     if director.IsProxyLODEnabled and proxyInterval > 0 and director._tick % proxyInterval == 0 then
         director.EnforceProxyLODPhysicalCaps("tick")
     end
 
     if director._tick == 180 then
-        director.Bootstrap()
-    elseif director._tick % 1200 == 0 then
-        director.UpdateBattleRemains()
-        director.ActivateGroupsNearPlayers()
-        if NPCInfluenceFieldBridge and NPCInfluenceFieldBridge.UpdateFromWorld then
+        local qBoot180, qRetry180, qReason180 = npc_wd_shouldWorldQuarantine(director, "bootstrap_sync")
+        if not qBoot180 then
+            director.Bootstrap()
+        else
+            npc_wd_quarantineRecord("bootstrap_tick_180", qRetry180, qReason180)
+        end
+    else
+        if NPCWorldDirectorBridge.CalendarDue(director, "periodic_battle_remains", 1200, 90) then
+            director.UpdateBattleRemains()
+        end
+        if NPCWorldDirectorBridge.CalendarDue(director, "periodic_activation_scan", 1200, 75) and not npc_wd_shouldSkipSPActivationScan("periodic", director._tick) then
+            director.ActivateGroupsNearPlayers()
+        end
+        if NPCInfluenceFieldBridge and NPCInfluenceFieldBridge.UpdateFromWorld and NPCWorldDirectorBridge.CalendarDue(director, "periodic_influence_world", 1200, 110) then
             NPCInfluenceFieldBridge.UpdateFromWorld(director.EnsureData())
         end
+    end
+
+    local clutterInterval = math.max(300, tonumber(director.BATTLEFIELD_CLEANUP_INTERVAL_TICKS) or 900)
+    if director.BATTLEFIELD_CLEANUP_ENABLED and clutterInterval > 0 and NPCWorldDirectorBridge.CalendarDue(director, "battlefield_clutter", clutterInterval, 97) then
+        NPCWorldDirectorBridge.CleanupBattlefieldClutter(director)
+    end
+
+    local urbanCoverInterval = math.max(300, tonumber(director.URBAN_COVER_PROPS_INTERVAL_TICKS) or 900)
+    if director.URBAN_COVER_PROPS_ENABLED and urbanCoverInterval > 0 and director._tick > 240 and NPCWorldDirectorBridge.CalendarDue(director, "urban_cover_props", urbanCoverInterval, 101) then
+        NPCWorldDirectorBridge.UpdateUrbanCoverProps(director)
+    end
+
+    local bubbleInterval = math.max(120, tonumber(director.PERSISTENCE_PHYSICAL_BUBBLE_INTERVAL_TICKS) or 300)
+    if director.PERSISTENCE_PHYSICAL_BUBBLE_ENABLED ~= false and bubbleInterval > 0 and director._tick > 180 and NPCWorldDirectorBridge.CalendarDue(director, "physical_bubble_snapshot", bubbleInterval, 47) then
+        if NPCWorldDirectorBridge.SnapshotPhysicalBubbleGroups(director, "tick_physical_bubble") > 0 and TransmitNPCModData then
+            TransmitNPCModData()
+        end
+    end
+
+    local compactInterval = math.max(300, tonumber(director.PERSISTENCE_COMPACT_INTERVAL_TICKS) or 900)
+    if director.PERSISTENCE_COMPACT_VIRTUAL_GROUPS ~= false and compactInterval > 0 and director._tick > 240 and NPCWorldDirectorBridge.CalendarDue(director, "strategic_compact", compactInterval, 89) then
+        if NPCWorldDirectorBridge.CompactStrategicPersistence(director, "tick_strategic_compact") > 0 and TransmitNPCModData then
+            TransmitNPCModData()
+        end
+    end
+
+    -- Global-map heartbeat: refreshes marker payloads only. Actual virtual
+    -- group movement keeps the heavier BanditsRemaster-style world-update cadence;
+    -- the client projects marker movement between authoritative updates.
+    local mapHeartbeatInterval = math.max(120, tonumber(director.VIRTUAL_MAP_HEARTBEAT_TICKS) or 240)
+    if director._tick > 120 and mapHeartbeatInterval > 0 and NPCWorldDirectorBridge.CalendarDue(director, "virtual_map_heartbeat", mapHeartbeatInterval, 61) then
+        NPCWorldDirectorBridge.UpdateVirtualMapHeartbeat(director, "tick")
     end
 end
 
@@ -7882,6 +12100,14 @@ function NPCWorldDirectorBridge.InstallRuntimeEvents(director)
 
     Events.OnTick.Add(npc_wd_onTick)
     Events.EveryTenMinutes.Add(npc_wd_everyTenMinutes)
+
+    if Events.OnSave and type(Events.OnSave.Add) == "function" and not director._stage411PersistenceSaveHookInstalled then
+        director._stage411PersistenceSaveHookInstalled = true
+        Events.OnSave.Add(function()
+            local changed = NPCWorldDirectorBridge.FlushStrategicPersistence(director, "on_save")
+            if changed > 0 and TransmitNPCModData then TransmitNPCModData() end
+        end)
+    end
 end
 
 -- NPCWorldDirectorBridge legacy helper aliases for compatibility with old wrappers/extensions.

@@ -21,6 +21,48 @@ local function getTargetPlayer(task)
     return NPCPlayerClient.GetPlayerById(task.targetId or task.eid)
 end
 
+local function resolveAimTarget(task)
+    if not task then return nil end
+    local targetId = task.targetId or task.eid
+    if targetId == nil then return nil end
+
+    if task.targetKind == "player" and NPCPlayerClient and NPCPlayerClient.GetPlayerById then
+        local ok, player = pcall(function() return NPCPlayerClient.GetPlayerById(targetId) end)
+        if ok and player then return player end
+    end
+
+    if NPCZombieCacheBridge and NPCZombieCacheBridge.Cache then
+        local target = NPCZombieCacheBridge.Cache[targetId] or NPCZombieCacheBridge.Cache[tostring(targetId)]
+        if target then return target end
+    end
+
+    if task.targetKind ~= "player" and NPCPlayerClient and NPCPlayerClient.GetPlayerById then
+        local ok, player = pcall(function() return NPCPlayerClient.GetPlayerById(targetId) end)
+        if ok and player then return player end
+    end
+
+    return nil
+end
+
+local function refreshAimTarget(character, task)
+    if not (task and (task.targetId or task.eid)) then return true end
+    local target = resolveAimTarget(task)
+    if not target then return false end
+    if target.isAlive then
+        local okAlive, alive = pcall(function() return target:isAlive() end)
+        if okAlive and alive == false then return false end
+    end
+    if character and target.getZ and character.getZ and math.floor(tonumber(character:getZ()) or 0) ~= math.floor(tonumber(target:getZ()) or 0) then
+        return false
+    end
+    if target.getX and target.getY then
+        task.x = target:getX()
+        task.y = target:getY()
+        task.z = target.getZ and target:getZ() or task.z
+    end
+    return true
+end
+
 local function canAimAtTarget(character, task)
     local player = getTargetPlayer(task)
     if not player then return true end
@@ -45,6 +87,7 @@ function NPCActionAimBridge.OnStart(character, task)
 end
 
 function NPCActionAimBridge.OnWorking(character, task)
+    if not refreshAimTarget(character, task) then return true end
     if not canAimAtTarget(character, task) then return true end
     if NPCEntity and NPCEntity.SetAim then
         pcall(function() NPCEntity.SetAim(character, true) end)
@@ -56,6 +99,7 @@ function NPCActionAimBridge.OnWorking(character, task)
 end
 
 function NPCActionAimBridge.OnComplete(character, task)
+    refreshAimTarget(character, task)
     if canAimAtTarget(character, task) and NPCEntity and NPCEntity.SetAim then
         pcall(function() NPCEntity.SetAim(character, true) end)
     end

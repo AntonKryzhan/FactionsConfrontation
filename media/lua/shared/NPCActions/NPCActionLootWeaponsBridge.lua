@@ -1,5 +1,6 @@
 NPCActionLootWeaponsBridge = NPCActionLootWeaponsBridge or {}
 require "NPCCore/NPCLegacyGlobalsBridge"
+require "NPCCore/NPCPersistentNPCBridge"
 
 local NPC_ACTION_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
 NPCEntity = NPCEntity or NPC_ACTION_LEGACY_GLOBALS.Get("Entity")
@@ -50,7 +51,31 @@ local function zaLootWeaponsApply(zombie, task)
     if NPCBrainData and NPCBrainData.Get and NPCEntity.ForceSyncPart then
         local brain = NPCBrainData.Get(zombie)
         if brain and brain.id then
-            NPCEntity.ForceSyncPart(zombie, {id=brain.id, weapons=weapons})
+            local payload = {id=brain.id, weapons=weapons}
+            if NPCPersistentNPCBridge then
+                if NPCPersistentNPCBridge.BuildInventoryLite then
+                    local okInventory, inventoryLite = pcall(function() return NPCPersistentNPCBridge.BuildInventoryLite(zombie) end)
+                    if okInventory then
+                        brain.inventoryLite = inventoryLite
+                        payload.inventoryLite = inventoryLite
+                    end
+                end
+                if NPCPersistentNPCBridge.BuildAmmoLite then
+                    local okAmmo, ammo = pcall(function() return NPCPersistentNPCBridge.BuildAmmoLite(zombie, brain) end)
+                    if okAmmo then
+                        brain.ammo = ammo
+                        payload.ammo = ammo
+                    end
+                end
+                if NPCPersistentNPCBridge.BuildCurrentWeapon then
+                    local okWeapon, currentWeapon = pcall(function() return NPCPersistentNPCBridge.BuildCurrentWeapon(zombie) end)
+                    if okWeapon then
+                        brain.currentWeapon = currentWeapon
+                        payload.currentWeapon = currentWeapon
+                    end
+                end
+            end
+            NPCEntity.ForceSyncPart(zombie, payload)
         end
     end
 end

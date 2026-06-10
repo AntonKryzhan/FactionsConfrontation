@@ -71,6 +71,8 @@ local function bcc_contractText(contract)
         return bcc_text("Menu_ActiveDeliver") .. " " .. tostring(contract.deliveredAmount or 0) .. "/" .. tostring(contract.requiredAmount or 0) .. " " .. bcc_resourceLabel(contract.resource, contract.resourceLabel) .. " " .. bcc_text("Menu_To") .. " " .. tostring(contract.baseName or bcc_text("Menu_BaseLower"))
     elseif contract.type == "recon" then
         return bcc_text("Menu_ActiveScout") .. " " .. tostring(contract.targetKind or bcc_text("Menu_Target")) .. " " .. bcc_text("Menu_Near") .. " " .. tostring(contract.x or "?") .. ", " .. tostring(contract.y or "?")
+    elseif contract.type == "recover" then
+        return bcc_text("Menu_ActiveRecover") .. " " .. tostring(contract.targetKind or bcc_text("Menu_Target")) .. " " .. bcc_text("Menu_Near") .. " " .. tostring(contract.x or "?") .. ", " .. tostring(contract.y or "?")
     end
     return tostring(contract.text or contract.title or bcc_text("Menu_ActiveContract"))
 end
@@ -79,6 +81,13 @@ local function bcc_canCompleteRecon(contract, player)
     if not contract or contract.type ~= "recon" or not player then return false end
     if not player.getX or not player.getY then return false end
     local radius = tonumber(contract.completeRadius) or 28
+    return bcc_dist(player:getX(), player:getY(), contract.x, contract.y) <= radius + 4
+end
+
+local function bcc_canCompleteRecover(contract, player)
+    if not contract or contract.type ~= "recover" or not player then return false end
+    if not player.getX or not player.getY then return false end
+    local radius = tonumber(contract.completeRadius) or 18
     return bcc_dist(player:getX(), player:getY(), contract.x, contract.y) <= radius + 4
 end
 
@@ -108,6 +117,8 @@ function NPCContractsClientBridge.OnFillWorldObjectContextMenu(playerNum, contex
     local active = NPCContractsClientBridge.active
     if active and active.status == "active" and bcc_canCompleteRecon(active, player) then
         context:addOption(bcc_text("Menu_CompleteReconContract"), player, NPCContractsClientBridge.CompleteContract)
+    elseif active and active.status == "active" and bcc_canCompleteRecover(active, player) then
+        context:addOption(bcc_text("Menu_RecoverContractObjective"), player, NPCContractsClientBridge.CompleteContract)
     end
 
     local base = bcc_nearBase()
@@ -130,12 +141,15 @@ function NPCContractsClientBridge.OnFillWorldObjectContextMenu(playerNum, contex
         menu:addOption(bcc_contractText(active), player, function() bcc_halo(bcc_contractText(active), 180, 230, 255) end)
         if active.type == "recon" and bcc_canCompleteRecon(active, player) then
             menu:addOption(bcc_text("Menu_CompleteReconContract"), player, NPCContractsClientBridge.CompleteContract)
+        elseif active.type == "recover" and bcc_canCompleteRecover(active, player) then
+            menu:addOption(bcc_text("Menu_RecoverContractObjective"), player, NPCContractsClientBridge.CompleteContract)
         end
         menu:addOption(bcc_text("Menu_AbandonContract"), player, NPCContractsClientBridge.AbandonContract)
     else
         menu:addOption(bcc_text("Menu_RequestAvailableContract"), player, NPCContractsClientBridge.RequestContract, base, "auto")
         menu:addOption(bcc_text("Menu_RequestSupplyContract"), player, NPCContractsClientBridge.RequestContract, base, "supply")
         menu:addOption(bcc_text("Menu_RequestReconContract"), player, NPCContractsClientBridge.RequestContract, base, "recon")
+        menu:addOption(bcc_text("Menu_RequestRecoverContract"), player, NPCContractsClientBridge.RequestContract, base, "recover")
     end
 end
 
@@ -164,5 +178,9 @@ function NPCContractsClientBridge.Install()
     NPCContractsClientBridge._installed = true
     Events.OnFillWorldObjectContextMenu.Add(NPCContractsClientBridge.OnFillWorldObjectContextMenu)
     Events.OnServerCommand.Add(NPCContractsClientBridge.OnServerCommand)
-    Events.OnTick.Add(bcc_onTick)
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.RegisterTickJob then
+        NPCWorkSchedulerBridge.RegisterTickJob("NPCContractsClientBridge.SyncBootstrap", bcc_onTick, "ui", 30, 1)
+    elseif Events and Events.OnTick then
+        Events.OnTick.Add(bcc_onTick)
+    end
 end

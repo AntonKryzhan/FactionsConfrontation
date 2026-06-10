@@ -8,7 +8,7 @@
 -- comes close enough to an already existing group.
 --
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 NPCWorldDirector = NPCWorldDirector or {}
 
@@ -180,8 +180,8 @@ function NPCWorldDirector.CreateRoadPatrolEncounterPair(force)
     return NPCWorldDirectorBridge.CreateRoadPatrolEncounterPair(NPCWorldDirector, force)
 end
 
-function NPCWorldDirector.EnsureRoadPatrols(force)
-    return NPCWorldDirectorBridge.EnsureRoadPatrols(NPCWorldDirector, force)
+function NPCWorldDirector.EnsureRoadPatrols(force, budget)
+    return NPCWorldDirectorBridge.EnsureRoadPatrols(NPCWorldDirector, force, budget)
 end
 
 function NPCWorldDirector.CreateVirtualGroup(force)
@@ -352,8 +352,8 @@ function NPCWorldDirector.UpdateVirtualGroup(group, worldAge)
     return NPCWorldDirectorBridge.UpdateVirtualGroup(NPCWorldDirector, group, worldAge)
 end
 
-function NPCWorldDirector.UpdateVirtualGroups()
-    return NPCWorldDirectorBridge.UpdateVirtualGroups(NPCWorldDirector)
+function NPCWorldDirector.UpdateVirtualGroups(options)
+    return NPCWorldDirectorBridge.UpdateVirtualGroups(NPCWorldDirector, options)
 end
 
 function NPCWorldDirector.AreRoadPatrolEnemies(a, b)

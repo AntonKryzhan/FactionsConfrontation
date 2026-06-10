@@ -6,6 +6,7 @@ NPCLeadersBridge = NPCLeadersBridge or {}
 NPCLeadersBridge.Version = 1
 
 require "NPCCore/NPCWeaponsBridge"
+pcall(require, "NPCCore/NPCNamesBridge")
 
 local BL_SIDES = {"red", "green", "blue"}
 
@@ -111,6 +112,30 @@ function NPCLeadersBridge.RadioWeight()
     return bl_num("Leader_RadioWeight", 3, 0, 20)
 end
 
+function NPCLeadersBridge.PhysicalLeadersEnabled()
+    return bl_bool("Leader_PhysicalEnabled", true)
+end
+
+function NPCLeadersBridge.PhysicalSpawnDistance()
+    return bl_num("Leader_PhysicalSpawnDistance", 120, 24, 360)
+end
+
+function NPCLeadersBridge.PhysicalGuardMin()
+    return math.floor(bl_num("Leader_PhysicalGuardMin", 2, 0, 12))
+end
+
+function NPCLeadersBridge.PhysicalGuardMax()
+    return math.floor(bl_num("Leader_PhysicalGuardMax", 4, 0, 16))
+end
+
+function NPCLeadersBridge.PhysicalMaxMaterializePerTick()
+    return math.floor(bl_num("Leader_PhysicalMaxMaterializePerTick", 1, 0, 6))
+end
+
+function NPCLeadersBridge.PhysicalRetryHours()
+    return bl_num("Leader_PhysicalRetryHours", 0.35, 0.05, 24)
+end
+
 function NPCLeadersBridge.NowHours()
     return bl_now()
 end
@@ -210,10 +235,61 @@ function NPCLeadersBridge.MakeLeaderMarkerIfVisible(gmd, leader)
     return marker
 end
 
+local function bl_leaderNameHash(value)
+    local text = tostring(value or "")
+    local h = 0
+    for i=1, #text do
+        h = (h + string.byte(text, i) * i) % 7919
+    end
+    return h
+end
+
+local function bl_isTechnicalLeaderName(name)
+    local text = tostring(name or "")
+    if text == "" then return true end
+    if string.match(text, "base_commander_%d+") or string.match(text, "squad_leader_%d+") then return true end
+    if string.match(text, "^%s*%w+%s+Commander%s+") or string.match(text, "^%s*%w+%s+Leader%s+") then return true end
+    if string.match(text, "^%s*Commander%s+") or string.match(text, "^%s*Leader%s+") then return true end
+    return false
+end
+
+local function bl_generatedHumanName(side, kind, id)
+    local seed = bl_leaderNameHash(tostring(side or "") .. ":" .. tostring(kind or "") .. ":" .. tostring(id or ""))
+    local female = (seed % 5) == 0
+    if NPCNamesBridge and NPCNamesBridge.GenerateName then
+        local ok, name = pcall(function() return NPCNamesBridge.GenerateName(female) end)
+        if ok and name and tostring(name) ~= "" then return tostring(name) end
+    end
+    local firstMale = {"Caleb", "Dane", "Griffin", "Harlan", "Miles", "Reed", "Wade", "Walker"}
+    local firstFemale = {"Ada", "Adeline", "Cassidy", "Eliza", "Iris", "Paige", "Sienna", "Vera"}
+    local surnames = {"Alden", "Blackwell", "Carver", "Drake", "Graves", "Hawthorne", "Mercer", "Stone"}
+    local firstPool = female and firstFemale or firstMale
+    return firstPool[(seed % #firstPool) + 1] .. " " .. surnames[(math.floor(seed / 7) % #surnames) + 1]
+end
+
 local function bl_name(side, kind, id)
-    local title = kind == "base_commander" and "Commander" or "Leader"
-    local sideName = bl_sideLabel(side)
-    return sideName .. " " .. title .. " " .. tostring(id or "")
+    return bl_generatedHumanName(side, kind, id)
+end
+
+function NPCLeadersBridge.IsTechnicalLeaderName(name)
+    return bl_isTechnicalLeaderName(name)
+end
+
+function NPCLeadersBridge.EnsureLeaderHumanName(leader)
+    if type(leader) ~= "table" then return false end
+    if not bl_isTechnicalLeaderName(leader.name) then
+        leader.fullname = leader.fullname or leader.name
+        leader.displayName = leader.displayName or leader.name
+        return false
+    end
+    local oldName = leader.name
+    leader.name = bl_generatedHumanName(leader.side or leader.factionSide, leader.kind, leader.id)
+    leader.fullname = leader.name
+    leader.displayName = leader.name
+    leader.technicalNameReplaced = oldName
+    leader.nameRepairedAt = bl_now()
+    leader.updatedAt = leader.nameRepairedAt
+    return true
 end
 
 local function bl_title(kind)
@@ -378,13 +454,16 @@ function NPCLeadersBridge.MakeLeader(gmd, kind, side, x, y, z, ownerId, ownerNam
     side = bl_side(side)
     if not data or not side then return nil end
     local id = bl_nextId(data, kind)
+    local generatedName = bl_name(side, kind, id)
     local leader = {
         id = id,
         kind = tostring(kind or "leader"),
         side = side,
         factionSide = side,
         title = bl_title(kind),
-        name = bl_name(side, kind, id),
+        name = generatedName,
+        fullname = generatedName,
+        displayName = generatedName,
         x = math.floor(tonumber(x) or 0),
         y = math.floor(tonumber(y) or 0),
         z = tonumber(z) or 0,
@@ -436,6 +515,7 @@ function NPCLeadersBridge.EnsureBaseCommander(gmd, base)
         existing.ownerId = tostring(base.id)
         existing.ownerName = base.name
         existing.updatedAt = bl_now()
+        NPCLeadersBridge.EnsureLeaderHumanName(existing)
         data.byBase[tostring(base.id)] = existing.id
         NPCLeadersBridge.ApplyBaseFields(base, existing)
         return existing
@@ -452,6 +532,7 @@ function NPCLeadersBridge.EnsureBaseCommander(gmd, base)
     local leader = NPCLeadersBridge.MakeLeader(gmd, "base_commander", side, base.x, base.y, base.z or 0, tostring(base.id), base.name)
     if not leader then return nil end
     leader.baseId = tostring(base.id)
+    NPCLeadersBridge.EnsureLeaderHumanName(leader)
     data.byBase[tostring(base.id)] = leader.id
     if data.stats then
         data.stats.bases = (tonumber(data.stats.bases) or 0) + 1
@@ -463,6 +544,7 @@ end
 
 function NPCLeadersBridge.MarkBrainAsLeader(brain, leader)
     if not (brain and leader) then return brain end
+    NPCLeadersBridge.EnsureLeaderHumanName(leader)
     brain.leader = true
     brain.isFactionLeader = true
     brain.leaderId = leader.id
@@ -490,6 +572,7 @@ function NPCLeadersBridge.EnsureGroupLeader(gmd, group, groupId)
         leader = NPCLeadersBridge.MakeLeader(gmd, "squad_leader", side, group.x, group.y, group.z or 0, groupId, group.name)
         if not leader then return nil end
         leader.groupId = groupId
+        NPCLeadersBridge.EnsureLeaderHumanName(leader)
         data.byGroup[groupId] = leader.id
         if data.stats then data.stats.groups = (tonumber(data.stats.groups) or 0) + 1 end
     end
@@ -500,6 +583,7 @@ function NPCLeadersBridge.EnsureGroupLeader(gmd, group, groupId)
     leader.side = side
     leader.factionSide = side
     leader.updatedAt = bl_now()
+    NPCLeadersBridge.EnsureLeaderHumanName(leader)
 
     group.leader = true
     group.leaderId = leader.id

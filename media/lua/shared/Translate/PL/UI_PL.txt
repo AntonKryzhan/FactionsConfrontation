@@ -1,0 +1,7 @@
+UI_PL = {
+    /***** Factions Confrontation localization: Polish *****/
+
+    UI_optionscreen_binding_FactionsConfrontation = "Factions Confrontation",
+    UI_optionscreen_binding_POSTS = "Zarządzaj posterunkami",
+
+}

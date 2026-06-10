@@ -2,12 +2,18 @@
 -- Compatibility backend for media/lua/shared/brain-director bridge.lua.
 
 require "NPCCore/NPCLegacyContractBridge"
+require "NPCBehavior/NPCIntentArbiterBridge"
+require "NPCBehavior/NPCLivingWorldIntentBridge"
+require "NPCCore/NPCWorldRoutineBridge"
+require "NPCCore/NPCLootTargetCacheBridge"
+require "NPCCore/NPCPostCombatLootBridge"
+pcall(require, "NPCCore/NPCSpatialIndexBridge")
 
 NPCBrainDirectorBridge = NPCBrainDirectorBridge or {}
 local NPC_BRAIN_DIRECTOR_LEGACY_KEYS = {
     programNPC = NPCLegacyContractBridge.Key("FLAG")
 }
-NPCBrainDirectorBridge.Version = 1
+NPCBrainDirectorBridge.Version = 452
 
 function NPCBrainDirectorBridge.CreateDefaultStates()
     return {
@@ -59,14 +65,17 @@ function NPCBrainDirectorBridge.CreateDefaultConfig()
         keepDistance = 4.0,
         searchRadius = 12.0,
         tacticalRadioSearchRadius = 46.0,
-        humanizedSearchPause = 65
+        humanizedSearchPause = 65,
+        meleeApproachCooldownMs = 1500,
+        meleeApproachSameTargetMs = 2400,
+        meleeApproachMaxDist = 6.5
     }
 end
 
 function NPCBrainDirectorBridge.ApplyDefaults(director)
     if not director then return end
 
-    director.VERSION = "2026-05-03-base-zone-duty"
+    director.VERSION = "2026-05-31-stage311-single-arbiter-cache"
     director.States = director.States or NPCBrainDirectorBridge.CreateDefaultStates()
     director.Config = director.Config or NPCBrainDirectorBridge.CreateDefaultConfig()
 
@@ -95,6 +104,64 @@ end
 
 function NPCBrainDirectorBridge.Dist(x1, y1, x2, y2)
     return math.sqrt(NPCBrainDirectorBridge.Dist2(x1, y1, x2, y2))
+end
+
+function NPCBrainDirectorBridge.GetStrictOrderName(brain)
+    if not (brain and NPCOrderContract and NPCOrderContract.GetStrictOrderName) then return nil end
+    local ok, name = pcall(function() return NPCOrderContract.GetStrictOrderName(brain) end)
+    if ok then return name end
+    return nil
+end
+
+function NPCBrainDirectorBridge.GetStrictLeash(brain, kind, fallback)
+    if NPCOrderContract and NPCOrderContract.GetStrictLeash then
+        local ok, leash = pcall(function() return NPCOrderContract.GetStrictLeash(brain, kind) end)
+        if ok and tonumber(leash) then return tonumber(leash) end
+    end
+    return fallback
+end
+
+function NPCBrainDirectorBridge.StrictStateForOrder(director, brain, strictOrderName)
+    if not director or not strictOrderName then return nil end
+    if strictOrderName == "Follow" or strictOrderName == "FallBack" or strictOrderName == "Return" then
+        return director.States.FollowPlayer
+    end
+    if strictOrderName == "Hold" then return director.States.HoldPosition end
+    if strictOrderName == "Guard" then
+        if brain and brain.master then return director.States.GuardPlayer end
+        return director.States.GuardArea
+    end
+    return nil
+end
+
+function NPCBrainDirectorBridge.PlayerCommandStateForOrder(director, brain, orderName)
+    if not director then return nil end
+    orderName = NPCOrderContract and NPCOrderContract.NormalizeOrderName and NPCOrderContract.NormalizeOrderName(orderName) or tostring(orderName or "")
+    if orderName == "Follow" or orderName == "FallBack" then return director.States.FollowPlayer end
+    if orderName == "Hold" then return director.States.HoldPosition end
+    if orderName == "Guard" then
+        if brain and brain.master then return director.States.GuardPlayer end
+        return director.States.GuardArea
+    end
+    if orderName == "Patrol" then return director.States.PatrolArea end
+    if orderName == "Loot" or orderName == "LootHouse" or orderName == "LootBodies" or orderName == "LootBodiesGear" or orderName == "LootBodiesClothing" or orderName == "LootBodiesWeapons" or orderName == "LootBodiesAmmo" or orderName == "LootBodiesMedical" or orderName == "LootBodiesSupplies" or orderName == "RearmHere" then return director.States.LootArea end
+    if orderName == "Return" then return director.States.HoldPosition end
+    return nil
+end
+
+function NPCBrainDirectorBridge.GetPlayerCommandOrderName(brain)
+    if not (brain and NPCOrderContract and NPCOrderContract.IsPlayerCommandedOrderActive and NPCOrderContract.Get) then return nil end
+    local ok, active = pcall(function() return NPCOrderContract.IsPlayerCommandedOrderActive(brain) end)
+    if not ok or active ~= true then return nil end
+    local okOrder, order = pcall(function() return NPCOrderContract.Get(brain) end)
+    if not okOrder or type(order) ~= "table" then return nil end
+    return NPCOrderContract.NormalizeOrderName(order.name)
+end
+
+function NPCBrainDirectorBridge.IsStrictCloseDefenseThreat(threat)
+    if not threat then return false end
+    local dist = tonumber(threat.dist)
+    return dist ~= nil and dist <= 1.35
 end
 
 function NPCBrainDirectorBridge.GetBrain(chr)
@@ -396,11 +463,68 @@ function NPCBrainDirectorBridge.OffsetPoint(x, y, z, radius, seed)
     return x, y, z
 end
 
+function NPCBrainDirectorBridge.GetStrictOrderSequence(brain)
+    local order = brain and brain.order or nil
+    if type(order) == "table" and tonumber(order.sequence) then return tonumber(order.sequence) end
+    if brain and brain.ai and tonumber(brain.ai.orderSequence) then return tonumber(brain.ai.orderSequence) end
+    return 0
+end
+
+function NPCBrainDirectorBridge.StabilizeStrictSlot(brain, key, anchorX, anchorY, anchorZ, targetX, targetY, targetZ, opts)
+    if not (brain and key and targetX and targetY) then return targetX, targetY, targetZ end
+
+    brain.ai = brain.ai or {}
+    brain.ai.strictOrderSlots = brain.ai.strictOrderSlots or {}
+    local slots = brain.ai.strictOrderSlots
+    local now = NPCBrainDirectorBridge.Now()
+    local seq = NPCBrainDirectorBridge.GetStrictOrderSequence(brain)
+    opts = opts or {}
+
+    local anchorDelta = tonumber(opts.anchorDelta) or 0.75
+    local targetDelta = tonumber(opts.targetDelta) or 0.95
+    local maxAgeMs = tonumber(opts.maxAgeMs) or 1800
+    local zDelta = tonumber(opts.zDelta) or 0.35
+    local slot = slots[key]
+
+    if slot and slot.seq == seq and slot.x and slot.y then
+        local anchorMoved = false
+        if anchorX and anchorY and slot.ax and slot.ay then
+            anchorMoved = NPCBrainDirectorBridge.Dist2(anchorX, anchorY, slot.ax, slot.ay) > anchorDelta * anchorDelta
+            if anchorZ and slot.az then
+                anchorMoved = anchorMoved or math.abs((tonumber(anchorZ) or 0) - (tonumber(slot.az) or 0)) > zDelta
+            end
+        end
+
+        local targetMoved = NPCBrainDirectorBridge.Dist2(targetX, targetY, slot.x, slot.y) > targetDelta * targetDelta
+        local expired = now > 0 and tonumber(slot.at) and maxAgeMs > 0 and (now - tonumber(slot.at)) > maxAgeMs
+        if not anchorMoved and not targetMoved and not expired then
+            return slot.x, slot.y, slot.z or targetZ
+        end
+    end
+
+    slots[key] = {
+        seq = seq,
+        x = targetX,
+        y = targetY,
+        z = targetZ,
+        ax = anchorX,
+        ay = anchorY,
+        az = anchorZ,
+        at = now
+    }
+    return targetX, targetY, targetZ
+end
+
 function NPCBrainDirectorBridge.FollowFormationPoint(player, brain, bandit)
     local order = brain and brain.order or nil
-    if NPCFormationSlotsBridge and NPCFormationSlotsBridge.GetSlotPoint then
+    if NPCFormationSlotsBridge and (NPCFormationSlotsBridge.GetPlayerFollowSlotPoint or NPCFormationSlotsBridge.GetSlotPoint) then
         local okSlot, sx, sy, sz = pcall(function()
-            return NPCFormationSlotsBridge.GetSlotPoint(player, brain, bandit, type(order) == "table" and order.formation or "close", type(order) == "table" and order.followDistance or 3.0)
+            local formation = type(order) == "table" and order.formation or "close"
+            local followDistance = type(order) == "table" and order.followDistance or 3.0
+            if NPCFormationSlotsBridge.GetPlayerFollowSlotPoint and brain and (brain.mercenaryHired == true or brain.relationshipToPlayer == "hired_bodyguard" or brain.factionState == "hired_blue_bodyguard") then
+                return NPCFormationSlotsBridge.GetPlayerFollowSlotPoint(player, brain, bandit, formation, followDistance)
+            end
+            return NPCFormationSlotsBridge.GetSlotPoint(player, brain, bandit, formation, followDistance)
         end)
         if okSlot and sx and sy then
             local fx, fy, fz = NPCBrainDirectorBridge.FindFreeAround(sx, sy, sz or player:getZ(), 4, bandit)
@@ -413,7 +537,17 @@ function NPCBrainDirectorBridge.FollowFormationPoint(player, brain, bandit)
     end
 
     local formation = tostring(order.formation or "close")
-    local idx = tonumber(brain.memberIndex) or tonumber(brain.id) or (NPCUtils.GetCharacterID(bandit) or ZombRand(999))
+    local rawIdx = brain and (brain.memberIndex or brain.slotIndex or brain.formationIndex or brain.id or brain.uid or brain.runtimeId) or nil
+    local idx = tonumber(rawIdx)
+    if not idx and type(rawIdx) == "string" then idx = tonumber(rawIdx:match("(%d+)%s*$")) end
+    if not idx and NPCUtils and NPCUtils.GetCharacterID then
+        local ok, rawId = pcall(function() return NPCUtils.GetCharacterID(bandit) end)
+        if ok then
+            idx = tonumber(rawId)
+            if not idx and type(rawId) == "string" then idx = tonumber(rawId:match("(%d+)%s*$")) end
+        end
+    end
+    idx = math.max(1, math.abs(tonumber(idx) or ZombRand(999) or 1))
     local distance = tonumber(order.followDistance) or 3.0
     local row = math.floor((idx - 1) / 2) + 1
     local side = ((idx % 2) == 0) and 1 or -1
@@ -451,21 +585,85 @@ function NPCBrainDirectorBridge.FollowFormationPoint(player, brain, bandit)
 end
 
 
+local function nbd_nowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and tonumber(value) then return tonumber(value) end
+    end
+    if getGameTime then
+        local ok, value = pcall(function() return getGameTime():getWorldAgeHours() end)
+        if ok and tonumber(value) then return math.floor((tonumber(value) or 0) * 3600000) end
+    end
+    return 0
+end
+
+local function nbd_threatAlive(threat)
+    if not threat then return true end
+    local target = threat.target
+    if not target or not target.isAlive then return true end
+    local ok, alive = pcall(function() return target:isAlive() end)
+    return (not ok) or alive ~= false
+end
+
+local function nbd_cachedThreat(brain, maxDist)
+    local cache = type(brain) == "table" and brain._threatCache or nil
+    if type(cache) ~= "table" then return nil, false end
+    local now = nbd_nowMs()
+    local ttl = 360
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.GetLoadState then
+        local okLoad, load = pcall(function() return NPCWorkSchedulerBridge.GetLoadState(false) end)
+        local level = okLoad and load and tonumber(load.level) or 0
+        if level >= 3 then
+            ttl = 780
+        elseif level >= 2 then
+            ttl = 560
+        elseif level >= 1 then
+            ttl = 440
+        end
+    end
+    if now <= 0 or now - (tonumber(cache.ms) or 0) > ttl then return nil, false end
+    if cache.maxDist and maxDist and tonumber(cache.maxDist) and tonumber(cache.maxDist) + 0.1 < tonumber(maxDist) then return nil, false end
+    if not nbd_threatAlive(cache.threat) then return nil, false end
+    return cache.threat, true
+end
+
+local function nbd_storeThreatCache(brain, maxDist, threat)
+    if type(brain) ~= "table" then return threat end
+    brain._threatCache = {ms = nbd_nowMs(), maxDist = maxDist, threat = threat}
+    return threat
+end
+
 function NPCBrainDirectorBridge.FindNearestThreat(bandit, brain, maxDist, tacticalRadioSearchRadius)
-    if NPCOrderContract and NPCOrderContract.CanAggro and not NPCOrderContract.CanAggro(brain) then return nil end
+    maxDist = maxDist or 28
+    if NPCOrderContract and NPCOrderContract.CanAggro and not NPCOrderContract.CanAggro(brain) then
+        if type(brain) == "table" then brain._threatCache = nil end
+        return nil
+    end
+
+    local cached, hasCached = nbd_cachedThreat(brain, maxDist)
+    if hasCached then return cached end
+
     if NPCAIVisionBridge and NPCAIVisionBridge.FindNearestThreat then
         local ok, threat = pcall(function()
-            return NPCAIVisionBridge.FindNearestThreat(bandit, brain, maxDist or 28, true)
+            return NPCAIVisionBridge.FindNearestThreat(bandit, brain, maxDist, true)
         end)
 
-        if ok and threat then
-            return threat
+        if ok then
+            if threat then
+                return nbd_storeThreatCache(brain, maxDist, threat)
+            end
+            if NPCTacticalRadioBridge and NPCTacticalRadioBridge.GetSharedThreat then
+                local okRadio, radioThreat = pcall(function()
+                    return NPCTacticalRadioBridge.GetSharedThreat(bandit, brain, tacticalRadioSearchRadius or maxDist or 46)
+                end)
+                if okRadio and radioThreat then return nbd_storeThreatCache(brain, maxDist, radioThreat) end
+            end
+            return nbd_storeThreatCache(brain, maxDist, nil)
         end
     end
 
-    if not bandit or not NPCZombieCacheBridge or not NPCZombieCacheBridge.CacheLight then return nil end
+    if not bandit or not NPCZombieCacheBridge or not NPCZombieCacheBridge.CacheLight then return nbd_storeThreatCache(brain, maxDist, nil) end
 
-    maxDist = maxDist or 28
     local bx = bandit:getX()
     local by = bandit:getY()
     local bz = bandit:getZ()
@@ -473,11 +671,20 @@ function NPCBrainDirectorBridge.FindNearestThreat(bandit, brain, maxDist, tactic
     local bestD2 = maxDist * maxDist
 
     local nearby = NPCZombieCacheBridge.CacheLight
-    if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyAll then
+    local nearbyCount = nil
+    if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyAllInto then
+        nearby = NPCBrainDirectorBridge._threatScratch or {}
+        NPCBrainDirectorBridge._threatScratch = nearby
+        local _, n = NPCSpatialIndexBridge.GetNearbyAllInto(nearby, bx, by, bz, maxDist, 96)
+        nearbyCount = tonumber(n) or 0
+        if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+            pcall(function() NPCPerformanceTelemetryBridge.Record("spatial_threat_query", 1) end)
+        end
+    elseif NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyAll then
         nearby = NPCSpatialIndexBridge.GetNearbyAll(bx, by, bz, maxDist)
     end
 
-    for id, data in pairs(nearby) do
+    local function considerThreat(id, data)
         id = data and (data.id or id) or id
         if data and data.z == bz then
             local d2 = NPCBrainDirectorBridge.Dist2(bx, by, data.x, data.y)
@@ -530,21 +737,31 @@ function NPCBrainDirectorBridge.FindNearestThreat(bandit, brain, maxDist, tactic
         end
     end
 
+    if nearbyCount then
+        for i = 1, nearbyCount do
+            considerThreat(nearby[i] and nearby[i].id or i, nearby[i])
+        end
+    else
+        for id, data in pairs(nearby) do
+            considerThreat(id, data)
+        end
+    end
+
     if best and NPCTacticalRadioBridge and NPCTacticalRadioBridge.ReportContact then
         pcall(function()
             NPCTacticalRadioBridge.ReportContact(bandit, brain, best.target, best.kind, best.dist, 1.0)
         end)
-        return best
+        return nbd_storeThreatCache(brain, maxDist, best)
     end
 
     if NPCTacticalRadioBridge and NPCTacticalRadioBridge.GetSharedThreat then
         local ok, radioThreat = pcall(function()
             return NPCTacticalRadioBridge.GetSharedThreat(bandit, brain, tacticalRadioSearchRadius or maxDist or 46)
         end)
-        if ok and radioThreat then return radioThreat end
+        if ok and radioThreat then return nbd_storeThreatCache(brain, maxDist, radioThreat) end
     end
 
-    return best
+    return nbd_storeThreatCache(brain, maxDist, best)
 end
 
 function NPCBrainDirectorBridge.IsIndirectThreat(threat)
@@ -578,20 +795,35 @@ function NPCBrainDirectorBridge.CountNearbyFriends(bandit, brain, radius)
     local count = 0
 
     local nearby = NPCZombieCacheBridge.CacheLightB
-    if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyNPCs then
+    local nearbyCount = nil
+    if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyNPCsInto then
+        nearby = NPCBrainDirectorBridge._friendScratch or {}
+        NPCBrainDirectorBridge._friendScratch = nearby
+        local _, n = NPCSpatialIndexBridge.GetNearbyNPCsInto(nearby, bx, by, bz, radius, 64)
+        nearbyCount = tonumber(n) or 0
+        if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+            pcall(function() NPCPerformanceTelemetryBridge.Record("spatial_friend_query", 1) end)
+        end
+    elseif NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyNPCs then
         nearby = NPCSpatialIndexBridge.GetNearbyNPCs(bx, by, bz, radius)
     elseif NPCSpatialIndexBridge then
         local legacyNearby = NPCSpatialIndexBridge["GetNearby" .. NPCLegacyContractBridge.Plural]
         if legacyNearby then nearby = legacyNearby(bx, by, bz, radius) end
     end
 
-    for _, data in pairs(nearby) do
+    local function considerFriend(data)
         if data and data.z == bz and data.brain and data.brain.clan == brain.clan then
             local d2 = NPCBrainDirectorBridge.Dist2(bx, by, data.x, data.y)
             if d2 > 0.01 and d2 < r2 then
                 count = count + 1
             end
         end
+    end
+
+    if nearbyCount then
+        for i = 1, nearbyCount do considerFriend(nearby[i]) end
+    else
+        for _, data in pairs(nearby) do considerFriend(data) end
     end
 
     return count
@@ -889,6 +1121,16 @@ function NPCBrainDirectorBridge.MoveToState(bandit, state, reason, x, y, z, walk
     local task = NPCBrainDirectorBridge.GetMoveTask(bandit, x, y, z or bandit:getZ(), walkType or "Run", closeSlow)
     task.directorState = state
     task.directorReason = reason
+    if brain and (brain.master ~= nil or brain.mercenaryHired == true or brain.hired == true or brain.isPlayerGuard == true) then
+        local order = type(brain.order) == "table" and brain.order or nil
+        if order and (order.source == "player" or order.master ~= nil or order.interrupt == true) then
+            task.playerOrder = true
+            task.allowOrderTeleport = true
+            task.orderName = order.name
+            task.orderIssued = order.issued
+            task.orderTeleportAfterMs = task.orderTeleportAfterMs or 950
+        end
+    end
     if resolvedByWatchdog then task.watchdogResolvedTarget = true end
     if brain and (brain.roadPatrol or brain.roadBias or brain.preferRoads) then
         task.roadBiased = true
@@ -934,13 +1176,29 @@ function NPCBrainDirectorBridge.ReloadTasks(bandit, brain, state, reason)
 end
 
 function NPCBrainDirectorBridge.FindContainerSquare(director, bandit, radius)
+    if not bandit then return nil end
+    radius = radius or (director and director.Config and director.Config.lootScanRadius) or 8
+
+    if NPCLootTargetCacheBridge and NPCLootTargetCacheBridge.FindContainerSquare then
+        local brain = NPCBrainDirectorBridge.GetBrain(bandit)
+        local ok, square = pcall(function()
+            return NPCLootTargetCacheBridge.FindContainerSquare(bandit, radius, {
+                brain = brain,
+                need = "any",
+                ttlMs = 5200,
+                maxSquareChecks = 150,
+                maxObjectChecks = 16
+            })
+        end)
+        if ok and square then return square end
+    end
+
     local cell = getCell()
     if not cell then return nil end
 
     local bx = math.floor(bandit:getX())
     local by = math.floor(bandit:getY())
     local bz = math.floor(bandit:getZ())
-    radius = radius or director.Config.lootScanRadius
 
     for r=0, radius do
         for dx=-r, r do
@@ -950,7 +1208,7 @@ function NPCBrainDirectorBridge.FindContainerSquare(director, bandit, radius)
                     if square then
                         local objects = square:getObjects()
                         if objects then
-                            for i=0, objects:size() - 1 do
+                            for i=0, math.min(objects:size() - 1, 15) do
                                 local obj = objects:get(i)
                                 local container = obj and obj:getContainer()
                                 if container and not container:isEmpty() then
@@ -1026,14 +1284,101 @@ function NPCBrainDirectorBridge.InferState(director, runtime, bandit, brain, gen
     return director.States.Idle, "idle"
 end
 
+function NPCBrainDirectorBridge.IsWoundedLocked(brain)
+    return type(brain) == "table" and brain.wounded == true and brain.woundedDowned == true and brain.woundedState == "downed"
+end
+
+function NPCBrainDirectorBridge.IsNonCombatAction(action)
+    if action == nil then return false end
+    if NPCBrainDirectorBridge.IsCombatAction(action) then return false end
+    action = tostring(action)
+    return action == "Time"
+        or action == "FaceLocation"
+        or action == "Loot"
+        or action == "LootLow"
+        or action == "Forage"
+        or action == "Sleep"
+        or action == "Smoke"
+        or action == "Eat"
+        or action == "Drink"
+        or action == "Bandage"
+end
+
+function NPCBrainDirectorBridge.ClearNonCombatTaskForThreat(bandit, brain, threat)
+    if not (bandit and brain and threat) then return false end
+    if not NPCEntity then return false end
+    local task = NPCEntity.GetTask and NPCEntity.GetTask(bandit) or nil
+    local action = task and task.action or NPCBrainDirectorBridge.CurrentAction(bandit)
+    if not NPCBrainDirectorBridge.IsNonCombatAction(action) then return false end
+    if NPCEntity.ClearTasks then NPCEntity.ClearTasks(bandit) end
+    brain.squadReactiveAt = NPCBrainDirectorBridge.Now()
+    brain.squadReactiveReason = "threat interrupted non-combat action"
+    return true
+end
+
+function NPCBrainDirectorBridge.IsPlayerControlled(brain)
+    if not brain then return false end
+    if brain.master ~= nil or brain.mercenaryHired == true or brain.hired == true or brain.isPlayerGuard == true then return true end
+    local order = brain.order or brain.directorOrder
+    if type(order) == "table" then
+        local name = order.name or order.action or order.type or order.mode
+        return name ~= nil and tostring(name) ~= "" and tostring(name):lower() ~= "free"
+    end
+    return order ~= nil and tostring(order) ~= "" and tostring(order):lower() ~= "free"
+end
+
+function NPCBrainDirectorBridge.IntentOwnerForState(director, brain, state, reason, threat)
+    if not director then return "ambient", 20, 3500 end
+    reason = tostring(reason or "")
+    local lowerReason = reason:lower()
+    if state == director.States.Dead or state == director.States.Disabled then return "dead", 100, 12000 end
+    if NPCBrainDirectorBridge.IsPlayerControlled(brain) then return "player_order", 88, 5200 end
+    if threat or state == director.States.Attack or state == director.States.EmergencyDefense or state == director.States.KeepDistance or state == director.States.MeleeFallback or state == director.States.ReloadCover or state == director.States.SearchEnemy then
+        return "combat", 95, 5600
+    end
+    if state == director.States.RecoverPath then return "active_task", 68, 4200 end
+    if state == director.States.Regroup or lowerReason:find("squad", 1, true) or lowerReason:find("cohesion", 1, true) then return "squad_cohesion", 50, 9000 end
+    if state == director.States.DefendBase or lowerReason:find("base", 1, true) then return "base_life", 34, 9000 end
+    if lowerReason:find("routine", 1, true) or lowerReason:find("scavenge", 1, true) or lowerReason:find("sweep", 1, true) then return "world_routine", 32, 12000 end
+    if state == director.States.LootArea or lowerReason:find("supply", 1, true) or lowerReason:find("loot", 1, true) then return "supply_need", 31, 9000 end
+    if state == director.States.PatrolArea then return "living_move", 28, 9000 end
+    return "living_ambient", 22, 6200
+end
+
+function NPCBrainDirectorBridge.RequestIntentOwner(director, runtime, bandit, brain, state, reason, threat)
+    if not brain then return false, "no brain" end
+    if not (NPCIntentArbiterBridge and NPCIntentArbiterBridge.Request) then return true, "no arbiter" end
+    local owner, priority, ttlMs = NPCBrainDirectorBridge.IntentOwnerForState(director, brain, state, reason, threat)
+    local ok = NPCIntentArbiterBridge.Request(bandit, brain, owner, reason or owner, {
+        priority = priority,
+        ttlMs = ttlMs
+    })
+    return ok == true, owner
+end
+
+function NPCBrainDirectorBridge.MarkIntentTasks(director, brain, tasks, state, reason, threat)
+    if not tasks then return tasks end
+    if NPCIntentArbiterBridge and NPCIntentArbiterBridge.MarkTasks then
+        local owner = NPCBrainDirectorBridge.IntentOwnerForState(director, brain, state, reason, threat)
+        return NPCIntentArbiterBridge.MarkTasks(tasks, owner, reason)
+    end
+    return tasks
+end
+
 function NPCBrainDirectorBridge.EvaluateDesiredState(director, runtime, bandit, brain, threat, stuck)
     if not director or not runtime then return nil, "no runtime" end
     if not bandit or not brain then return director.States.Disabled, "no brain" end
     if not runtime.isAlive(bandit) then return director.States.Dead, "dead" end
+    if NPCBrainDirectorBridge.IsWoundedLocked(brain) then return director.States.Disabled, "wounded downed" end
 
     local order = runtime.normalizeOrder(runtime.getOrder(brain))
     local programName = runtime.getProgramName(brain)
-    if NPCOrderContract and NPCOrderContract.CanAggro and not NPCOrderContract.CanAggro(brain) then threat = nil end
+    if NPCOrderContract and NPCOrderContract.CanAggro and not NPCOrderContract.CanAggro(brain) then
+        if not NPCBrainDirectorBridge.IsStrictCloseDefenseThreat(threat) then threat = nil end
+    end
+    if threat and NPCOrderContract and NPCOrderContract.ShouldIgnoreThreatForStrictOrder and NPCOrderContract.ShouldIgnoreThreatForStrictOrder(brain, threat) then
+        threat = nil
+    end
     local health = runtime.health01(bandit)
     local humanAwareness = nil
     if NPCHumanizedAIBridge and NPCHumanizedAIBridge.UpdateAwareness then
@@ -1050,6 +1395,34 @@ function NPCBrainDirectorBridge.EvaluateDesiredState(director, runtime, bandit, 
     end
 
     if stuck then return director.States.RecoverPath, "path watchdog" end
+
+    local strictOrderName = NPCBrainDirectorBridge.GetStrictOrderName(brain)
+    if strictOrderName then
+        if NPCBrainDirectorBridge.IsStrictCloseDefenseThreat(threat) then
+            return director.States.EmergencyDefense, "strict order close defense"
+        end
+        if threat and health < 0.35 then
+            return director.States.Flee, "strict order low health threat"
+        end
+        local strictState = NPCBrainDirectorBridge.StrictStateForOrder(director, brain, strictOrderName)
+        if strictState then
+            return strictState, "strict " .. tostring(strictOrderName) .. " discipline"
+        end
+    end
+
+    local playerCommandOrderName = NPCBrainDirectorBridge.GetPlayerCommandOrderName(brain)
+    if playerCommandOrderName then
+        if NPCBrainDirectorBridge.IsStrictCloseDefenseThreat(threat) then
+            return director.States.EmergencyDefense, "player command close defense"
+        end
+        if threat and health < 0.35 then
+            return director.States.Flee, "player command low health threat"
+        end
+        local commandState = NPCBrainDirectorBridge.PlayerCommandStateForOrder(director, brain, playerCommandOrderName)
+        if commandState then
+            return commandState, "player command " .. tostring(playerCommandOrderName)
+        end
+    end
 
     if threat and runtime.isIndirectThreat(threat) and (not threat.dist or threat.dist > 1.35) then
         local suffix = "last known threat"
@@ -1120,6 +1493,16 @@ function NPCBrainDirectorBridge.EvaluateDesiredState(director, runtime, bandit, 
         return director.States.ReloadWeapon, "proactive reload"
     end
 
+    if not threat and runtime.worldRoutineSuggestState then
+        local routineState, routineReason = runtime.worldRoutineSuggestState(bandit, brain, threat, health, order, programName)
+        if routineState then return routineState, routineReason or "world routine" end
+    end
+
+    if not threat and runtime.livingSuggestState then
+        local livingState, livingReason = runtime.livingSuggestState(bandit, brain, threat, health, order, programName)
+        if livingState then return livingState, livingReason or "living intent" end
+    end
+
     if not threat and (not order or order == "") then
         local stimulus = runtime.influenceStimulus(bandit, brain)
         if stimulus and stimulus.dist and stimulus.dist > 2.0 then
@@ -1186,9 +1569,13 @@ function NPCBrainDirectorBridge.Observe(director, runtime, bandit, uTick, genera
     local now = runtime.now()
     local threat = runtime.findNearestThreat(bandit, brain, 28)
     if NPCOrderContract and NPCOrderContract.CanAggro and not NPCOrderContract.CanAggro(brain) then threat = nil end
+    if threat and NPCOrderContract and NPCOrderContract.ShouldIgnoreThreatForStrictOrder and NPCOrderContract.ShouldIgnoreThreatForStrictOrder(brain, threat) then threat = nil end
     if threat and NPCSpyBridge and NPCSpyBridge.TryDefectOnThreat then
         local ok, defected = pcall(function() return NPCSpyBridge.TryDefectOnThreat(bandit, brain, threat) end)
         if ok and defected then threat = nil end
+    end
+    if runtime.livingUpdateCombatMemory then
+        runtime.livingUpdateCombatMemory(bandit, brain, threat)
     end
     if threat and NPCInfluenceFieldBridge and NPCInfluenceFieldBridge.InjectBrainThreat then
         pcall(function() NPCInfluenceFieldBridge.InjectBrainThreat(bandit, brain, threat) end)
@@ -1284,14 +1671,45 @@ function NPCBrainDirectorBridge.HandleFollowPlayer(director, runtime, bandit, br
     if not player then return NPCBrainDirectorBridge.HandleIdle(director, runtime, bandit, brain, director.States.Idle, "no master") end
 
     local order = brain.order or {}
+    local strictOrderName = NPCBrainDirectorBridge.GetStrictOrderName(brain)
+    local strictFollow = strictOrderName == "Follow" or strictOrderName == "FallBack" or strictOrderName == "Return"
     local followDistance = tonumber(order.followDistance) or director.Config.followDistance
+    if strictFollow then
+        followDistance = tonumber(order.followDistance) or 0.95
+        if followDistance < 0.75 then followDistance = 0.75 end
+        if followDistance > 2.4 then followDistance = 2.4 end
+    end
     local dist = runtime.dist(bandit:getX(), bandit:getY(), player:getX(), player:getY())
-    if dist > followDistance then
-        local tx, ty, tz = runtime.followFormationPoint(player, brain, bandit)
-        return {runtime.moveToState(bandit, director.States.FollowPlayer, "follow master formation", tx, ty, tz, "Run", true)}
+    local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(player:getZ()) or 0))
+    local tx, ty, tz = runtime.followFormationPoint(player, brain, bandit)
+    if strictFollow and tx and ty then
+        tx, ty, tz = NPCBrainDirectorBridge.StabilizeStrictSlot(brain, "followPlayer", player:getX(), player:getY(), player:getZ(), tx, ty, tz, {
+            anchorDelta = (player:isRunning() or player:isSprinting()) and 0.45 or 0.28,
+            targetDelta = (player:isRunning() or player:isSprinting()) and 0.55 or 0.38,
+            maxAgeMs = (player:isRunning() or player:isSprinting()) and 420 or 650
+        })
+    end
+    local slotDist = tx and ty and runtime.dist(bandit:getX(), bandit:getY(), tx, ty) or dist
+    local leash = NPCBrainDirectorBridge.GetStrictLeash(brain, "follow", 3.6) or 3.6
+    local moveThreshold = strictFollow and ((player:isRunning() or player:isSprinting()) and 0.95 or 0.72) or followDistance
+    if dist > followDistance or slotDist > moveThreshold or (strictFollow and (dist > leash or zdist > 0.35)) then
+        local walkType = "Run"
+        if strictFollow and dist <= 2.6 and slotDist <= 1.65 and zdist <= 0.35 and not (player:isRunning() or player:isSprinting()) then
+            walkType = player:isSneaking() and "SneakWalk" or "Walk"
+        end
+        local task = runtime.moveToState(bandit, director.States.FollowPlayer, strictFollow and "strict follow master stable slot" or "follow master formation", tx, ty, tz, walkType, true)
+        if strictFollow then
+            task.strictPlayerOrder = true
+            task.strictOrderName = strictOrderName
+            local arrive = tonumber(task.arriveDist) or 0.95
+            if arrive < 0.68 then arrive = 0.68 end
+            if arrive > 1.05 then arrive = 1.05 end
+            task.arriveDist = arrive
+        end
+        return {task}
     end
 
-    return {runtime.idleTask("near master")}
+    return {runtime.idleTask(strictFollow and "strict near master" or "near master")}
 end
 
 function NPCBrainDirectorBridge.HandleGuardPlayer(director, runtime, bandit, brain)
@@ -1300,7 +1718,37 @@ function NPCBrainDirectorBridge.HandleGuardPlayer(director, runtime, bandit, bra
     local player = runtime.masterPlayer(bandit, brain)
     if not player then return NPCBrainDirectorBridge.HandleIdle(director, runtime, bandit, brain, director.States.Idle, "no guarded player") end
 
+    local strictGuard = NPCBrainDirectorBridge.GetStrictOrderName(brain) == "Guard"
     local dist = runtime.dist(bandit:getX(), bandit:getY(), player:getX(), player:getY())
+    local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(player:getZ()) or 0))
+    if strictGuard then
+        local order = brain.order or {}
+        local guardRadius = tonumber(order.followDistance) or 3.5
+        if guardRadius < 2.5 then guardRadius = 2.5 end
+        if guardRadius > 6.0 then guardRadius = 6.0 end
+        local tx, ty, tz = runtime.offsetPoint(player:getX(), player:getY(), player:getZ(), guardRadius, (NPCUtils.GetCharacterID(bandit) or 1) * 17)
+        if tx and ty then
+            tx, ty, tz = NPCBrainDirectorBridge.StabilizeStrictSlot(brain, "guardPlayer", player:getX(), player:getY(), player:getZ(), tx, ty, tz, {
+                anchorDelta = 1.15,
+                targetDelta = 1.35,
+                maxAgeMs = 3200
+            })
+        end
+        local slotDist = tx and ty and runtime.dist(bandit:getX(), bandit:getY(), tx, ty) or dist
+        local leash = NPCBrainDirectorBridge.GetStrictLeash(brain, "guard", 9.5) or 9.5
+        if dist > leash or slotDist > 1.80 or zdist > 0.35 then
+            local task = runtime.moveToState(bandit, director.States.GuardPlayer, "strict guard player stable perimeter", tx, ty, tz, dist > 4.0 and "Run" or "Walk", true)
+            task.strictPlayerOrder = true
+            task.strictOrderName = "Guard"
+            local arrive = tonumber(task.arriveDist) or 1.05
+            if arrive < 0.95 then arrive = 0.95 end
+            if arrive > 1.20 then arrive = 1.20 end
+            task.arriveDist = arrive
+            return {task}
+        end
+        return {runtime.idleTask("strict guard player")}
+    end
+
     if dist > director.Config.guardPlayerDistance then
         local tx, ty, tz = runtime.offsetPoint(player:getX(), player:getY(), player:getZ(), 4 + ZombRand(3), (NPCUtils.GetCharacterID(bandit) or 1) * 17)
         return {runtime.moveToState(bandit, director.States.GuardPlayer, "guard player perimeter", tx, ty, tz, "Run", true)}
@@ -1317,26 +1765,56 @@ end
 function NPCBrainDirectorBridge.HandleHoldPosition(director, runtime, bandit, brain)
     if not director or not runtime then return {} end
 
+    local strictHold = NPCBrainDirectorBridge.GetStrictOrderName(brain) == "Hold"
+    if strictHold and NPCOrderContract and NPCOrderContract.GetAnchor then
+        local ax, ay, az = NPCOrderContract.GetAnchor(brain, bandit)
+        if ax and ay then brain.holdPoint = {x=ax, y=ay, z=az or bandit:getZ()} end
+    end
     brain.holdPoint = brain.holdPoint or {x=bandit:getX(), y=bandit:getY(), z=bandit:getZ()}
     local x, y, z = runtime.formationAnchor(brain, bandit, "holdPoint")
     local dist = runtime.dist(bandit:getX(), bandit:getY(), x, y)
+    local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(z) or 0))
+    local radius = director.Config.holdRadius
+    if strictHold then radius = math.min(NPCBrainDirectorBridge.GetStrictLeash(brain, "hold", 2.2) or 2.2, 2.2) end
 
-    if dist > director.Config.holdRadius then
-        return {runtime.moveToState(bandit, director.States.HoldPosition, "return to hold point", x, y, z, "Run", true)}
+    if dist > radius or (strictHold and zdist > 0.35) then
+        local task = runtime.moveToState(bandit, director.States.HoldPosition, strictHold and "strict return to hold point" or "return to hold point", x, y, z, dist > 4 and "Run" or "Walk", true)
+        if strictHold then
+            task.strictPlayerOrder = true
+            task.strictOrderName = "Hold"
+            task.arriveDist = math.min(tonumber(task.arriveDist) or 0.9, 0.7)
+        end
+        return {task}
     end
 
-    return {runtime.idleTask("hold position")}
+    return {runtime.idleTask(strictHold and "strict hold position" or "hold position")}
 end
 
 function NPCBrainDirectorBridge.HandleGuardArea(director, runtime, bandit, brain, state, radius)
     if not director or not runtime then return {} end
 
+    local strictGuard = NPCBrainDirectorBridge.GetStrictOrderName(brain) == "Guard"
     local x, y, z = runtime.formationAnchor(brain, bandit, "guardPoint")
     local dist = runtime.dist(bandit:getX(), bandit:getY(), x, y)
+    local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(z) or 0))
     radius = radius or director.Config.guardRadius
+    if strictGuard then radius = math.min(NPCBrainDirectorBridge.GetStrictLeash(brain, "guard", radius) or radius, 4.0) end
 
-    if dist > radius then
-        return {runtime.moveToState(bandit, state or director.States.GuardArea, "return to guarded area", x, y, z, "Run", true)}
+    if dist > radius or (strictGuard and zdist > 0.35) then
+        local task = runtime.moveToState(bandit, state or director.States.GuardArea, strictGuard and "strict return to guarded area" or "return to guarded area", x, y, z, dist > 6 and "Run" or "Walk", true)
+        if strictGuard then
+            task.strictPlayerOrder = true
+            task.strictOrderName = "Guard"
+            local arrive = tonumber(task.arriveDist) or 0.95
+            if arrive < 0.85 then arrive = 0.85 end
+            if arrive > 1.05 then arrive = 1.05 end
+            task.arriveDist = arrive
+        end
+        return {task}
+    end
+
+    if strictGuard then
+        return {runtime.idleTask("strict guard area")}
     end
 
     if ZombRand(4) == 0 then
@@ -1351,6 +1829,32 @@ function NPCBrainDirectorBridge.HandlePatrolArea(director, runtime, bandit, brai
     if not director or not runtime then return {} end
 
     brain.fsm = brain.fsm or {}
+
+    if NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.GetPatrolPoint then
+        local okSquad, squadPoint = pcall(function()
+            return NPCSquadDynamicsBridge.GetPatrolPoint(bandit, brain, director.Config.patrolRadius)
+        end)
+        if okSquad and squadPoint and squadPoint.x and squadPoint.y then
+            local distSq = runtime.dist(bandit:getX(), bandit:getY(), squadPoint.x, squadPoint.y)
+            if distSq > (tonumber(squadPoint.arriveDist) or 1.9) then
+                local task = runtime.moveToState(bandit, squadPoint.mode == "regroup" and director.States.Regroup or director.States.PatrolArea, squadPoint.reason or "cohesive squad patrol", squadPoint.x, squadPoint.y, squadPoint.z or bandit:getZ(), squadPoint.mode == "regroup" and "Walk" or "Walk", true)
+                task.squadSupport = true
+                task.arriveDist = tonumber(squadPoint.arriveDist) or 1.9
+                task.pathThrottleMs = 1800
+                task.sameTargetPathThrottleMs = 6500
+                return {task}
+            end
+            return {{
+                action = "FaceLocation",
+                x = squadPoint.x + 2 - ZombRand(5),
+                y = squadPoint.y + 2 - ZombRand(5),
+                time = 20 + ZombRand(24),
+                director = true,
+                directorState = director.States.PatrolArea,
+                directorReason = "hold squad patrol sector"
+            }}
+        end
+    end
 
     if brain.roadPatrol and NPCRoadNavBridge and NPCRoadNavBridge.FindPatrolPoint then
         local patrol = brain.fsm.patrol or {}
@@ -1664,11 +2168,27 @@ function NPCBrainDirectorBridge.HandleTacticalRadioMove(director, runtime, bandi
             return NPCSquadDynamicsBridge.GetManeuverPoint(bandit, brain, threat)
         end)
         if okSquad and squadPoint and squadPoint.x and squadPoint.y then
+            if squadPoint.holdOnly then
+                return {{
+                    action = "FaceLocation",
+                    x = (squadPoint.threat and squadPoint.threat.x) or squadPoint.x,
+                    y = (squadPoint.threat and squadPoint.threat.y) or squadPoint.y,
+                    time = 22,
+                    director = true,
+                    directorState = state,
+                    directorReason = squadPoint.reason or fallbackReason or "hold covering angle"
+                }}
+            end
             local style = "Run"
-            if squadPoint.mode == "suppress" or squadPoint.mode == "cover" or state == director.States.HoldAngle or state == director.States.SuppressEnemy then
+            if squadPoint.mode == "suppress" or squadPoint.mode == "cover" or squadPoint.mode == "regroup" or state == director.States.HoldAngle or state == director.States.SuppressEnemy then
                 style = "Walk"
             end
-            return {runtime.moveToState(bandit, state, squadPoint.reason or fallbackReason or "squad dynamic move", squadPoint.x, squadPoint.y, squadPoint.z or bandit:getZ(), style, false)}
+            local task = runtime.moveToState(bandit, state, squadPoint.reason or fallbackReason or "squad dynamic move", squadPoint.x, squadPoint.y, squadPoint.z or bandit:getZ(), style, false)
+            task.squadSupport = true
+            task.arriveDist = tonumber(squadPoint.arriveDist) or 1.8
+            task.pathThrottleMs = 1600
+            task.sameTargetPathThrottleMs = 6200
+            return {task}
         end
     end
 
@@ -1709,14 +2229,106 @@ function NPCBrainDirectorBridge.HandleKeepDistance(director, runtime, bandit, br
     local ty = bandit:getY() + (dy / len) * 3.5
     local fx, fy, fz = runtime.findFreeAround(tx, ty, bandit:getZ(), 4)
     if fx and fy then
-        return {runtime.moveToState(bandit, director.States.KeepDistance, "keep firearm distance", fx, fy, fz, "Run", false)}
+        local task = runtime.moveToState(bandit, director.States.KeepDistance, "keep firearm distance", fx, fy, fz, "Run", false)
+        task.combatMove = true
+        task.pathThrottleMs = 650
+        task.sameTargetPathThrottleMs = 1600
+        return {task}
     end
 
     return {}
 end
 
+local function bbd_nowMs()
+    if getTimestampMs then return getTimestampMs() end
+    if getGameTime then return math.floor(getGameTime():getWorldAgeHours() * 3600000) end
+    return 0
+end
+
+function NPCBrainDirectorBridge.HandleMeleeFallback(director, runtime, bandit, brain, threat)
+    if not (director and runtime and bandit and brain and threat and threat.x and threat.y) then return {} end
+
+    local melee = brain.weapons and brain.weapons.melee or nil
+    if not melee then return {} end
+
+    local bx = bandit:getX()
+    local by = bandit:getY()
+    local bz = bandit:getZ()
+    local dist = tonumber(threat.dist) or runtime.dist(bx, by, threat.x, threat.y)
+    local maxRange = 0.95
+    local okItem, item = pcall(function() return NPCCompatibilityBridge and NPCCompatibilityBridge.InstanceItem and NPCCompatibilityBridge.InstanceItem(melee) or nil end)
+    if okItem and item and item.getMaxRange then
+        maxRange = math.max(0.75, tonumber(item:getMaxRange()) or 1.1)
+    end
+
+    local strikeRange
+    if maxRange < 0.70 then
+        strikeRange = math.max(0.48, maxRange - 0.05)
+    elseif maxRange < 1.15 then
+        strikeRange = math.max(0.62, maxRange - 0.18)
+    else
+        strikeRange = math.max(0.78, maxRange - 0.25)
+    end
+
+    -- Release-quality rule: do not path-spam around a nearby zombie. The legacy
+    -- Hit/Shove layer owns the actual strike; the director only performs a rare,
+    -- bounded approach when the NPC is clearly outside melee reach.
+    local closeEnough = math.max(strikeRange + 0.35, 1.28)
+    if dist <= closeEnough then return {} end
+    if dist > (tonumber(director.Config.meleeApproachMaxDist) or 6.5) then return {} end
+
+    brain.fsm = brain.fsm or {}
+    local now = bbd_nowMs()
+    local tid = tostring(threat.id or threat.uid or threat.x .. ":" .. threat.y)
+    local sameThreat = brain.fsm.meleeApproachTargetId == tid
+    local cooldown = sameThreat and (tonumber(director.Config.meleeApproachSameTargetMs) or 2400) or (tonumber(director.Config.meleeApproachCooldownMs) or 1500)
+    if brain.fsm.meleeApproachAt and now - tonumber(brain.fsm.meleeApproachAt) < cooldown then return {} end
+
+    local dx = bx - threat.x
+    local dy = by - threat.y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len < 0.01 then len = 1 end
+    local desired = math.max(0.82, math.min(1.25, strikeRange * 0.88))
+    local tx = threat.x + (dx / len) * desired
+    local ty = threat.y + (dy / len) * desired
+    local tz = threat.z or bz
+
+    local fx, fy, fz = runtime.findFreeAround(tx, ty, tz, 2)
+    if fx and fy then
+        tx, ty, tz = fx, fy, fz or tz
+    end
+
+    brain.fsm.meleeApproachAt = now
+    brain.fsm.meleeApproachTargetId = tid
+    brain.fsm.meleeApproachX = tx
+    brain.fsm.meleeApproachY = ty
+
+    local task = runtime.moveToState(bandit, director.States.MeleeFallback, "bounded melee approach", tx, ty, tz, dist > 2.8 and "Run" or "Walk", false)
+    task.arriveDist = math.max(0.82, math.min(1.25, strikeRange + 0.12))
+    task.meleeApproach = true
+    task.combatMove = true
+    task.noRecoveryReplan = true
+    task.targetId = threat.id
+    task.targetKind = threat.kind
+    task.pathThrottleMs = 1800
+    task.sameTargetPathThrottleMs = 3800
+    return {task}
+end
+
 function NPCBrainDirectorBridge.HandleRegroup(director, runtime, bandit, brain)
     if not director or not runtime then return {} end
+
+    if NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.GetRegroupPoint then
+        local ok, point = pcall(function() return NPCSquadDynamicsBridge.GetRegroupPoint(bandit, brain) end)
+        if ok and point and point.x and point.y then
+            local task = runtime.moveToState(bandit, director.States.Regroup, point.reason or "group spacing", point.x, point.y, point.z or bandit:getZ(), "Walk", true)
+            task.squadSupport = true
+            task.arriveDist = tonumber(point.arriveDist) or 1.8
+            task.pathThrottleMs = 1800
+            task.sameTargetPathThrottleMs = 6500
+            return {task}
+        end
+    end
 
     local tx, ty, tz = runtime.offsetPoint(bandit:getX(), bandit:getY(), bandit:getZ(), 1.5 + ZombRand(2), ZombRand(628))
     return {runtime.moveToState(bandit, director.States.Regroup, "group spacing", tx, ty, tz, "Walk", true)}
@@ -1838,6 +2450,50 @@ function NPCBrainDirectorBridge.CreateRuntime(director)
     runtime.formationAnchor = NPCBrainDirectorBridge.FormationAnchor
     runtime.anchor = NPCBrainDirectorBridge.Anchor
 
+    runtime.livingSuggestState = function(bandit, brain, threat, health, order, programName)
+        if not (NPCLivingWorldIntentBridge and NPCLivingWorldIntentBridge.SuggestState) then return nil end
+        local ok, state, reason = pcall(function()
+            return NPCLivingWorldIntentBridge.SuggestState(director, runtime, bandit, brain, threat, health, order, programName)
+        end)
+        if ok then return state, reason end
+        return nil
+    end
+
+    runtime.livingPlanAmbientTasks = function(bandit, brain, state, reason, threat, uTick)
+        if not (NPCLivingWorldIntentBridge and NPCLivingWorldIntentBridge.PlanAmbientTasks) then return nil end
+        local ok, tasks = pcall(function()
+            return NPCLivingWorldIntentBridge.PlanAmbientTasks(director, runtime, bandit, brain, state, reason, threat, uTick)
+        end)
+        if ok then return tasks end
+        return nil
+    end
+
+    runtime.worldRoutineSuggestState = function(bandit, brain, threat, health, order, programName)
+        if not (NPCWorldRoutineBridge and NPCWorldRoutineBridge.SuggestState) then return nil end
+        local ok, state, reason = pcall(function()
+            return NPCWorldRoutineBridge.SuggestState(director, runtime, bandit, brain, threat, health, order, programName)
+        end)
+        if ok then return state, reason end
+        return nil
+    end
+
+    runtime.worldRoutinePlanTasks = function(bandit, brain, state, reason, threat, uTick)
+        if not (NPCWorldRoutineBridge and NPCWorldRoutineBridge.PlanTasks) then return nil end
+        local ok, tasks = pcall(function()
+            return NPCWorldRoutineBridge.PlanTasks(director, runtime, bandit, brain, state, reason, threat, uTick)
+        end)
+        if ok then return tasks end
+        return nil
+    end
+
+    runtime.livingUpdateCombatMemory = function(bandit, brain, threat)
+        if NPCLivingWorldIntentBridge and NPCLivingWorldIntentBridge.UpdateCombatMemory then
+            pcall(function()
+                NPCLivingWorldIntentBridge.UpdateCombatMemory(bandit, brain, threat, runtime.currentAction(bandit))
+            end)
+        end
+    end
+
     runtime.findNearestThreat = function(bandit, brain, maxDist)
         local config = director and director.Config or {}
         return NPCBrainDirectorBridge.FindNearestThreat(bandit, brain, maxDist, config.tacticalRadioSearchRadius)
@@ -1935,6 +2591,10 @@ function NPCBrainDirectorBridge.AttachRuntimeHandlers(director, runtime)
 
     runtime.handleKeepDistance = function(bandit, brain, threat)
         return NPCBrainDirectorBridge.HandleKeepDistance(director, runtime, bandit, brain, threat)
+    end
+
+    runtime.handleMeleeFallback = function(bandit, brain, threat)
+        return NPCBrainDirectorBridge.HandleMeleeFallback(director, runtime, bandit, brain, threat)
     end
 
     runtime.handleRegroup = function(bandit, brain)
@@ -2040,9 +2700,11 @@ function NPCBrainDirectorBridge.ExecuteState(director, runtime, bandit, brain, s
     elseif state == director.States.RecoverPath then
         return runtime.handleRecoverPath(bandit, brain)
 
+    elseif state == director.States.MeleeFallback then
+        return runtime.handleMeleeFallback(bandit, brain, threat)
+
     elseif state == director.States.Attack
-        or state == director.States.EmergencyDefense
-        or state == director.States.MeleeFallback then
+        or state == director.States.EmergencyDefense then
         -- Legacy combat managers already own Shoot/Hit/Shove/Reload. Keep safe.
         return {}
 
@@ -2071,6 +2733,16 @@ function NPCBrainDirectorBridge.Evaluate(director, runtime, bandit, uTick)
         if ok and defected then threat = nil end
     end
     local now = runtime.now()
+    if NPCIntentArbiterBridge and NPCIntentArbiterBridge.UpdateContext then
+        pcall(function()
+            NPCIntentArbiterBridge.UpdateContext(bandit, brain, {
+                threat = threat,
+                currentAction = runtime.currentAction,
+                health = runtime.health01(bandit),
+                reason = "brain director evaluate"
+            })
+        end)
+    end
     local stuck = runtime.updateWatchdog(bandit, brain, now)
     local state, reason = director.EvaluateDesiredState(bandit, brain, threat, stuck)
     runtime.setState(brain, state, reason, now)
@@ -2119,8 +2791,16 @@ function NPCBrainDirectorBridge.PlanSafeTask(director, runtime, bandit, uTick)
     end
     if NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.Tick then
         pcall(function()
-            NPCSquadDynamicsBridge.Tick(bandit, brain, uTick, brain.radioThreat)
+            NPCSquadDynamicsBridge.Tick(bandit, brain, uTick, brain.radioThreat or brain.currentThreat or brain.squadPlanThreat)
         end)
+    end
+
+    if NPCBrainDirectorBridge.IsWoundedLocked(brain) then return tasks end
+
+    local now = runtime.now()
+    local threat = runtime.findNearestThreat(bandit, brain, 18) or brain.radioThreat or brain.squadPlanThreat
+    if threat then
+        NPCBrainDirectorBridge.ClearNonCombatTaskForThreat(bandit, brain, threat)
     end
 
     -- Never interfere with active combat/actions.
@@ -2128,12 +2808,22 @@ function NPCBrainDirectorBridge.PlanSafeTask(director, runtime, bandit, uTick)
 
     local currentAction = runtime.currentAction(bandit)
     if runtime.isCombatAction(currentAction) then return tasks end
-
-    local now = runtime.now()
-    local threat = runtime.findNearestThreat(bandit, brain, 18)
+    if NPCIntentArbiterBridge and NPCIntentArbiterBridge.UpdateContext then
+        pcall(function()
+            NPCIntentArbiterBridge.UpdateContext(bandit, brain, {
+                threat = threat,
+                currentAction = runtime.currentAction,
+                health = runtime.health01(bandit),
+                reason = "brain director safe task"
+            })
+        end)
+    end
     if threat and NPCSpyBridge and NPCSpyBridge.TryDefectOnThreat then
         local ok, defected = pcall(function() return NPCSpyBridge.TryDefectOnThreat(bandit, brain, threat) end)
         if ok and defected then threat = nil end
+    end
+    if runtime.livingUpdateCombatMemory then
+        runtime.livingUpdateCombatMemory(bandit, brain, threat)
     end
     local stuck = runtime.updateWatchdog(bandit, brain, now)
     local state, reason = director.EvaluateDesiredState(bandit, brain, threat, stuck)
@@ -2146,19 +2836,48 @@ function NPCBrainDirectorBridge.PlanSafeTask(director, runtime, bandit, uTick)
 
     runtime.setState(brain, state, reason, now)
 
-    if state == director.States.Idle and NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.GetAmbientTask then
+    local intentOk, intentOwner = NPCBrainDirectorBridge.RequestIntentOwner(director, runtime, bandit, brain, state, reason, threat)
+    if intentOk == false then return tasks end
+
+    if not threat
+        and state ~= director.States.HealSelf
+        and state ~= director.States.ReloadWeapon
+        and state ~= director.States.ReloadCover
+        and NPCPostCombatLootBridge
+        and NPCPostCombatLootBridge.PlanTasks then
+        local okPostLoot, postLootTasks = pcall(function()
+            return NPCPostCombatLootBridge.PlanTasks(bandit, brain, runtime, {state = director.States.LootArea})
+        end)
+        if okPostLoot and postLootTasks and #postLootTasks > 0 then
+            return NPCBrainDirectorBridge.MarkIntentTasks(director, brain, postLootTasks, director.States.LootArea, "post-combat corpse loot", threat)
+        end
+    end
+
+    if not threat and intentOwner == "world_routine" and runtime.worldRoutinePlanTasks then
+        local routineTasks = runtime.worldRoutinePlanTasks(bandit, brain, state, reason, threat, uTick)
+        if routineTasks and #routineTasks > 0 then return NPCBrainDirectorBridge.MarkIntentTasks(director, brain, routineTasks, state, reason, threat) end
+    end
+
+    local livingAmbientAllowed = intentOwner ~= "world_routine"
+        and (state == director.States.Idle or state == director.States.GuardArea or state == director.States.DefendBase)
+    if not threat and livingAmbientAllowed and runtime.livingPlanAmbientTasks then
+        local livingTasks = runtime.livingPlanAmbientTasks(bandit, brain, state, reason, threat, uTick)
+        if livingTasks and #livingTasks > 0 then return NPCBrainDirectorBridge.MarkIntentTasks(director, brain, livingTasks, state, reason, threat) end
+    end
+
+    if not threat and state == director.States.Idle and intentOwner ~= "world_routine" and NPCSquadDynamicsBridge and NPCSquadDynamicsBridge.GetAmbientTask then
         local okAmbient, ambientSpec = pcall(function()
             return NPCSquadDynamicsBridge.GetAmbientTask(bandit, brain, uTick)
         end)
         if okAmbient and ambientSpec and runtime.handleSquadDynamicTask then
             local ambientTasks = runtime.handleSquadDynamicTask(bandit, brain, ambientSpec)
-            if ambientTasks and #ambientTasks > 0 then return ambientTasks end
+            if ambientTasks and #ambientTasks > 0 then return NPCBrainDirectorBridge.MarkIntentTasks(director, brain, ambientTasks, state, reason, threat) end
         end
     end
 
     local planned = director.ExecuteState(bandit, brain, state, reason, threat)
     if planned and #planned > 0 then
-        return planned
+        return NPCBrainDirectorBridge.MarkIntentTasks(director, brain, planned, state, reason, threat)
     end
 
     return tasks

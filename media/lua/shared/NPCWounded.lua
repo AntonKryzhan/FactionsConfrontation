@@ -9,7 +9,7 @@ require "NPCCore/NPCLegacyGlobalsBridge"
 
 NPCWounded = NPCLegacyGlobalsBridge.InstallAlias("Wounded", NPCWounded, "NPCWounded")
 NPCBrainData = NPCBrainData or {}
-NPCWounded.Version = 1
+NPCWounded.Version = 2
 local NPC_WOUNDED_LEGACY_KEYS = {
     npcFlag = NPCLegacyContractBridge.Key("FLAG")
 }
@@ -159,6 +159,12 @@ function NPCWounded.MarkDowned(brain, player, x, y, z, reason)
     brain.woundedState = "downed"
     brain.woundedReason = reason or "heavy wound"
     brain.woundedAt = now
+    brain.woundedLastStateAt = now
+    brain.woundedNoDespawn = true
+    brain.woundedKeepRuntime = true
+    brain.noZombieTarget = true
+    brain.noAggro = true
+    brain.infection = 0
     brain.woundedExpiresAt = bleedoutHours > 0 and (now + bleedoutHours) or nil
     brain.woundedForPlayerId = pid
     brain.woundedForPlayerName = bw_playerName(player) or brain.mercenaryHiredByName
@@ -166,6 +172,7 @@ function NPCWounded.MarkDowned(brain, player, x, y, z, reason)
     brain.woundedY = tonumber(y) or brain.y
     brain.woundedZ = tonumber(z) or brain.z or 0
     brain.health = math.max(tonumber(brain.health) or 0, NPCWounded.DownedHealth())
+    brain.maxHealth = math.max(tonumber(brain.maxHealth) or 0, brain.health or NPCWounded.DownedHealth())
     brain.hostile = false
     brain.tasks = {}
     brain.targetId = nil
@@ -281,7 +288,17 @@ function NPCWounded.TryMarkDowned(bandit, attacker)
     local minHealth = NPCWounded.DownedHealth()
     if health < minHealth then bandit:setHealth(minHealth) end
     if bandit.setTarget then bandit:setTarget(nil) end
+    if bandit.setAttackedBy then pcall(function() bandit:setAttackedBy(nil) end) end
+    if bandit.clearAggroList then pcall(function() bandit:clearAggroList() end) end
     if bandit.setUseless then bandit:setUseless(true) end
+    if bandit.setReanim then pcall(function() bandit:setReanim(false) end) end
+    local md = bandit.getModData and bandit:getModData() or nil
+    if md then
+        md.NPCWounded = true
+        md.NPCWoundedState = "downed"
+        md.NPCNoRuntimeCleanup = true
+        md.NPCKeepCorpse = true
+    end
     if NPCBrainData and NPCBrainData.Update then NPCBrainData.Update(bandit, brain) end
     return true, brain
 end
@@ -293,9 +310,17 @@ function NPCWounded.ApplyLocalState(bandit, brain)
         if bandit.getHealth and (tonumber(bandit:getHealth()) or 0) < minHealth then
             bandit:setHealth(minHealth)
         end
+        brain.woundedNoDespawn = true
+        brain.woundedKeepRuntime = true
+        brain.noZombieTarget = true
+        brain.noAggro = true
+        brain.infection = 0
         if bandit.setTarget then bandit:setTarget(nil) end
         if bandit.setTargetSeenTime then bandit:setTargetSeenTime(0) end
+        if bandit.setAttackedBy then pcall(function() bandit:setAttackedBy(nil) end) end
+        if bandit.clearAggroList then pcall(function() bandit:clearAggroList() end) end
         if bandit.setUseless then bandit:setUseless(true) end
+        if bandit.setReanim then pcall(function() bandit:setReanim(false) end) end
         if bandit.setWalkType then bandit:setWalkType("Limp") end
     elseif brain.woundedStabilized or brain.woundedEvacuating then
         local minHealth = NPCWounded.StabilizedHealth()
@@ -320,5 +345,5 @@ end
 
 function NPCWounded.PlanTasks(bandit, brain)
     if not NPCWounded.IsDowned(brain) then return nil end
-    return {{action="Time", anim="Faint", lock=true, time=120, wounded=true}}
+    return {{action="Time", anim="Faint", lock=true, time=900, wounded=true, woundedDowned=true, noInterrupt=true}}
 end

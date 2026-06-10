@@ -4,7 +4,7 @@
 -- economy creates virtual missions, and existing virtual groups/convoys receive
 -- lightweight objectives without forcing real NPC spawn.
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 NPCFactionEconomyServerBridge = NPCFactionEconomyServerBridge or {}
 

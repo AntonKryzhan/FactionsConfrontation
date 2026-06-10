@@ -7,7 +7,7 @@ require "NPCCore/NPCLegacyGlobalsBridge"
 local NPC_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
 local NPC_SYNC_COMMAND_MODULE = "NPCCommands"
 local NPC_SYNC_UPDATE_PART_COMMAND = NPCLegacyContractBridge.Command("UPDATE_PART") or ("Update" .. NPCLegacyContractBridge.Token .. "Part")
-if not isServer() then return end
+if isClient and isClient() then return end
 
 require "NPCCore/NPCSignalsBridge"
 require "NPCCommands/NPCMercenaryContract"

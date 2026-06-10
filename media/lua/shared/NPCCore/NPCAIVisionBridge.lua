@@ -3,7 +3,7 @@
 
 NPCAIVisionBridge = NPCAIVisionBridge or {}
 
-NPCAIVisionBridge.VERSION = "2026-05-10-sense-budget-guard-1"
+NPCAIVisionBridge.VERSION = "2026-05-30-stage303-obstacle-aware-los-cache-1"
 
 NPCAIVisionBridge.Config = NPCAIVisionBridge.Config or {
     playerVisionRange = 36,
@@ -14,17 +14,19 @@ NPCAIVisionBridge.Config = NPCAIVisionBridge.Config or {
     memorySeconds = 8.0,
     softMemorySeconds = 22.0,
     heardThroughWallPenalty = 0.18,
-    staleCurrentThreatMs = 900,
-    threatScanCooldownMs = 450,
-    maxThreatCandidatesPerScan = 18,
-    losCacheMs = 220,
-    losCacheMaxRecords = 360,
+    staleCurrentThreatMs = 1800,
+    threatScanCooldownMs = 1100,
+    maxThreatCandidatesPerScan = 8,
+    losCacheMs = 900,
+    losCacheMaxRecords = 768,
     playerThreshold = 0.28,
     zombieThreshold = 0.22,
     banditThreshold = 0.24
 }
 
 NPCAIVisionBridge._LOSCache = NPCAIVisionBridge._LOSCache or {items={}, count=0}
+NPCAIVisionBridge._nearbyScratch = NPCAIVisionBridge._nearbyScratch or {}
+NPCAIVisionBridge._friendScratch = NPCAIVisionBridge._friendScratch or {}
 
 local function bav_now()
     if getTimestampMs then return getTimestampMs() end
@@ -40,6 +42,14 @@ end
 
 local function bav_dist(x1, y1, x2, y2)
     return math.sqrt(bav_dist2(x1, y1, x2, y2))
+end
+
+local function bav_getLoadLevel()
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.GetLoadState then
+        local ok, state = pcall(function() return NPCWorkSchedulerBridge.GetLoadState(false) end)
+        if ok and state then return tonumber(state.level) or 0, tonumber(state.zoom) or 1 end
+    end
+    return 0, 1
 end
 
 local function bav_getBrain(chr)
@@ -103,6 +113,13 @@ local function bav_blockedByWall(observer, target)
     if not ok or not osq or not tsq then return false end
 
     local wallOk, blocked = pcall(function()
+        if osq == tsq then return false end
+        local dx = tsq:getX() - osq:getX()
+        local dy = tsq:getY() - osq:getY()
+        if math.abs(dx) <= 1 and math.abs(dy) <= 1 then
+            if osq:testCollideAdjacent(observer, dx, dy, 0) then return true end
+            if osq:isBlockedTo(tsq) or tsq:isBlockedTo(osq) then return true end
+        end
         return osq:isSomethingTo(tsq)
     end)
 
@@ -259,7 +276,7 @@ function NPCAIVisionBridge.CanDetect(observer, target, brain, kind)
 
     local ox, oy = observer:getX(), observer:getY()
     local tx, ty = target:getX(), target:getY()
-    local dist = bav_dist(ox, oy, tx, ty)
+    local d2 = bav_dist2(ox, oy, tx, ty)
     local range = bav_baseRange(brain, kind)
 
     if NPCEntity and NPCEntity.IsDNA and NPCEntity.IsDNA(observer, "blind") then
@@ -267,7 +284,14 @@ function NPCAIVisionBridge.CanDetect(observer, target, brain, kind)
     end
     if range < 6 then range = 6 end
 
-    if dist > range and dist > NPCAIVisionBridge.Config.hearingRange then
+    local hearingRange = tonumber(NPCAIVisionBridge.Config.hearingRange) or 12
+    local maxRange = math.max(range, hearingRange)
+    if d2 > maxRange * maxRange then
+        return false, nil
+    end
+
+    local dist = math.sqrt(d2)
+    if dist > range and dist > hearingRange then
         return false, nil
     end
 
@@ -453,6 +477,14 @@ function NPCAIVisionBridge.FindNearestThreat(observer, brain, maxDist, includePl
     if not observer then return nil end
 
     maxDist = maxDist or 30
+    local loadLevel, zoom = bav_getLoadLevel()
+    if loadLevel >= 3 then
+        maxDist = math.min(maxDist, zoom >= 1.75 and 18 or 22)
+    elseif loadLevel >= 2 then
+        maxDist = math.min(maxDist, zoom >= 1.75 and 22 or 26)
+    elseif loadLevel >= 1 and zoom >= 1.90 then
+        maxDist = math.min(maxDist, 28)
+    end
     local now = bav_now()
     if brain then
         brain.ai = brain.ai or {}
@@ -479,14 +511,27 @@ function NPCAIVisionBridge.FindNearestThreat(observer, brain, maxDist, includePl
             if remembered then return remembered end
             return senses.currentThreat
         end
-        senses.nextThreatScanAt = now + (NPCAIVisionBridge.Config.threatScanCooldownMs or 350)
+        local scanCooldown = tonumber(NPCAIVisionBridge.Config.threatScanCooldownMs) or 1100
+        if loadLevel >= 3 then
+            scanCooldown = scanCooldown * 2
+        elseif loadLevel >= 2 then
+            scanCooldown = math.floor(scanCooldown * 1.5)
+        end
+        senses.nextThreatScanAt = now + scanCooldown
     end
 
     local ox, oy, oz = observer:getX(), observer:getY(), observer:getZ()
     local best = nil
     local bestD2 = maxDist * maxDist
     local checkedCandidates = 0
-    local maxCandidates = tonumber(NPCAIVisionBridge.Config.maxThreatCandidatesPerScan) or 18
+    local maxCandidates = tonumber(NPCAIVisionBridge.Config.maxThreatCandidatesPerScan) or 8
+    if loadLevel >= 3 then
+        maxCandidates = math.min(maxCandidates, 3)
+    elseif loadLevel >= 2 then
+        maxCandidates = math.min(maxCandidates, 5)
+    elseif loadLevel >= 1 then
+        maxCandidates = math.min(maxCandidates, 6)
+    end
 
     if includePlayers ~= false and NPCPlayerClient and NPCPlayerClient.GetPlayers and ((NPCFactionBridge and NPCFactionBridge.IsEnabled and NPCFactionBridge.IsEnabled()) or (NPCEntity and NPCEntity.IsHostile and NPCEntity.IsHostile(observer))) then
         local playerList = NPCPlayerClient.GetPlayers()
@@ -511,7 +556,11 @@ function NPCAIVisionBridge.FindNearestThreat(observer, brain, maxDist, includePl
 
     if NPCZombieCacheBridge and NPCZombieCacheBridge.CacheLight then
         local nearby = NPCZombieCacheBridge.CacheLight
-        if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyAll then
+        if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyAllInto then
+            nearby = NPCAIVisionBridge._nearbyScratch or {}
+            NPCAIVisionBridge._nearbyScratch = nearby
+            NPCSpatialIndexBridge.GetNearbyAllInto(nearby, ox, oy, oz, maxDist)
+        elseif NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyAll then
             nearby = NPCSpatialIndexBridge.GetNearbyAll(ox, oy, oz, maxDist)
         end
 
@@ -582,7 +631,11 @@ function NPCAIVisionBridge.CountFriendsAround(observer, brain, radius)
     local r2 = (radius or 2) * (radius or 2)
     local count = 0
     local nearby = NPCZombieCacheBridge.CacheLightB
-    if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyNPCs then
+    if NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyNPCsInto then
+        nearby = NPCAIVisionBridge._friendScratch or {}
+        NPCAIVisionBridge._friendScratch = nearby
+        NPCSpatialIndexBridge.GetNearbyNPCsInto(nearby, ox, oy, oz, radius or 2)
+    elseif NPCSpatialIndexBridge and NPCSpatialIndexBridge.GetNearbyNPCs then
         nearby = NPCSpatialIndexBridge.GetNearbyNPCs(ox, oy, oz, radius or 2)
     end
 

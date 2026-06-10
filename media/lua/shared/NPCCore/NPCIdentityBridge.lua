@@ -228,6 +228,10 @@ function NPCIdentityBridge.BuildSnapshot(gmd, brain, runtimeId)
         hairColor = NPCIdentityBridge.Copy(brain.hairColor),
         beardStyle = brain.beardStyle,
         beardColor = NPCIdentityBridge.Copy(brain.beardColor),
+        humanVisualLocked = brain.humanVisualLocked,
+        humanVisualSignature = brain.humanVisualSignature,
+        humanVisualNormalized = brain.humanVisualNormalized,
+        humanVisualNormalizedAt = brain.humanVisualNormalizedAt,
 
         clan = brain.clan,
         hostile = brain.hostile,

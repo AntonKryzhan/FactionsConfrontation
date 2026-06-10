@@ -1,0 +1,7 @@
+UI_EL = {
+    /***** Factions Confrontation localization: Greek *****/
+
+    UI_optionscreen_binding_FactionsConfrontation = "Factions Confrontation",
+    UI_optionscreen_binding_POSTS = "Διαχείριση φυλακίων",
+
+}

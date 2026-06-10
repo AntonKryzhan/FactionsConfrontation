@@ -5,7 +5,7 @@
 local legacySquadCoarseWaypoints = NPCSquadCoarseWaypointsBridge
 NPCSquadCoarseWaypointsBridge = NPCSquadCoarseWaypointsBridge or legacySquadCoarseWaypoints or {}
 
-NPCSquadCoarseWaypointsBridge.VERSION = "2026-05-07-squad-coarse-waypoints-1"
+NPCSquadCoarseWaypointsBridge.VERSION = "2026-06-10-stage448-route-templates-2"
 
 NPCSquadCoarseWaypointsBridge.Config = NPCSquadCoarseWaypointsBridge.Config or {
     enabled = true,
@@ -19,17 +19,28 @@ NPCSquadCoarseWaypointsBridge.Config = NPCSquadCoarseWaypointsBridge.Config or {
     arriveDist = 1.35,
     formationSpread = 1.25,
     roadBias = true,
+    routeTemplatesEnabled = true,
+    routeTemplateMs = 18000,
+    routeTemplateMaxRecords = 180,
+    routeTemplateVariants = 4,
+    routeTemplateMinDistance = 28,
+    routeTemplateRejoinRadius = 18,
+    routeTemplateLateralStep = 7,
     debug = false
 }
 
 NPCSquadCoarseWaypointsBridge.Cache = NPCSquadCoarseWaypointsBridge.Cache or {}
+NPCSquadCoarseWaypointsBridge.RouteTemplates = NPCSquadCoarseWaypointsBridge.RouteTemplates or {}
 NPCSquadCoarseWaypointsBridge.Stats = NPCSquadCoarseWaypointsBridge.Stats or {
     resolved = 0,
     continued = 0,
     cacheHit = 0,
     cacheMiss = 0,
     failed = 0,
-    pruned = 0
+    pruned = 0,
+    routeTemplateHit = 0,
+    routeTemplateMiss = 0,
+    routeTemplateRejoin = 0
 }
 
 local function scw_now()
@@ -75,6 +86,13 @@ function NPCSquadCoarseWaypointsBridge.ApplySettings()
     c.arriveDist = scw_num("SquadNav_ArriveDist", c.arriveDist or 1.35, 0.7, 4.0)
     c.formationSpread = scw_num("SquadNav_FormationSpread", c.formationSpread or 1.25, 0, 5.0)
     c.roadBias = scw_bool("SquadNav_RoadBias", c.roadBias ~= false)
+    c.routeTemplatesEnabled = scw_bool("SquadNav_RouteTemplatesEnabled", c.routeTemplatesEnabled ~= false)
+    c.routeTemplateMs = scw_num("SquadNav_RouteTemplateMs", c.routeTemplateMs or 18000, 1000, 180000)
+    c.routeTemplateMaxRecords = scw_num("SquadNav_RouteTemplateMaxRecords", c.routeTemplateMaxRecords or 180, 16, 2000)
+    c.routeTemplateVariants = scw_num("SquadNav_RouteTemplateVariants", c.routeTemplateVariants or 4, 1, 8)
+    c.routeTemplateMinDistance = scw_num("SquadNav_RouteTemplateMinDistance", c.routeTemplateMinDistance or 28, 8, 180)
+    c.routeTemplateRejoinRadius = scw_num("SquadNav_RouteTemplateRejoinRadius", c.routeTemplateRejoinRadius or 18, 3, 80)
+    c.routeTemplateLateralStep = scw_num("SquadNav_RouteTemplateLateralStep", c.routeTemplateLateralStep or 7, 2, 40)
     c.debug = scw_bool("SquadNav_Debug", c.debug == true)
 end
 
@@ -354,11 +372,169 @@ local function scw_offsetSquare(zombie, brain, square, finalX, finalY)
     return best
 end
 
-local function scw_findSegmentSquare(zombie, brain, finalX, finalY, finalZ)
+
+local function scw_templateKey(zombie, brain, finalX, finalY, finalZ)
+    local group = scw_groupId(brain)
+    if not group or not zombie then return nil end
+    local bucket = math.max(tonumber(NPCSquadCoarseWaypointsBridge.Config.bucketSize) or 10, 12)
+    local function b(v) return math.floor((tonumber(v) or 0) / bucket) end
+    return tostring(group) .. ":" .. tostring(math.floor(tonumber(finalZ) or 0))
+        .. ":" .. tostring(b(zombie:getX())) .. ":" .. tostring(b(zombie:getY()))
+        .. ":" .. tostring(b(finalX)) .. ":" .. tostring(b(finalY))
+end
+
+local function scw_pruneRouteTemplates(now)
+    local cache = NPCSquadCoarseWaypointsBridge.RouteTemplates or {}
+    local maxRecords = tonumber(NPCSquadCoarseWaypointsBridge.Config.routeTemplateMaxRecords) or 180
+    local count = 0
+    local oldestKey = nil
+    local oldest = math.huge
+    for key, entry in pairs(cache) do
+        if not entry or now > (tonumber(entry.untilMs) or 0) then
+            cache[key] = nil
+        else
+            count = count + 1
+            if (tonumber(entry.createdAt) or 0) < oldest then
+                oldest = tonumber(entry.createdAt) or 0
+                oldestKey = key
+            end
+        end
+    end
+    if count >= maxRecords and oldestKey then cache[oldestKey] = nil end
+end
+
+local function scw_storeRouteTemplate(key, template)
+    if not key or not template or not template.points or #template.points == 0 then return end
+    local now = scw_now()
+    scw_pruneRouteTemplates(now)
+    template.createdAt = now
+    template.untilMs = now + (tonumber(NPCSquadCoarseWaypointsBridge.Config.routeTemplateMs) or 18000)
+    NPCSquadCoarseWaypointsBridge.RouteTemplates[key] = template
+end
+
+local function scw_getRouteTemplate(key)
+    if not key then return nil end
+    local now = scw_now()
+    local entry = NPCSquadCoarseWaypointsBridge.RouteTemplates[key]
+    if not entry then return nil end
+    if now > (tonumber(entry.untilMs) or 0) then
+        NPCSquadCoarseWaypointsBridge.RouteTemplates[key] = nil
+        return nil
+    end
+    return entry
+end
+
+local function scw_templateOffsets()
+    local lateral = tonumber(NPCSquadCoarseWaypointsBridge.Config.routeTemplateLateralStep) or 7
+    local variants = math.max(1, math.floor(tonumber(NPCSquadCoarseWaypointsBridge.Config.routeTemplateVariants) or 4))
+    local raw = {0, lateral, -lateral, lateral * 2, -lateral * 2, math.floor(lateral * 0.5), -math.floor(lateral * 0.5), lateral * 3}
+    local out = {}
+    for i = 1, math.min(variants, #raw) do out[#out + 1] = raw[i] end
+    return out
+end
+
+local function scw_generateRouteTemplate(zombie, brain, finalX, finalY, finalZ)
+    if not zombie or not finalX or not finalY then return nil end
+    local zx = zombie:getX()
+    local zy = zombie:getY()
+    local dist = scw_dist(zx, zy, finalX, finalY)
+    if dist < (tonumber(NPCSquadCoarseWaypointsBridge.Config.routeTemplateMinDistance) or 28) then return nil end
+    local step = tonumber(NPCSquadCoarseWaypointsBridge.Config.stepDistance) or 12
+    local maxSegments = tonumber(NPCSquadCoarseWaypointsBridge.Config.maxSegmentsPerTask) or 10
+    local segmentCount = math.max(2, math.min(maxSegments, math.ceil(dist / math.max(4, step))))
+    local vx = (finalX - zx) / math.max(0.001, dist)
+    local vy = (finalY - zy) / math.max(0.001, dist)
+    local nx = -vy
+    local ny = vx
+
+    local bestTemplate = nil
+    local bestScore = math.huge
+    for _, lateral in ipairs(scw_templateOffsets()) do
+        local points = {}
+        local score = math.abs(lateral) * 0.08
+        for i = 1, segmentCount - 1 do
+            local t = i / segmentCount
+            local bend = math.sin(t * math.pi) * lateral
+            local desiredX = zx + (finalX - zx) * t + nx * bend
+            local desiredY = zy + (finalY - zy) * t + ny * bend
+            local square = scw_findLoadedSquare(zombie, brain, desiredX, desiredY, finalZ, finalX, finalY)
+            if square then
+                points[#points + 1] = {x=square:getX(), y=square:getY(), z=square:getZ()}
+                score = score + scw_navCost(zombie, brain, square, finalX, finalY) + scw_dist2(square:getX(), square:getY(), desiredX, desiredY) * 0.15
+            else
+                score = score + 9999
+            end
+        end
+        if #points > 0 and score < bestScore then
+            bestScore = score
+            bestTemplate = {points=points, lateral=lateral, score=score, finalX=finalX, finalY=finalY, finalZ=finalZ}
+        end
+    end
+    return bestTemplate
+end
+
+local function scw_selectRouteTemplateSquare(zombie, brain, task, finalX, finalY, finalZ)
+    if not NPCSquadCoarseWaypointsBridge.Config.routeTemplatesEnabled then return nil end
+    if not zombie or not task then return nil end
+    local dist = scw_dist(zombie:getX(), zombie:getY(), finalX, finalY)
+    if dist < (tonumber(NPCSquadCoarseWaypointsBridge.Config.routeTemplateMinDistance) or 28) then return nil end
+
+    local key = scw_templateKey(zombie, brain, finalX, finalY, finalZ)
+    if not key then return nil end
+    local template = scw_getRouteTemplate(key)
+    if not template then
+        template = scw_generateRouteTemplate(zombie, brain, finalX, finalY, finalZ)
+        if template then
+            scw_storeRouteTemplate(key, template)
+            NPCSquadCoarseWaypointsBridge.Stats.routeTemplateMiss = (NPCSquadCoarseWaypointsBridge.Stats.routeTemplateMiss or 0) + 1
+        end
+    else
+        NPCSquadCoarseWaypointsBridge.Stats.routeTemplateHit = (NPCSquadCoarseWaypointsBridge.Stats.routeTemplateHit or 0) + 1
+    end
+    if not template or not template.points or #template.points == 0 then return nil end
+
+    local scw = task._scw or {}
+    local startIndex = math.max(1, tonumber(scw.routeTemplateIndex) or 1)
+    local rejoinRadius = tonumber(NPCSquadCoarseWaypointsBridge.Config.routeTemplateRejoinRadius) or 18
+    local rejoinR2 = rejoinRadius * rejoinRadius
+    local bestIndex = nil
+    local bestScore = math.huge
+    for i = startIndex, #template.points do
+        local pt = template.points[i]
+        local square = pt and scw_getSquare(pt.x, pt.y, pt.z)
+        if square and not scw_squareBlocked(square, zombie) then
+            local d2 = scw_dist2(zombie:getX(), zombie:getY(), pt.x, pt.y)
+            local score = d2 + (i - startIndex) * 18 + scw_dist2(pt.x, pt.y, finalX, finalY) * 0.015
+            if d2 <= rejoinR2 and score < bestScore then
+                bestIndex = i
+                bestScore = score
+            elseif not bestIndex and i == startIndex then
+                bestIndex = i
+                bestScore = score + 500
+            end
+        end
+    end
+    if not bestIndex then return nil end
+    local pt = template.points[bestIndex]
+    local square = scw_getSquare(pt.x, pt.y, pt.z)
+    if not square or scw_squareBlocked(square, zombie) then return nil end
+
+    task._scw = scw
+    task._scw.routeTemplateKey = key
+    task._scw.routeTemplateIndex = math.min(#template.points + 1, bestIndex + 1)
+    task._scw.routeTemplateScore = template.score
+    NPCSquadCoarseWaypointsBridge.Stats.routeTemplateRejoin = (NPCSquadCoarseWaypointsBridge.Stats.routeTemplateRejoin or 0) + 1
+    return scw_offsetSquare(zombie, brain, square, finalX, finalY)
+end
+
+local function scw_findSegmentSquare(zombie, brain, finalX, finalY, finalZ, task)
     local zx = zombie:getX()
     local zy = zombie:getY()
     local dist = scw_dist(zx, zy, finalX, finalY)
     if dist <= (tonumber(NPCSquadCoarseWaypointsBridge.Config.minDistance) or 18) then return nil end
+
+    local templated = scw_selectRouteTemplateSquare(zombie, brain, task, finalX, finalY, finalZ)
+    if templated then return templated end
 
     local step = tonumber(NPCSquadCoarseWaypointsBridge.Config.stepDistance) or 12
     if step >= dist - 2 then step = math.max(4, dist - 2) end
@@ -416,7 +592,7 @@ function NPCSquadCoarseWaypointsBridge.ResolveMoveTarget(zombie, brain, task)
         return false
     end
 
-    local square = scw_findSegmentSquare(zombie, brain, finalX, finalY, finalZ)
+    local square = scw_findSegmentSquare(zombie, brain, finalX, finalY, finalZ, task)
     if not square then
         NPCSquadCoarseWaypointsBridge.Stats.failed = (NPCSquadCoarseWaypointsBridge.Stats.failed or 0) + 1
         return false

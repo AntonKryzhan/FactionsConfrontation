@@ -1,4 +1,7 @@
 UI_TR = {
-    UI_optionscreen_binding_FactionsConfrontation = "Haydutlar/FactionsConfrontation",
-    UI_optionscreen_binding_POSTS = "Nöbetçi Karakollarýný Yönet",
+    /***** Factions Confrontation localization: Turkish *****/
+
+    UI_optionscreen_binding_FactionsConfrontation = "Factions Confrontation",
+    UI_optionscreen_binding_POSTS = "NÃ¶bet noktalarÄ±nÄ± yÃ¶net",
+
 }

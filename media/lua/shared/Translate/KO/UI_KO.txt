@@ -1,0 +1,7 @@
+UI_KO = {
+    /***** Factions Confrontation localization: Korean *****/
+
+    UI_optionscreen_binding_FactionsConfrontation = "Factions Confrontation",
+    UI_optionscreen_binding_POSTS = "경비 초소 관리",
+
+}

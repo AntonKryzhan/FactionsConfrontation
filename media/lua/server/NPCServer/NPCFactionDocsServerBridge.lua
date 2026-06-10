@@ -1,7 +1,7 @@
 -- NPCFactionDocsServerBridge.lua
 -- Neutral server-side sync and reward hooks for faction papers and daily passwords.
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCFactionDocsBridge"

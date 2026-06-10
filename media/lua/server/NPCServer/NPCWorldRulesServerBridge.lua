@@ -1,7 +1,7 @@
 -- NPCWorldRulesServerBridge.lua
 -- Neutral server backend for world-rules sync and integration summaries.
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCWorldRulesBridge"

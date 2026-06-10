@@ -60,7 +60,9 @@ function NPCProgramLooterBridge.Operate(bandit)
             if moveTask then table.insert(tasks, moveTask) end
         end
     else
-        table.insert(tasks, {action = "Time", anim = "Shrug", time = 200})
+        if not Bridge.TryLivingWorldTask or not Bridge.TryLivingWorldTask(bandit, tasks, profile, {program = "Looter", allowLoot = true, fallbackAnim = "LootLow"}) then
+            table.insert(tasks, {action = "Time", anim = "Shrug", time = 200})
+        end
     end
 
     return Bridge.Result("Operate", tasks)

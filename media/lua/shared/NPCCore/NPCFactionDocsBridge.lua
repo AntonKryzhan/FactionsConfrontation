@@ -1,5 +1,5 @@
 -- NPCFactionDocsBridge.lua
--- Neutral shared backend for virtual faction papers and daily checkpoint passwords. Does not add physical items or change player faction.
+-- Neutral shared backend for faction papers and daily checkpoint passwords. Stage 366 adds physical document items without adding disguise mechanics or UI boards.
 
 NPCFactionDocsBridge = NPCFactionDocsBridge or {}
 
@@ -14,6 +14,23 @@ local BFD_DOC_TYPES = {
     stolen_badge = {label="stolen badge", pass=true, failChance=18},
     forged_papers = {label="forged papers", pass=true, failChance=12}
 }
+
+-- MP-safe physical representation: vanilla paper tagged with ModData.
+-- This avoids introducing extra media/scripts files that can desync hosted MP servers.
+local BFD_GENERIC_DOC_ITEM = "Base.SheetPaper2"
+local BFD_LEGACY_PHYSICAL_DOC_ITEMS = {
+    red = {faction_pass = "FactionsConfrontation.RedFactionPass", convoy_order = "FactionsConfrontation.RedConvoyOrder", stolen_badge = "FactionsConfrontation.RedStolenBadge", forged_papers = "FactionsConfrontation.RedForgedPapers"},
+    green = {faction_pass = "FactionsConfrontation.GreenFactionPass", convoy_order = "FactionsConfrontation.GreenConvoyOrder", stolen_badge = "FactionsConfrontation.GreenStolenBadge", forged_papers = "FactionsConfrontation.GreenForgedPapers"},
+    blue = {faction_pass = "FactionsConfrontation.BlueFactionPass", convoy_order = "FactionsConfrontation.BlueConvoyOrder", stolen_badge = "FactionsConfrontation.BlueStolenBadge", forged_papers = "FactionsConfrontation.BlueForgedPapers"},
+    black = {faction_pass = "FactionsConfrontation.BlackFactionPass", convoy_order = "FactionsConfrontation.BlackConvoyOrder", stolen_badge = "FactionsConfrontation.BlackStolenBadge", forged_papers = "FactionsConfrontation.BlackForgedPapers"}
+}
+
+local BFD_ITEM_TO_DOC = {}
+for bfdItemSide, bfdSideItems in pairs(BFD_LEGACY_PHYSICAL_DOC_ITEMS) do
+    for bfdItemDocType, bfdItemFullType in pairs(bfdSideItems) do
+        BFD_ITEM_TO_DOC[bfdItemFullType] = {side = bfdItemSide, docType = bfdItemDocType}
+    end
+end
 
 local function bfd_bool(name, defaultValue)
     if NPCLegacySettingsBridge and NPCLegacySettingsBridge.GetBool then
@@ -131,13 +148,176 @@ function NPCFactionDocsBridge.ForgedFailChance()
     return bfd_num("Documents_ForgedFailChance", 12, 0, 100)
 end
 
+function NPCFactionDocsBridge.PhysicalDocumentsEnabled()
+    return bfd_bool("Documents_PhysicalItemsEnabled", true)
+end
+
+function NPCFactionDocsBridge.PhysicalCheckpointUseEnabled()
+    return bfd_bool("Documents_PhysicalCheckpointUseEnabled", true)
+end
+
+function NPCFactionDocsBridge.ConsumeFailedPhysicalDocuments()
+    return bfd_bool("Documents_PhysicalConsumeOnFail", true)
+end
+
+function NPCFactionDocsBridge.PhysicalItemType(side, docType)
+    if not bfd_side(side) then return nil end
+    return BFD_GENERIC_DOC_ITEM
+end
+
+local function bfd_itemFullType(item)
+    if not item then return nil end
+    if item.getFullType then
+        local ok, ft = pcall(function() return item:getFullType() end)
+        if ok and ft then return tostring(ft) end
+    end
+    if item.getModule and item.getType then
+        local ok, ft = pcall(function() return tostring(item:getModule()) .. "." .. tostring(item:getType()) end)
+        if ok and ft then return ft end
+    end
+    return nil
+end
+
+local function bfd_itemModData(item)
+    if item and item.getModData then
+        local ok, md = pcall(function() return item:getModData() end)
+        if ok then return md end
+    end
+    return nil
+end
+
+local function bfd_scanInventoryItems(container, out, depth)
+    if not container or depth > 3 then return out end
+    local items = nil
+    if container.getItems then
+        local ok, got = pcall(function() return container:getItems() end)
+        if ok then items = got end
+    end
+    if not items or not items.size or not items.get then return out end
+    local size = 0
+    local okSize, gotSize = pcall(function() return items:size() end)
+    if okSize then size = tonumber(gotSize) or 0 end
+    for i = 0, size - 1 do
+        local okItem, item = pcall(function() return items:get(i) end)
+        if okItem and item then
+            out[#out + 1] = item
+            if item.getInventory then
+                local okInv, inv = pcall(function() return item:getInventory() end)
+                if okInv and inv then bfd_scanInventoryItems(inv, out, depth + 1) end
+            end
+        end
+    end
+    return out
+end
+
+local function bfd_playerInventory(player)
+    if player and player.getInventory then
+        local ok, inv = pcall(function() return player:getInventory() end)
+        if ok then return inv end
+    end
+    return nil
+end
+
+local function bfd_removeItem(item, rootInventory)
+    if not item then return false end
+    if item.getContainer then
+        local okContainer, container = pcall(function() return item:getContainer() end)
+        if okContainer and container and container.Remove then
+            local okRemove = pcall(function() container:Remove(item) end)
+            if okRemove then return true end
+        end
+    end
+    if rootInventory and rootInventory.Remove then
+        local ok = pcall(function() rootInventory:Remove(item) end)
+        if ok then return true end
+    end
+    return false
+end
+
+function NPCFactionDocsBridge.AddPhysicalDocument(gmd, player, doc)
+    if not NPCFactionDocsBridge.PhysicalDocumentsEnabled() then return nil end
+    if not (player and doc) then return nil end
+    local inv = bfd_playerInventory(player)
+    if not inv or not inv.AddItem then return nil end
+    local fullType = NPCFactionDocsBridge.PhysicalItemType(doc.side, doc.docType)
+    if not fullType then return nil end
+    local ok, item = pcall(function() return inv:AddItem(fullType) end)
+    if not ok or not item then return nil end
+    local md = bfd_itemModData(item)
+    if md then
+        md.FactionsConfrontationDoc = true
+        md.fcDocId = tostring(doc.id or "")
+        md.fcDocSide = tostring(doc.side or "")
+        md.fcDocType = tostring(doc.docType or "")
+        md.fcDocSource = tostring(doc.source or "")
+        md.fcDocCreatedAt = tonumber(doc.createdAt) or bfd_now()
+        md.fcDocExpiresAt = tonumber(doc.expiresAt) or 0
+        md.fcDocFailChance = tonumber(doc.failChance) or (BFD_DOC_TYPES[bfd_docType(doc.docType)] and BFD_DOC_TYPES[bfd_docType(doc.docType)].failChance or 0)
+    end
+    doc.physicalItemType = fullType
+    doc.physicalGranted = true
+    if gmd then
+        local data = NPCFactionDocsBridge.EnsureData(gmd)
+        if data and data.stats then data.stats.physicalDocsGranted = (tonumber(data.stats.physicalDocsGranted) or 0) + 1 end
+    end
+    return item
+end
+
+function NPCFactionDocsBridge.FindPhysicalDocument(player, side)
+    if not NPCFactionDocsBridge.PhysicalCheckpointUseEnabled() then return nil end
+    local inv = bfd_playerInventory(player)
+    if not inv then return nil end
+    side = bfd_side(side)
+    if not side then return nil end
+    local items = bfd_scanInventoryItems(inv, {}, 0)
+    local now = bfd_now()
+    local best = nil
+    for _, item in ipairs(items) do
+        local fullType = bfd_itemFullType(item)
+        local md = bfd_itemModData(item)
+        local meta = nil
+        if md and md.FactionsConfrontationDoc == true and bfd_side(md.fcDocSide) == side then
+            meta = {side = side, docType = bfd_docType(md.fcDocType)}
+        else
+            meta = fullType and BFD_ITEM_TO_DOC[fullType] or nil
+        end
+        if meta and meta.side == side then
+            local docType = bfd_docType(meta.docType)
+            local expiresAt = md and tonumber(md.fcDocExpiresAt) or nil
+            if not expiresAt or expiresAt <= 0 or now < expiresAt then
+                local rec = {
+                    id = md and md.fcDocId or fullType,
+                    side = side,
+                    docType = docType,
+                    label = bfd_docLabel(docType),
+                    physical = true,
+                    item = item,
+                    itemType = fullType,
+                    failChance = md and tonumber(md.fcDocFailChance) or (BFD_DOC_TYPES[docType] and BFD_DOC_TYPES[docType].failChance or 0),
+                    expiresAt = expiresAt,
+                    uses = md and tonumber(md.fcDocUses) or 0
+                }
+                best = rec
+                if docType == "faction_pass" or docType == "convoy_order" then return rec end
+            elseif NPCFactionDocsBridge.ConsumeFailedPhysicalDocuments() then
+                bfd_removeItem(item, inv)
+            end
+        end
+    end
+    return best
+end
+
+function NPCFactionDocsBridge.HasPhysicalDocument(player, side)
+    return NPCFactionDocsBridge.FindPhysicalDocument(player, side) ~= nil
+end
+
 function NPCFactionDocsBridge.EnsureData(gmd)
     if not gmd then return nil end
     gmd.NPCFactionDocsBridge = gmd.NPCFactionDocsBridge or {}
     gmd.NPCFactionDocsBridge.playerDocs = gmd.NPCFactionDocsBridge.playerDocs or {}
     gmd.NPCFactionDocsBridge.learnedPasswords = gmd.NPCFactionDocsBridge.learnedPasswords or {}
     gmd.NPCFactionDocsBridge.dailyPasswords = gmd.NPCFactionDocsBridge.dailyPasswords or {}
-    gmd.NPCFactionDocsBridge.stats = gmd.NPCFactionDocsBridge.stats or {docsGranted=0, passwordsLearned=0, documentPasses=0, passwordPasses=0, denied=0}
+    gmd.NPCFactionDocsBridge.stats = gmd.NPCFactionDocsBridge.stats or {docsGranted=0, physicalDocsGranted=0, passwordsLearned=0, documentPasses=0, physicalDocumentPasses=0, passwordPasses=0, denied=0}
     gmd.NPCFactionDocsBridge.nextId = tonumber(gmd.NPCFactionDocsBridge.nextId) or 1
     return gmd.NPCFactionDocsBridge
 end
@@ -189,6 +369,7 @@ function NPCFactionDocsBridge.GrantDocument(gmd, player, side, docType, source, 
     }
     data.playerDocs[tostring(pid)][id] = doc
     data.stats.docsGranted = (tonumber(data.stats.docsGranted) or 0) + 1
+    NPCFactionDocsBridge.AddPhysicalDocument(gmd, player, doc)
     return doc
 end
 
@@ -257,7 +438,8 @@ function NPCFactionDocsBridge.UseDocumentAtCheckpoint(gmd, player, checkpoint)
     if not NPCFactionDocsBridge.IsEnabled() then return false, "disabled" end
     local data = NPCFactionDocsBridge.EnsureData(gmd)
     local side = checkpoint and bfd_side(checkpoint.side or checkpoint.checkpointSide)
-    local doc = NPCFactionDocsBridge.ValidDocument(gmd, player, side)
+    local physicalDoc = NPCFactionDocsBridge.FindPhysicalDocument(player, side)
+    local doc = physicalDoc or NPCFactionDocsBridge.ValidDocument(gmd, player, side)
     if not doc then
         if data then data.stats.denied = (tonumber(data.stats.denied) or 0) + 1 end
         return false, "no_document"
@@ -271,12 +453,23 @@ function NPCFactionDocsBridge.UseDocumentAtCheckpoint(gmd, player, checkpoint)
     if failChance > 0 and bfd_rand(100) < failChance then
         doc.compromised = true
         doc.compromisedAt = bfd_now()
+        if doc.physical and doc.item then
+            local md = bfd_itemModData(doc.item)
+            if md then md.fcDocCompromised = true; md.fcDocCompromisedAt = doc.compromisedAt end
+            if NPCFactionDocsBridge.ConsumeFailedPhysicalDocuments() then bfd_removeItem(doc.item, bfd_playerInventory(player)) end
+        end
         return false, "document_failed", doc
     end
     doc.uses = (tonumber(doc.uses) or 0) + 1
     doc.lastUsedAt = bfd_now()
-    data.stats.documentPasses = (tonumber(data.stats.documentPasses) or 0) + 1
-    return true, "document", doc
+    if doc.physical and doc.item then
+        local md = bfd_itemModData(doc.item)
+        if md then md.fcDocUses = doc.uses; md.fcDocLastUsedAt = doc.lastUsedAt end
+        data.stats.physicalDocumentPasses = (tonumber(data.stats.physicalDocumentPasses) or 0) + 1
+    else
+        data.stats.documentPasses = (tonumber(data.stats.documentPasses) or 0) + 1
+    end
+    return true, doc.physical and "physical_document" or "document", doc
 end
 
 function NPCFactionDocsBridge.UsePasswordAtCheckpoint(gmd, player, checkpoint)
@@ -326,6 +519,28 @@ function NPCFactionDocsBridge.StatusText(gmd, player)
     local pid = bfd_playerId(player)
     if not data or not pid then return "No faction papers." end
     local parts = {}
+    if NPCFactionDocsBridge.PhysicalCheckpointUseEnabled() then
+        local inv = bfd_playerInventory(player)
+        if inv then
+            local foundPhysical = {}
+            local nowPhysical = bfd_now()
+            for _, item in ipairs(bfd_scanInventoryItems(inv, {}, 0)) do
+                local fullType = bfd_itemFullType(item)
+                local meta = fullType and BFD_ITEM_TO_DOC[fullType] or nil
+                if meta then
+                    local md = bfd_itemModData(item)
+                    local exp = md and tonumber(md.fcDocExpiresAt) or nil
+                    if not exp or exp <= 0 or nowPhysical < exp then
+                        local key = tostring(meta.side) .. ":" .. tostring(meta.docType)
+                        if not foundPhysical[key] then
+                            table.insert(parts, bfd_sideLabel(meta.side) .. " physical " .. bfd_docLabel(meta.docType))
+                            foundPhysical[key] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
     local docs = data.playerDocs[tostring(pid)]
     local now = bfd_now()
     if type(docs) == "table" then

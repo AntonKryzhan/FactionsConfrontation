@@ -22,6 +22,40 @@ local function isDoorLike(object)
     return false
 end
 
+local function isDoorObject(object)
+    if not object or not instanceof then return false end
+    if instanceof(object, "IsoDoor") then return true end
+    if instanceof(object, "IsoThumpable") then
+        local okDoor, isDoor = pcall(function()
+            return object.isDoor and object:isDoor() == true
+        end)
+        return okDoor and isDoor == true
+    end
+    return false
+end
+
+local function isDoorOpen(object)
+    if not isDoorObject(object) or not object.IsOpen then return false end
+    local ok, open = pcall(function() return object:IsOpen() == true end)
+    return ok and open == true
+end
+
+local function isDoorBarricaded(object)
+    if not isDoorObject(object) then return true end
+    if object.isBarricaded then
+        local ok, barricaded = pcall(function() return object:isBarricaded() == true end)
+        if ok and barricaded == true then return true end
+    end
+    return false
+end
+
+local function canOpenDoorLikePlayer(object)
+    if not isDoorObject(object) then return false end
+    if isDoorOpen(object) then return true end
+    if isDoorBarricaded(object) then return false end
+    return true
+end
+
 local function findCandidate(square, task)
     if not square then return nil end
 
@@ -107,6 +141,38 @@ local function sendDestroyCommand(task)
     return ok == true
 end
 
+local function sendOpenDoorCommand(task)
+    if not task or not sendClientCommand or not getPlayer then return false end
+
+    local player = getPlayer()
+    if not player then return false end
+
+    local args = {x=task.x, y=task.y, z=task.z, index=task.idx or -1}
+    local ok = pcall(function()
+        sendClientCommand(player, 'NPCCommands', 'OpenDoor', args)
+    end)
+    return ok == true
+end
+
+local function openDoorLocal(object)
+    if not canOpenDoorLikePlayer(object) or isDoorOpen(object) then return false end
+
+    pcall(function() if object.setLocked then object:setLocked(false) end end)
+    pcall(function() if object.setLockedByKey then object:setLockedByKey(false) end end)
+    pcall(function() if object.setPermaLocked then object:setPermaLocked(false) end end)
+    pcall(function() if object.setLockedByPadlock then object:setLockedByPadlock(false) end end)
+
+    if object.ToggleDoorSilent then
+        pcall(function() object:ToggleDoorSilent() end)
+        return true
+    end
+    if object.ToggleDoor then
+        pcall(function() object:ToggleDoor(nil) end)
+        return true
+    end
+    return false
+end
+
 local function isController(zombie)
     return NPCUtils and NPCUtils.IsController and NPCUtils.IsController(zombie) == true
 end
@@ -151,10 +217,23 @@ function NPCActionDestroyBridge.OnWorking(zombie, task)
 end
 
 function NPCActionDestroyBridge.OnComplete(zombie, task)
+    local square = getTaskSquare(zombie, task)
+    local object = findCandidate(square, task)
+
+    -- Stage447: living NPCs should treat normal doors as usable portals first.
+    -- The old Destroy task is still kept for barricaded/blocked doors and generic thumpables.
+    if canOpenDoorLikePlayer(object) and not isDoorOpen(object) then
+        local sentOpen = isController(zombie) and isClient and isClient() and sendOpenDoorCommand(task)
+        if not sentOpen then
+            openDoorLocal(object)
+        end
+        notifyPortalComplete(zombie, task)
+        return true
+    end
+
     local sent = isController(zombie) and isClient and isClient() and sendDestroyCommand(task)
     if not sent then
-        local square = getTaskSquare(zombie, task)
-        applyDamage(findCandidate(square, task), zombie, task and task.damage or 40)
+        applyDamage(object, zombie, task and task.damage or 40)
     end
 
     notifyPortalComplete(zombie, task)

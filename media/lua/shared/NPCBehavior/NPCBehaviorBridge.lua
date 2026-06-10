@@ -1,6 +1,8 @@
 NPCBehaviorBridge = NPCBehaviorBridge or {}
 
 require "NPCCore/NPCLegacyContractBridge"
+require "NPCBehavior/NPCIntentArbiterBridge"
+require "NPCBehavior/NPCLivingWorldIntentBridge"
 
 local Bridge = NPCBehaviorBridge
 
@@ -238,6 +240,33 @@ function Bridge.MoveTaskToSquare(bandit, square, walkType, endurance, closeSlow)
     if not square or not square.getX or not NPCUtils or not NPCUtils.GetMoveTask then return nil end
     local dist = Bridge.DistanceToSquareCenter(bandit, square)
     return NPCUtils.GetMoveTask(endurance or 0, square:getX(), square:getY(), square:getZ(), walkType or "Walk", dist, closeSlow == true)
+end
+
+function Bridge.MarkCompanionOrderMoveTask(task, order, reason)
+    if type(task) ~= "table" then return task end
+    task.playerOrder = true
+    task.manualOrder = true
+    task.source = task.source or "player"
+    task.allowOrderTeleport = true
+    task.orderName = order and order.name or task.orderName
+    task.strictOrderName = order and order.name or task.strictOrderName
+    task.orderIssued = order and order.issued or task.orderIssued
+    task.orderSequence = tonumber(order and order.sequence) or task.orderSequence
+    task.directorReason = task.directorReason or reason or "companion player order"
+    task.orderTeleportAfterMs = task.orderTeleportAfterMs or 950
+    task.arriveDist = math.max(tonumber(task.arriveDist) or 0.9, 1.0)
+    if order and NPCOrderContract and NPCOrderContract.IsPlayerCommandTacticalOrderName and NPCOrderContract.IsPlayerCommandTacticalOrderName(order.name) then
+        task.playerTacticalOrder = true
+        task.playerCommand = true
+        task.commandAuthority = "player"
+        task.tacticalOrderName = order.name
+        task.tacticalMove = task.action == "Move" or task.action == "GoTo" or task.action == "Walk" or task.action == "Run"
+        task.pathThrottleMs = math.min(tonumber(task.pathThrottleMs) or 850, 850)
+        task.sameTargetPathThrottleMs = math.min(tonumber(task.sameTargetPathThrottleMs) or 2200, 2200)
+        task.orderTeleportAfterMs = math.max(tonumber(task.orderTeleportAfterMs) or 950, 900)
+        task.arriveDist = math.max(tonumber(task.arriveDist) or 1.0, tonumber(order.tacticalSettle) or 1.15)
+    end
+    return task
 end
 
 function Bridge.IsAtSameZ(bandit, square)
@@ -614,7 +643,13 @@ function Bridge.HasClearShot(shooter, target)
     end
     if NPCUtils and NPCUtils.LineClear then
         local ok, clear = pcall(function() return NPCUtils.LineClear(shooter, target) end)
-        if ok and clear == false then return false end
+        if ok and clear == false then
+            if target.getVariableBoolean and NPCLegacyContractBridge and NPCLegacyContractBridge.Keys and target:getVariableBoolean(NPCLegacyContractBridge.Keys.FLAG) then
+                local okSee, canSee = pcall(function() return shooter:CanSee(target) end)
+                if okSee and canSee == true then return true end
+            end
+            return false
+        end
     end
     return true
 end
@@ -967,9 +1002,21 @@ function Bridge.TryWaterBridgeApproach(bandit, target, profile, tasks)
     return "Follow"
 end
 
+
+function Bridge.TryLivingWorldTask(bandit, tasks, profile, options)
+    if not (NPCLivingWorldIntentBridge and NPCLivingWorldIntentBridge.PlanProgramTasks) then return false end
+    local ok, handled = pcall(function()
+        return NPCLivingWorldIntentBridge.PlanProgramTasks(bandit, tasks, profile, options)
+    end)
+    return ok and handled == true
+end
+
 function Bridge.HostileCombatMoveStage(bandit, profile, tasks)
     local target = Bridge.SelectCombatTarget(bandit, {playerHandicap = 6})
     if not (target and target.x and target.y and target.z) then
+        if Bridge.TryLivingWorldTask(bandit, tasks, profile, {program = "Raider", allowLoot = true, fallbackAnim = "ShiftWeight"}) then
+            return "Follow"
+        end
         table.insert(tasks, Bridge.MakeTimeTask("Shrug", 200))
         return "Follow"
     end
@@ -1403,22 +1450,210 @@ function Bridge.CompanionRestockForOrder(bandit, brain, order)
     end
 end
 
+
+local function companionNowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and tonumber(value) then return tonumber(value) end
+    end
+    if getGameTime then
+        local ok, value = pcall(function() return getGameTime():getWorldAgeHours() end)
+        if ok and tonumber(value) then return math.floor((tonumber(value) or 0) * 3600000) end
+    end
+    return os and os.time and os.time() * 1000 or 0
+end
+
+function Bridge.CompanionSearchPhase(brain, order, key, stepMs)
+    if type(brain) ~= "table" then return 0 end
+    local issuedKey = tostring(order and order.issued or 0)
+    key = tostring(key or "search")
+    local stampKey = "mercenarySearchIssued_" .. key
+    local startKey = "mercenarySearchStartedMs_" .. key
+    local now = companionNowMs()
+    if brain[stampKey] ~= issuedKey then
+        brain[stampKey] = issuedKey
+        brain[startKey] = now
+    end
+    return math.floor(math.max(0, now - (tonumber(brain[startKey]) or now)) / (tonumber(stepMs) or 6500))
+end
+
+local function companionSearchAnim(role, idx, phase)
+    -- Stage 370: keep manual patrol/search orders out of hand-gesture loops.
+    -- The actual loot transfer still uses LootItems; ambient search uses Idle so
+    -- a raised rifle/hand animation cannot trap the NPC between move orders.
+    return "Idle", 45
+end
+
+local function companionHouseFallbackPositions(anchor, bandit, order)
+    local cell = getCell and getCell() or nil
+    if not cell then return nil end
+    local ax = math.floor(tonumber(anchor and anchor.x) or (bandit and bandit.getX and bandit:getX()) or 0)
+    local ay = math.floor(tonumber(anchor and anchor.y) or (bandit and bandit.getY and bandit:getY()) or 0)
+    local az = math.floor(tonumber(anchor and anchor.z) or (bandit and bandit.getZ and bandit:getZ()) or 0)
+    local list = {}
+    for r = 0, 4 do
+        for dx = -r, r do
+            for dy = -r, r do
+                if r == 0 or math.abs(dx) == r or math.abs(dy) == r then
+                    local square = cell:getGridSquare(ax + dx, ay + dy, az)
+                    if square and Bridge.CompanionIsSquareFree(square) then
+                        list[#list + 1] = {square = square, score = 10 - r, faceX = ax, faceY = ay, role = "fallback"}
+                        if #list >= 8 then return list end
+                    end
+                end
+            end
+        end
+    end
+    return #list > 0 and list or nil
+end
+
+local function companionPlayerAnchorHousePositions(anchor, bandit, order)
+    local cell = getCell and getCell() or nil
+    if not (cell and anchor and anchor.x and anchor.y) then return nil end
+
+    local ax = math.floor(tonumber(anchor.x) or 0)
+    local ay = math.floor(tonumber(anchor.y) or 0)
+    local az = math.floor(tonumber(anchor.z) or 0)
+    local anchorSquare = cell:getGridSquare(ax, ay, az)
+    local targetBuilding = companionSquareBuilding(anchorSquare)
+    local targetRoom = companionSquareRoom(anchorSquare)
+
+    -- The explicit house-search order is valid only when the player anchor is
+    -- inside a loaded building/room.  If the player is outside or the room is
+    -- not loaded, companions should visibly refuse instead of running around
+    -- the house exterior looking for an arbitrary building point.
+    if not (targetBuilding and targetRoom) then return nil end
+
+    local function collect(radius, requireSameRoom)
+        local list = {}
+        for r = 0, radius do
+            for dx = -r, r do
+                for dy = -r, r do
+                    if r == 0 or math.abs(dx) == r or math.abs(dy) == r then
+                        local square = cell:getGridSquare(ax + dx, ay + dy, az)
+                        if square and companionSquareBuilding(square) == targetBuilding and Bridge.CompanionIsSquareFree(square) then
+                            local room = companionSquareRoom(square)
+                            if (not requireSameRoom) or room == targetRoom then
+                                local sx = square:getX()
+                                local sy = square:getY()
+                                local d2 = ((sx + 0.5) - (tonumber(anchor.x) or ax)) * ((sx + 0.5) - (tonumber(anchor.x) or ax))
+                                    + ((sy + 0.5) - (tonumber(anchor.y) or ay)) * ((sy + 0.5) - (tonumber(anchor.y) or ay))
+                                local score = 120 - (d2 * 7) - (r * 0.25)
+                                if room == targetRoom then score = score + 28 end
+                                if companionHasStairs(square) then score = score - 10 end
+                                local role = room == targetRoom and "player_anchor" or "nearby_room"
+                                list[#list + 1] = {
+                                    square = square,
+                                    score = score,
+                                    faceX = tonumber(anchor.x) or ax,
+                                    faceY = tonumber(anchor.y) or ay,
+                                    role = role,
+                                    playerAnchor = true
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        if #list > 1 then table.sort(list, function(a, b) return (a.score or 0) > (b.score or 0) end) end
+        return #list > 0 and list or nil
+    end
+
+    return collect(4, true) or collect(5, false)
+end
+
+local function companionQueueEntryAction(tasks, bandit, position, order)
+    if not (tasks and bandit and position and position.square) then return false end
+    if position.role ~= "window" and position.role ~= "door" then return false end
+    local square = position.square
+    local dist = NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(bandit:getX(), bandit:getY(), square:getX() + 0.5, square:getY() + 0.5) or 9999
+    if dist > 2.6 or math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(square:getZ()) or 0)) > 0.2 then return false end
+    tasks[#tasks + 1] = {action="FaceLocation", anim="Idle", x=square:getX() + 0.5, y=square:getY() + 0.5, time=35, playerOrder=true, orderName=order and order.name, orderIssued=order and order.issued}
+    return true
+end
+
 function Bridge.CompanionTryLootHouseOrder(bandit, brain, order, tasks, endurance)
     if not (bandit and brain and order and order.name == "LootHouse") then return nil end
     if not Bridge.IsHiredMercenaryBrain(brain) then return nil end
     tasks = tasks or {}
 
+    brain.commandAuthority = "player"
+    brain.playerCommandAuthority = true
     Bridge.CompanionRestockForOrder(bandit, brain, order)
 
-    local positions = Bridge.CompanionFindHousePositions(order.anchor, bandit, order)
+    local anchor = Bridge.CompanionOrderAnchor(order, bandit)
+    local positions = nil
+    if anchor and Bridge.CompanionFindHousePositions then
+        positions = Bridge.CompanionFindHousePositions(anchor, bandit, order)
+    end
+    if (not positions or #positions == 0) then
+        positions = companionPlayerAnchorHousePositions(order.anchor, bandit, order)
+    end
     if not positions or #positions == 0 then
-        table.insert(tasks, Bridge.MakeTimeTask("Shrug", 120))
+        Bridge.SetCompanionStationary(bandit, true)
+        table.insert(tasks, Bridge.CompanionMarkPlayerLootTask(Bridge.MakeTimeTask("Idle", 45), order, "companion player house loot no room"))
         return "Follow"
     end
 
+    local target = nil
+    if NPCPostCombatLootBridge and NPCPostCombatLootBridge.FindHouseLootTarget and NPCPostCombatLootBridge.BuildHouseLootTask then
+        local okTarget = pcall(function() target = NPCPostCombatLootBridge.FindHouseLootTarget(bandit, brain, order, positions) end)
+        if not okTarget then target = nil end
+    end
+    if target and target.square then
+        local square = target.square
+        local tx = square:getX() + 0.5
+        local ty = square:getY() + 0.5
+        local tz = square:getZ()
+        local dist = NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(bandit:getX(), bandit:getY(), tx, ty) or 9999
+        local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(tz) or 0))
+        brain.playerLootTarget = {
+            issued = order.issued,
+            sequence = order.sequence,
+            name = "LootHouse",
+            x = tx,
+            y = ty,
+            z = tz,
+            houseLoot = true,
+            score = target.score,
+            itemCount = target.itemCount
+        }
+        if dist > 1.15 or zdist > 0.2 then
+            Bridge.SetCompanionStationary(bandit, false)
+            if NPCUtils and NPCUtils.GetMoveTask then
+                local walkType = (dist > 2.2 or zdist > 0.2) and "Run" or "Walk"
+                local moveTask = NPCUtils.GetMoveTask(endurance or 0, tx, ty, tz, walkType, dist, false)
+                moveTask = Bridge.CompanionMarkPlayerLootTask(moveTask, order, "companion player house loot move")
+                if moveTask then
+                    moveTask.orderTeleportAfterMs = 280
+                    moveTask.orderTeleportSearchRadius = 3
+                    moveTask.orderTeleportMaxDist = 180
+                    moveTask.orderStuckNoMoveMs = 420
+                    moveTask.orderStuckNoProgressMs = 650
+                    moveTask.routerTtlMs = 1800
+                    moveTask.movementIntentTtlMs = 2200
+                    moveTask.playerAnchorHouseOrder = true
+                    moveTask.arriveDist = math.max(tonumber(moveTask.arriveDist) or 0.9, 1.15)
+                    table.insert(tasks, moveTask)
+                end
+            end
+            return "Follow"
+        end
+        local lootTask = nil
+        local okTask = pcall(function() lootTask = NPCPostCombatLootBridge.BuildHouseLootTask(bandit, brain, order, target) end)
+        if okTask and lootTask then
+            Bridge.SetCompanionStationary(bandit, true)
+            lootTask = Bridge.CompanionMarkPlayerLootTask(lootTask, order, "companion player house loot action")
+            table.insert(tasks, lootTask)
+            return "Follow"
+        end
+    end
+
     local idx = Bridge.CompanionMemberIndex(bandit, brain)
+    local phase = Bridge.CompanionSearchPhase(brain, order, "house", 3200)
     local top = math.min(#positions, 18)
-    local position = positions[((idx - 1) % top) + 1]
+    local position = positions[((idx * 2 + phase - 3) % top) + 1]
     if not (position and position.square) then return nil end
 
     local square = position.square
@@ -1435,14 +1670,29 @@ function Bridge.CompanionTryLootHouseOrder(bandit, brain, order, tasks, enduranc
         z = tz,
         role = position.role,
         faceX = position.faceX,
-        faceY = position.faceY
+        faceY = position.faceY,
+        phase = phase
     }
 
-    if dist > 0.95 or zdist > 0.2 then
+    if dist > 1.35 or zdist > 0.2 then
         Bridge.SetCompanionStationary(bandit, false)
+        companionQueueEntryAction(tasks, bandit, position, order)
         if NPCUtils and NPCUtils.GetMoveTask then
-            local walkType = dist > 10 and "Run" or "Walk"
-            table.insert(tasks, NPCUtils.GetMoveTask(endurance or 0, tx, ty, tz, walkType, dist, false))
+            local walkType = (dist > 2.2 or zdist > 0.2) and "Run" or "Walk"
+            local task = NPCUtils.GetMoveTask(endurance or 0, tx, ty, tz, walkType, dist, false)
+            task = Bridge.CompanionMarkPlayerLootTask(task, order, "companion loot house search order")
+            if task then
+                task.orderTeleportAfterMs = 280
+                task.orderTeleportSearchRadius = 3
+                task.orderTeleportMaxDist = 180
+                task.orderStuckNoMoveMs = 420
+                task.orderStuckNoProgressMs = 650
+                task.routerTtlMs = 1800
+                task.movementIntentTtlMs = 2200
+                task.playerAnchorHouseOrder = true
+                task.arriveDist = math.max(tonumber(task.arriveDist) or 0.9, 1.45)
+                table.insert(tasks, task)
+            end
         end
         return "Follow"
     end
@@ -1451,32 +1701,16 @@ function Bridge.CompanionTryLootHouseOrder(bandit, brain, order, tasks, enduranc
 
     local faceX = position.faceX or tx
     local faceY = position.faceY or ty
-    if math.abs(faceX - tx) > 0.1 or math.abs(faceY - ty) > 0.1 then
-        table.insert(tasks, {action = "FaceLocation", anim = "Idle", x = faceX, y = faceY, time = 100})
-    end
-
-    local role = position.role or "interior"
-    if role == "window" then
-        if idx % 3 == 0 then
-            table.insert(tasks, Bridge.MakeTimeTask("AimRifle", 110))
-        else
-            table.insert(tasks, Bridge.MakeTimeTask("ShiftWeight", 130))
-        end
-    elseif role == "stairs" or role == "door" then
-        if idx % 2 == 0 then
-            table.insert(tasks, Bridge.MakeTimeTask("AimRifleLow", 100))
-        else
-            table.insert(tasks, Bridge.MakeTimeTask("ShiftWeight", 140))
-        end
-    else
-        local variant = idx % 4
-        if variant == 0 then
-            table.insert(tasks, Bridge.MakeTimeTask("Smoke", 180))
-        elseif variant == 1 then
-            table.insert(tasks, Bridge.MakeTimeTask("ReloadRifle", 120))
-        else
-            table.insert(tasks, Bridge.MakeTimeTask("ShiftWeight", 160))
-        end
+    -- Stage 371: do not queue hand/face loops for house search.  If there is
+    -- no real loot action, use a tiny idle tick and let the next evaluation pick
+    -- the next room slot.  This keeps rifles/hands from trapping movement.
+    local ambientTask = Bridge.MakeTimeTask("Idle", 18)
+    ambientTask.houseAmbient = true
+    ambientTask.playerCommandHouseSearch = true
+    ambientTask.noHandGesture = true
+    table.insert(tasks, Bridge.CompanionMarkPlayerLootTask(ambientTask, order, "companion house loot scan tick"))
+    if brain then
+        brain.mercenarySearchStartedMs_house = (companionNowMs and companionNowMs() or 0) - 3200
     end
     return "Follow"
 end
@@ -1493,12 +1727,28 @@ local function companionAtan2(y, x)
     return 0
 end
 
+local function companionStableSlotNumber(v)
+    local n = tonumber(v)
+    if n and n ~= 0 then return math.floor(math.abs(n)) end
+    if type(v) == "string" then
+        local suffix = v:match("(%d+)%s*$")
+        if suffix then
+            n = tonumber(suffix)
+            if n and n > 0 then return math.floor(n) end
+        end
+    end
+    return nil
+end
+
 function Bridge.CompanionMemberIndex(bandit, brain)
-    local value = brain and (brain.memberIndex or brain.slotIndex or brain.id or brain.uid) or nil
-    value = tonumber(value)
+    local value = nil
+    if type(brain) == "table" then
+        value = companionStableSlotNumber(brain.memberIndex) or companionStableSlotNumber(brain.slotIndex) or companionStableSlotNumber(brain.formationIndex) or companionStableSlotNumber(brain.mercenarySlotIndex)
+        if not value then value = companionStableSlotNumber(brain.id) or companionStableSlotNumber(brain.uid) or companionStableSlotNumber(brain.persistentId) or companionStableSlotNumber(brain.runtimeId) end
+    end
     if not value and NPCUtils and NPCUtils.GetCharacterID then
         local ok, id = pcall(function() return NPCUtils.GetCharacterID(bandit) end)
-        if ok then value = tonumber(id) end
+        if ok then value = companionStableSlotNumber(id) end
     end
     value = math.abs(value or 1)
     return ((math.max(1, value) - 1) % 18) + 1
@@ -1673,28 +1923,56 @@ function Bridge.CompanionTryTacticalPointOrder(bandit, brain, order, tasks, endu
     if not (NPCOrderContract and NPCOrderContract.IsTacticalPointOrder and NPCOrderContract.IsTacticalPointOrder(order)) then return nil end
     tasks = tasks or {}
 
+    local playerCommanded = NPCOrderContract and NPCOrderContract.IsPlayerCommandedTacticalOrderActive and NPCOrderContract.IsPlayerCommandedTacticalOrderActive(brain)
+    local profile = NPCOrderContract and NPCOrderContract.GetPlayerCommandTacticalProfile and NPCOrderContract.GetPlayerCommandTacticalProfile(order.name) or nil
+    if playerCommanded then
+        brain.commandAuthority = "player"
+        brain.playerCommandAuthority = true
+        brain.ai = brain.ai or {}
+        brain.ai.lastPlayerTacticalEvalAtMs = getTimestampMs and getTimestampMs() or brain.ai.lastPlayerTacticalEvalAtMs
+        brain.ai.playerTacticalOrderName = order.name
+    end
+
     local master = Bridge.GetMasterPlayer(bandit)
     local tx, ty, tz, fx, fy = Bridge.CompanionTacticalSlot(order.name, order, bandit, brain, master)
     if not (tx and ty) then return nil end
 
     local dist = NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(bandit:getX(), bandit:getY(), tx, ty) or 0
     local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(tz) or 0))
+    if playerCommanded then
+        brain.playerTacticalSlot = {
+            order = order.name,
+            issued = order.issued,
+            sequence = order.sequence,
+            x = tx,
+            y = ty,
+            z = tz,
+            faceX = fx,
+            faceY = fy,
+            profile = profile and profile.mode or nil,
+            stationary = profile and profile.stationary == true or nil
+        }
+    end
     local walkType = "Walk"
     if order.name == "Flank" or order.name == "Advance" or order.name == "FallBack" then walkType = "Run" end
     if dist > 8 then walkType = "Run" end
 
-    if dist > 1.25 or zdist > 0.2 then
+    local settle = tonumber(order.tacticalSettle) or (profile and tonumber(profile.settle)) or 1.25
+    if dist > settle or zdist > 0.2 then
         Bridge.SetCompanionStationary(bandit, false)
         if NPCUtils and NPCUtils.GetMoveTask then
-            table.insert(tasks, NPCUtils.GetMoveTask(endurance or 0, tx, ty, tz or bandit:getZ(), walkType, dist, false))
+            local task = NPCUtils.GetMoveTask(endurance or 0, tx, ty, tz or bandit:getZ(), walkType, dist, false)
+            table.insert(tasks, Bridge.MarkCompanionOrderMoveTask(task, order, "companion tactical point order"))
         end
         return "Follow"
     end
 
-    Bridge.SetCompanionStationary(bandit, true)
+    Bridge.SetCompanionStationary(bandit, profile and profile.stationary == true or true)
 
     if fx and fy then
-        table.insert(tasks, {action = "FaceLocation", anim = "Idle", x = fx, y = fy, time = 100})
+        local faceTask = {action = "FaceLocation", anim = "Idle", x = fx, y = fy, time = 100}
+        Bridge.MarkCompanionOrderMoveTask(faceTask, order, "companion tactical face order")
+        table.insert(tasks, faceTask)
     end
 
     local id = Bridge.CompanionMemberIndex(bandit, brain)
@@ -1722,8 +2000,278 @@ function Bridge.CompanionGetOrder(brain)
     return (NPCOrderContract and NPCOrderContract.Get and NPCOrderContract.Get(brain)) or brain.order
 end
 
+function Bridge.CompanionIsLootCommandOrderName(orderName)
+    orderName = NPCOrderContract and NPCOrderContract.NormalizeOrderName and NPCOrderContract.NormalizeOrderName(orderName) or tostring(orderName or "")
+    return orderName == "Loot"
+        or orderName == "LootArea"
+        or orderName == "LootHouse"
+        or orderName == "LootBodies"
+        or orderName == "LootBodiesGear"
+        or orderName == "LootBodiesClothing"
+        or orderName == "LootBodiesWeapons"
+        or orderName == "LootBodiesAmmo"
+        or orderName == "LootBodiesMedical"
+        or orderName == "LootBodiesSupplies"
+        or orderName == "RearmHere"
+end
+
+function Bridge.CompanionMarkPlayerLootTask(task, order, reason)
+    if type(task) ~= "table" then return task end
+    if Bridge.MarkCompanionOrderMoveTask then
+        task = Bridge.MarkCompanionOrderMoveTask(task, order, reason or "companion player loot order") or task
+    end
+    task.source = "player"
+    task.commandAuthority = "player"
+    task.playerCommand = true
+    task.playerLootOrder = true
+    task.manualOrder = true
+    task.orderName = task.orderName or (order and order.name)
+    task.orderIssued = task.orderIssued or (order and order.issued)
+    task.orderSequence = task.orderSequence or (order and order.sequence)
+    return task
+end
+
+function Bridge.CompanionTryManualLootTargetOrder(bandit, brain, order, tasks, endurance)
+    if not (bandit and brain and order and Bridge.CompanionIsLootCommandOrderName(order.name)) then return nil end
+    if not Bridge.IsHiredMercenaryBrain(brain) then return nil end
+    if not (NPCPostCombatLootBridge and NPCPostCombatLootBridge.FindManualLootTarget and NPCPostCombatLootBridge.BuildManualLootTask) then return nil end
+    tasks = tasks or {}
+
+    brain.commandAuthority = "player"
+    brain.playerCommandAuthority = true
+    brain.ai = brain.ai or {}
+    brain.ai.playerLootOrderName = order.name
+    brain.ai.playerLootOrderAtMs = companionNowMs()
+
+    local orderName = NPCOrderContract and NPCOrderContract.NormalizeOrderName and NPCOrderContract.NormalizeOrderName(order.name) or tostring(order.name or "")
+    if orderName == "Loot" or orderName == "LootArea" then
+        Bridge.CompanionRestockForOrder(bandit, brain, order)
+    end
+
+    local target = nil
+    local okTarget = pcall(function() target = NPCPostCombatLootBridge.FindManualLootTarget(bandit, brain, order) end)
+    if not okTarget then target = nil end
+    if not (target and target.square) then return nil end
+
+    local square = target.square
+    local tx = square:getX() + 0.5
+    local ty = square:getY() + 0.5
+    local tz = square:getZ()
+    local dist = NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(bandit:getX(), bandit:getY(), tx, ty) or 9999
+    local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(tz) or 0))
+
+    brain.playerLootTarget = {
+        issued = order.issued,
+        sequence = order.sequence,
+        name = orderName,
+        x = tx,
+        y = ty,
+        z = tz,
+        bodiesOnly = target.bodiesOnly == true,
+        score = target.score,
+        itemCount = target.itemCount
+    }
+
+    if dist > 1.25 or zdist > 0.2 then
+        Bridge.SetCompanionStationary(bandit, false)
+        if NPCUtils and NPCUtils.GetMoveTask then
+            local walkType = (dist > 3.0 or zdist > 0.2) and "Run" or "Walk"
+            local moveTask = NPCUtils.GetMoveTask(endurance or 0, tx, ty, tz, walkType, dist, false)
+            moveTask = Bridge.CompanionMarkPlayerLootTask(moveTask, order, "companion player loot move")
+            if moveTask then
+                moveTask.orderTeleportAfterMs = orderName == "RearmHere" and 420 or 520
+                moveTask.orderTeleportSearchRadius = 2
+                moveTask.orderStuckNoMoveMs = 520
+                moveTask.orderStuckNoProgressMs = 820
+                moveTask.routerTtlMs = 1800
+                moveTask.arriveDist = math.max(tonumber(moveTask.arriveDist) or 1.0, 1.25)
+                table.insert(tasks, moveTask)
+            end
+        end
+        return "Follow"
+    end
+
+    local lootTask = nil
+    local okTask = pcall(function() lootTask = NPCPostCombatLootBridge.BuildManualLootTask(bandit, brain, order, target) end)
+    if okTask and lootTask then
+        Bridge.SetCompanionStationary(bandit, true)
+        lootTask = Bridge.CompanionMarkPlayerLootTask(lootTask, order, "companion player loot action")
+        table.insert(tasks, lootTask)
+        return "Follow"
+    end
+
+    return nil
+end
+
+function Bridge.CompanionTryLootAreaOrder(bandit, brain, order, tasks, endurance)
+    if not (bandit and brain and order and Bridge.CompanionIsLootCommandOrderName(order.name)) then return nil end
+    if not Bridge.IsHiredMercenaryBrain(brain) then return nil end
+    tasks = tasks or {}
+
+    local targetStage = Bridge.CompanionTryManualLootTargetOrder(bandit, brain, order, tasks, endurance)
+    if targetStage then return targetStage end
+
+    local orderName = NPCOrderContract and NPCOrderContract.NormalizeOrderName and NPCOrderContract.NormalizeOrderName(order.name) or tostring(order.name or "")
+    if orderName == "RearmHere" or string.find(orderName, "LootBodies", 1, true) then
+        Bridge.SetCompanionStationary(bandit, true)
+        table.insert(tasks, Bridge.CompanionMarkPlayerLootTask(Bridge.MakeTimeTask("Idle", 45), order, "companion player loot miss"))
+        return "Follow"
+    end
+
+    local anchor = Bridge.CompanionOrderAnchor(order, bandit)
+    if not anchor then return nil end
+
+    local idx = Bridge.CompanionMemberIndex(bandit, brain)
+    local phase = Bridge.CompanionSearchPhase(brain, order, "area", 7200)
+    local ring = 2 + ((idx + phase) % 4)
+    local radius = 2.5 + ring * 1.2
+    local angle = ((idx - 1) * 2.399963) + phase * 0.82
+    local rawX = anchor.x + math.cos(angle) * radius
+    local rawY = anchor.y + math.sin(angle) * radius
+    local rawZ = tonumber(anchor.z) or (bandit.getZ and bandit:getZ()) or 0
+
+    local cell = getCell and getCell() or nil
+    local square = nil
+    if cell then
+        local bx = math.floor(rawX)
+        local by = math.floor(rawY)
+        local bz = math.floor(rawZ)
+        for r = 0, 3 do
+            for dx = -r, r do
+                for dy = -r, r do
+                    if r == 0 or math.abs(dx) == r or math.abs(dy) == r then
+                        local test = cell:getGridSquare(bx + dx, by + dy, bz)
+                        if test and Bridge.CompanionIsSquareFree(test) then
+                            square = test
+                            break
+                        end
+                    end
+                end
+                if square then break end
+            end
+            if square then break end
+        end
+    end
+
+    local tx = square and (square:getX() + 0.5) or rawX
+    local ty = square and (square:getY() + 0.5) or rawY
+    local tz = square and square:getZ() or rawZ
+    local dist = NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(bandit:getX(), bandit:getY(), tx, ty) or 9999
+    local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(tz) or 0))
+
+    brain.tacticalAreaSlot = {
+        issued = order.issued,
+        x = tx,
+        y = ty,
+        z = tz,
+        phase = phase,
+        role = "area",
+        faceX = anchor.x,
+        faceY = anchor.y
+    }
+
+    if dist > 1.35 or zdist > 0.2 then
+        Bridge.SetCompanionStationary(bandit, false)
+        if NPCUtils and NPCUtils.GetMoveTask then
+            local walkType = (dist > 2.2 or zdist > 0.2) and "Run" or "Walk"
+            local task = NPCUtils.GetMoveTask(endurance or 0, tx, ty, tz, walkType, dist, false)
+            task = Bridge.CompanionMarkPlayerLootTask(task, order, "companion loot area search order")
+            if task then
+                task.orderTeleportAfterMs = 650
+                table.insert(tasks, task)
+            end
+        end
+        return "Follow"
+    end
+
+    Bridge.SetCompanionStationary(bandit, false)
+    local ambientTask = Bridge.MakeTimeTask("Idle", 18)
+    ambientTask.areaAmbient = true
+    ambientTask.noHandGesture = true
+    table.insert(tasks, Bridge.CompanionMarkPlayerLootTask(ambientTask, order, "companion loot area scan tick"))
+    if brain then brain.mercenarySearchStartedMs_area = (companionNowMs and companionNowMs() or 0) - 7200 end
+    return "Follow"
+end
+
 function Bridge.CompanionTryDirectorOrder(bandit, brain, orderName, tasks)
     if not (orderName == "Patrol" or orderName == "Loot" or orderName == "Return") then return nil end
+
+    local order = Bridge.CompanionGetOrder(brain)
+    local anchor = Bridge.CompanionOrderAnchor(order, bandit)
+    if orderName == "Patrol" and anchor and anchor.x and anchor.y then
+        local idx = Bridge.CompanionMemberIndex(bandit, brain)
+        local phase = Bridge.CompanionSearchPhase(brain, order, "patrol", 2200)
+        local ring = math.floor((idx - 1) / 8)
+        local radius = 3.2 + ring * 1.0 + ((idx + phase) % 3) * 0.75
+        local angle = ((idx - 1) * 2.399963) + phase * 1.13 + 0.42
+        local rawX = anchor.x + math.cos(angle) * radius
+        local rawY = anchor.y + math.sin(angle) * radius
+        local rawZ = anchor.z or (bandit.getZ and bandit:getZ()) or 0
+        local tx, ty, tz = rawX, rawY, rawZ
+        local cell = getCell and getCell() or nil
+        if cell then
+            local bx = math.floor(rawX)
+            local by = math.floor(rawY)
+            local bz = math.floor(rawZ)
+            local square = nil
+            for r = 0, 2 do
+                for dx = -r, r do
+                    for dy = -r, r do
+                        if r == 0 or math.abs(dx) == r or math.abs(dy) == r then
+                            local test = cell:getGridSquare(bx + dx, by + dy, bz)
+                            if test and Bridge.CompanionIsSquareFree(test) then square = test; break end
+                        end
+                    end
+                    if square then break end
+                end
+                if square then break end
+            end
+            if square then tx, ty, tz = square:getX() + 0.5, square:getY() + 0.5, square:getZ() end
+        end
+        local dist = NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(bandit:getX(), bandit:getY(), tx, ty) or 9999
+        local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(tz) or 0))
+        brain.playerPatrolSlot = {issued=order.issued, sequence=order.sequence, x=tx, y=ty, z=tz, phase=phase}
+        Bridge.SetCompanionStationary(bandit, false)
+        if dist > 0.95 or zdist > 0.2 then
+            if NPCUtils and NPCUtils.GetMoveTask then
+                local task = NPCUtils.GetMoveTask(0, tx, ty, tz, dist > 5 and "Run" or "Walk", dist, true)
+                task.arriveDist = 0.85
+                task.pathThrottleMs = 420
+                task.sameTargetPathThrottleMs = 950
+                table.insert(tasks, Bridge.MarkCompanionOrderMoveTask(task, order, "companion moving patrol order"))
+            end
+            return "Follow"
+        end
+        if brain then brain.mercenarySearchStartedMs_patrol = (companionNowMs and companionNowMs() or 0) - 2200 end
+        local idleTask = Bridge.MakeTimeTask("Idle", 16)
+        idleTask.playerPatrolTick = true
+        table.insert(tasks, Bridge.MarkCompanionOrderMoveTask(idleTask, order, "companion patrol scan tick"))
+        return "Follow"
+    end
+
+    if orderName == "Return" and anchor and anchor.x and anchor.y then
+        local idx = Bridge.CompanionMemberIndex(bandit, brain)
+        local ring = math.floor((idx - 1) / 8)
+        local pos = (idx - 1) % 8
+        local radius = 1.7 + ring * 0.8
+        local angle = pos * (math.pi * 2 / 8)
+        local tx = anchor.x + math.cos(angle) * radius
+        local ty = anchor.y + math.sin(angle) * radius
+        local tz = anchor.z or (bandit.getZ and bandit:getZ()) or 0
+        local dist = NPCUtils and NPCUtils.DistTo and NPCUtils.DistTo(bandit:getX(), bandit:getY(), tx, ty) or 9999
+        local zdist = math.abs((tonumber(bandit:getZ()) or 0) - (tonumber(tz) or 0))
+        if dist > 1.15 or zdist > 0.2 then
+            Bridge.SetCompanionStationary(bandit, false)
+            if NPCUtils and NPCUtils.GetMoveTask then
+                local task = NPCUtils.GetMoveTask(0, tx, ty, tz, dist > 4 and "Run" or "Walk", dist, true)
+                table.insert(tasks, Bridge.MarkCompanionOrderMoveTask(task, order, "companion return point order"))
+            end
+            return "Follow"
+        end
+        Bridge.SetCompanionStationary(bandit, true)
+        table.insert(tasks, Bridge.MakeTimeTask("Idle", 90))
+        return "Follow"
+    end
 
     local state = nil
     if orderName == "Patrol" then state = NPCBrainDirector and NPCBrainDirector.States and NPCBrainDirector.States.PatrolArea
@@ -1734,6 +2282,7 @@ function Bridge.CompanionTryDirectorOrder(bandit, brain, orderName, tasks)
         local ok, directorTasks = pcall(function() return NPCBrainDirector.ExecuteState(bandit, brain, state, "mercenary player order", nil) end)
         if ok and directorTasks and #directorTasks > 0 then
             for _, task in pairs(directorTasks) do
+                if type(task) == "table" then Bridge.MarkCompanionOrderMoveTask(task, order, "companion director player order") end
                 table.insert(tasks, task)
             end
             return "Follow"
@@ -1746,17 +2295,19 @@ end
 function Bridge.CompanionTryMobileOrder(bandit, brain, orderName, tasks)
     tasks = tasks or {}
     local order = Bridge.CompanionGetOrder(brain)
+    local normalizedOrderName = NPCOrderContract and NPCOrderContract.NormalizeOrderName and NPCOrderContract.NormalizeOrderName(orderName or (order and order.name)) or tostring(orderName or (order and order.name) or "")
+
+    if normalizedOrderName == "LootHouse" then
+        return Bridge.CompanionTryLootHouseOrder(bandit, brain, order, tasks, 0)
+    end
+
+    if Bridge.CompanionIsLootCommandOrderName and Bridge.CompanionIsLootCommandOrderName(normalizedOrderName) and Bridge.IsHiredMercenaryBrain(brain) and order then
+        local areaStage = Bridge.CompanionTryLootAreaOrder(bandit, brain, order, tasks, 0)
+        if areaStage then return areaStage end
+    end
 
     local tacticalStage = Bridge.CompanionTryTacticalPointOrder(bandit, brain, order, tasks, 0)
     if tacticalStage then return tacticalStage end
 
-    if orderName == "LootHouse" then
-        return Bridge.CompanionTryLootHouseOrder(bandit, brain, order, tasks, 0)
-    end
-
-    if orderName == "Loot" and Bridge.IsHiredMercenaryBrain(brain) and order then
-        Bridge.CompanionRestockForOrder(bandit, brain, order)
-    end
-
-    return Bridge.CompanionTryDirectorOrder(bandit, brain, orderName, tasks)
+    return Bridge.CompanionTryDirectorOrder(bandit, brain, normalizedOrderName, tasks)
 end

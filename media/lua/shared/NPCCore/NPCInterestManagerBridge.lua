@@ -3,7 +3,7 @@
 
 NPCInterestManagerBridge = NPCInterestManagerBridge or {}
 
-NPCInterestManagerBridge.VERSION = "2026-05-04-marker-quality-aoi"
+NPCInterestManagerBridge.VERSION = "2026-06-10-stage454-interest-aabb-radius2-1"
 NPCInterestManagerBridge.Config = NPCInterestManagerBridge.Config or {
     enabled = true,
     worldRadius = 700,
@@ -110,7 +110,13 @@ end
 local function playerOk(m, p, r)
     if not p or not p.getX then return false end
     if r <= 0 then return true end
-    return d2(m.x, m.y, p:getX(), p:getY()) <= r * r
+    local px = tonumber(p:getX()) or 0
+    local py = tonumber(p:getY()) or 0
+    local dx = (tonumber(m.x) or 0) - px
+    if dx > r or dx < -r then return false end
+    local dy = (tonumber(m.y) or 0) - py
+    if dy > r or dy < -r then return false end
+    return dx * dx + dy * dy <= r * r
 end
 
 local function anyPlayer(fn)

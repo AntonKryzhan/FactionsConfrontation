@@ -1,0 +1,7 @@
+UI_PT = {
+    /***** Factions Confrontation localization: Portuguese *****/
+
+    UI_optionscreen_binding_FactionsConfrontation = "Factions Confrontation",
+    UI_optionscreen_binding_POSTS = "Gerir postos de guarda",
+
+}

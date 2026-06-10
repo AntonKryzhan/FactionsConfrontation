@@ -7,7 +7,7 @@
 -- existing low-priority virtual groups, reviews the outcomes of those decisions, can gently slow risky live assists from recent failures, keeps a short local cell cooldown to avoid repeatedly selecting the same area, maintains a lightweight pacing phase, stores a bounded intent ledger for tuning, applies live-policy safety gates to optional live assists and records bounded telemetry snapshots, runs a lightweight health monitor, builds compact admin reports, applies explicit director safety profiles, runs a final consistency audit, can trigger a bounded runtime safety lock that falls back to dry-run during severe overload and records a compact foundation summary for end-of-line diagnostics; this module never creates or deletes groups.
 --
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 NPCDirectorBrainServerBridge = NPCDirectorBrainServerBridge or {}
 
@@ -3341,6 +3341,29 @@ function NPCDirectorBrainServerBridge.Update()
 
     local data, gmd = bdb_data()
     if not data or not gmd then return false end
+
+    if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldQuarantineWorldTask then
+        local okQ, deferQ, retryQ, reasonQ = pcall(function() return NPCStreamingRuntimeBridge.ShouldQuarantineWorldTask("director_brain") end)
+        if okQ and deferQ then
+            data.lastDecision = {
+                t = bdb_now(),
+                dryRun = true,
+                selected = "wait",
+                score = 0,
+                reason = "sp_streaming_quarantine:" .. tostring(reasonQ or ""),
+                pressure = data.pressure and data.pressure.global or 0,
+                quarantineRetryTicks = retryQ
+            }
+            data.lastUpdate = data.lastDecision.t
+            if NPCPerformanceTelemetryBridge and NPCPerformanceTelemetryBridge.Record then
+                pcall(function() NPCPerformanceTelemetryBridge.Record("director_brain_quarantined", 1) end)
+            end
+            if NPCDiagnosticsBridge and NPCDiagnosticsBridge.Verbose then
+                NPCDiagnosticsBridge.Verbose("WORLD_QUARANTINE", "defer_director_brain", {retryTicks=retryQ, reason=reasonQ}, "world-quarantine:director_brain")
+            end
+            return false
+        end
+    end
 
     local updatedPlayers = NPCDirectorBrainServerBridge.UpdatePlayers(data)
     local world = bdb_worldSnapshot(gmd)

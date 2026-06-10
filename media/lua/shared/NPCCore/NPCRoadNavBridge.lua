@@ -6,7 +6,7 @@ require "NPCCore/NPCLegacyGlobalsBridge"
 
 local NPC_LEGACY_GLOBALS = NPCLegacyGlobalsBridge
 NPCRoadNavBridge = NPCRoadNavBridge or {}
-NPCRoadNavBridge.VERSION = "2026-05-02-road-patrol-chain-1"
+NPCRoadNavBridge.VERSION = "2026-06-08-stage363-road-coord-guards-1"
 local function brn_worldDirector()
     return NPCWorldDirector or NPC_LEGACY_GLOBALS.Get("WorldDirector") or nil
 end
@@ -14,17 +14,31 @@ end
 NPCRoadNavBridge.Config = NPCRoadNavBridge.Config or {
     loadedRoadSearchRadius = 52,
     loadedTownSearchRadius = 64,
+    loadedRoadSearchMaxSquares = 1350,
+    loadedPreferredSearchMaxSquares = 1900,
+    loadedSearchMissHours = 0.018,
     patrolRadius = 42,
     returnToRoadRadius = 80,
     chainStepMin = 9,
     chainStepMax = 18,
     chainSearchRadius = 24,
+    chainMissHours = 0.018,
     chainExpireHours = 0.035,
     virtualStepRadius = 140,
-    virtualStepAttempts = 180,
+    virtualStepAttempts = 96,
+    scoreCacheCellSize = 2,
+    scoreCacheTtlHours = 0.25,
+    scoreCacheMaxEntries = 3600,
     roadScore = 90,
     preferredScore = 55,
-    returnScore = 20
+    returnScore = 20,
+    roadCorridorRequired = true,
+    roadCorridorSamples = 11,
+    roadCorridorMinRoadRatio = 0.34,
+    roadCorridorMinPreferredRatio = 0.58,
+    roadCorridorMaxBlockedRatio = 0.18,
+    roadStepMinProgress = 18,
+    roadStepMaxOvershoot = 48
 }
 
 local BRN_BAD_ZONE_KEYWORDS = {"water", "deepforest", "deep forest", "forest", "vegetation", "vegitation", "foraging"}
@@ -32,9 +46,27 @@ local BRN_ROAD_ZONE_KEYWORDS = {"nav", "road", "street", "highway", "junction", 
 local BRN_TOWN_ZONE_KEYWORDS = {"town", "trailer", "commercial", "industrial", "business", "community", "restaurant", "shop", "store", "school", "police", "fire", "hospital", "parking"}
 local BRN_SETTLEMENT_ZONE_KEYWORDS = {"farm", "farmhouse", "ranch", "camp"}
 
+NPCRoadNavBridge._scoreCache = NPCRoadNavBridge._scoreCache or {}
+NPCRoadNavBridge._scoreCacheOrder = NPCRoadNavBridge._scoreCacheOrder or {}
+NPCRoadNavBridge._loadedSearchMiss = NPCRoadNavBridge._loadedSearchMiss or {}
+
 local function brn_lower(value)
     if not value then return "" end
     return string.lower(tostring(value))
+end
+
+local function brn_toNumber(value)
+    if type(value) == "number" then return value end
+    if type(value) == "string" then return tonumber(value) end
+    return nil
+end
+
+local function brn_toXY(x, y)
+    if type(x) == "table" then
+        if y == nil then y = x.y or x[2] end
+        x = x.x or x[1]
+    end
+    return brn_toNumber(x), brn_toNumber(y)
 end
 
 local function brn_hasAny(value, needles)
@@ -60,6 +92,56 @@ local function brn_worldAgeHours()
     return 0
 end
 
+local function brn_cacheKey(x, y)
+    local cell = math.max(1, tonumber(NPCRoadNavBridge.Config.scoreCacheCellSize) or 2)
+    return tostring(math.floor((tonumber(x) or 0) / cell)) .. ":" .. tostring(math.floor((tonumber(y) or 0) / cell))
+end
+
+local function brn_cacheGet(x, y)
+    local cache = NPCRoadNavBridge._scoreCache
+    local rec = cache and cache[brn_cacheKey(x, y)] or nil
+    if not rec then return nil end
+    local ttl = tonumber(NPCRoadNavBridge.Config.scoreCacheTtlHours) or 0.25
+    if ttl > 0 and brn_worldAgeHours() - (tonumber(rec.at) or 0) > ttl then return nil end
+    return rec.score, rec.class, rec.zoneTypes
+end
+
+local function brn_cachePut(x, y, score, class, zoneTypes)
+    local key = brn_cacheKey(x, y)
+    local cache = NPCRoadNavBridge._scoreCache
+    if cache[key] == nil then
+        local order = NPCRoadNavBridge._scoreCacheOrder
+        order[#order + 1] = key
+        local max = tonumber(NPCRoadNavBridge.Config.scoreCacheMaxEntries) or 3600
+        if max > 0 and #order > max then
+            local removeCount = #order - max
+            for i = 1, removeCount do
+                cache[order[i]] = nil
+            end
+            for i = 1, max do
+                order[i] = order[i + removeCount]
+            end
+            for i = max + 1, #order do
+                order[i] = nil
+            end
+        end
+    end
+    cache[key] = {score=score, class=class, zoneTypes=zoneTypes, at=brn_worldAgeHours()}
+end
+
+local function brn_loadedMissKey(x, y, z, radius, roadOnly)
+    return tostring(math.floor((tonumber(x) or 0) / 8)) .. ":" .. tostring(math.floor((tonumber(y) or 0) / 8)) .. ":" .. tostring(math.floor(tonumber(z) or 0)) .. ":" .. tostring(math.floor((tonumber(radius) or 0) / 8)) .. ":" .. tostring(roadOnly == true)
+end
+
+local function brn_loadedMissActive(key)
+    local untilHour = tonumber(NPCRoadNavBridge._loadedSearchMiss and NPCRoadNavBridge._loadedSearchMiss[key]) or 0
+    return untilHour > brn_worldAgeHours()
+end
+
+local function brn_loadedMissPut(key)
+    NPCRoadNavBridge._loadedSearchMiss[key] = brn_worldAgeHours() + (tonumber(NPCRoadNavBridge.Config.loadedSearchMissHours) or 0.018)
+end
+
 local function brn_zoneType(zone)
     if not zone then return nil end
     local ok, zoneType = pcall(function() return zone:getType() end)
@@ -73,7 +155,9 @@ local function brn_zoneListAdd(types, zone)
 end
 
 function NPCRoadNavBridge.GetZoneTypesAt(x, y)
+    x, y = brn_toXY(x, y)
     local types = {}
+    if not (x and y) then return types end
     local world = getWorld and getWorld() or nil
     if not world then return types end
     local metaGrid = world:getMetaGrid()
@@ -99,12 +183,20 @@ function NPCRoadNavBridge.GetZoneTypesAt(x, y)
 end
 
 function NPCRoadNavBridge.ScorePoint(x, y)
+    x, y = brn_toXY(x, y)
+    if not (x and y) then return -1000, "blocked", {} end
+    local cachedScore, cachedClass, cachedTypes = brn_cacheGet(x, y)
+    if cachedScore ~= nil then return cachedScore, cachedClass, cachedTypes end
+
     local zoneTypes = NPCRoadNavBridge.GetZoneTypesAt(x, y)
     local score = -8
     local class = "unmarked"
     for _, zoneType in pairs(zoneTypes) do
         local z = brn_lower(zoneType)
-        if brn_hasAny(z, BRN_BAD_ZONE_KEYWORDS) then return -1000, "blocked", zoneTypes end
+        if brn_hasAny(z, BRN_BAD_ZONE_KEYWORDS) then
+            brn_cachePut(x, y, -1000, "blocked", zoneTypes)
+            return -1000, "blocked", zoneTypes
+        end
         if brn_hasAny(z, BRN_ROAD_ZONE_KEYWORDS) then
             score = score + 125
             class = "road"
@@ -116,6 +208,7 @@ function NPCRoadNavBridge.ScorePoint(x, y)
             if class ~= "road" and class ~= "town" then class = "settlement" end
         end
     end
+    brn_cachePut(x, y, score, class, zoneTypes)
     return score, class, zoneTypes
 end
 
@@ -132,6 +225,87 @@ end
 function NPCRoadNavBridge.IsWildPoint(x, y)
     local score, class = NPCRoadNavBridge.ScorePoint(x, y)
     return score < NPCRoadNavBridge.Config.returnScore or class == "blocked" or class == "unmarked"
+end
+
+function NPCRoadNavBridge.IsBlockedSegment(x1, y1, x2, y2, samples)
+    x1 = tonumber(x1); y1 = tonumber(y1); x2 = tonumber(x2); y2 = tonumber(y2)
+    if not (x1 and y1 and x2 and y2) then return false end
+    samples = math.max(3, tonumber(samples) or 7)
+    for i = 1, samples - 1 do
+        local t = i / samples
+        local sx = x1 + (x2 - x1) * t
+        local sy = y1 + (y2 - y1) * t
+        local score, class = NPCRoadNavBridge.ScorePoint(sx, sy)
+        if class == "blocked" or (tonumber(score) or 0) <= -900 then return true end
+    end
+    return false
+end
+
+function NPCRoadNavBridge.GetSegmentRoadAffinity(x1, y1, x2, y2, samples)
+    x1 = tonumber(x1); y1 = tonumber(y1); x2 = tonumber(x2); y2 = tonumber(y2)
+    if not (x1 and y1 and x2 and y2) then
+        return {valid=false, roadRatio=0, preferredRatio=0, blockedRatio=1, samples=0}
+    end
+
+    samples = math.max(5, tonumber(samples) or tonumber(NPCRoadNavBridge.Config.roadCorridorSamples) or 11)
+    local road = 0
+    local preferred = 0
+    local blocked = 0
+    local total = 0
+    for i = 1, samples - 1 do
+        local t = i / samples
+        local sx = x1 + (x2 - x1) * t
+        local sy = y1 + (y2 - y1) * t
+        local score, class = NPCRoadNavBridge.ScorePoint(sx, sy)
+        score = tonumber(score) or 0
+        total = total + 1
+        if class == "blocked" or score <= -900 then
+            blocked = blocked + 1
+        elseif class == "road" and score >= NPCRoadNavBridge.Config.roadScore then
+            road = road + 1
+            preferred = preferred + 1
+        elseif score >= NPCRoadNavBridge.Config.returnScore and class ~= "blocked" then
+            preferred = preferred + 1
+        end
+    end
+
+    if total <= 0 then total = 1 end
+    return {
+        valid = true,
+        road = road,
+        preferred = preferred,
+        blocked = blocked,
+        samples = total,
+        roadRatio = road / total,
+        preferredRatio = preferred / total,
+        blockedRatio = blocked / total
+    }
+end
+
+function NPCRoadNavBridge.IsRoadCorridorSegment(x1, y1, x2, y2, samples)
+    local affinity = NPCRoadNavBridge.GetSegmentRoadAffinity(x1, y1, x2, y2, samples)
+    if not affinity.valid then return false, affinity end
+    local total = math.max(1, tonumber(affinity.samples) or 1)
+    local blocked = tonumber(affinity.blocked) or 0
+    local road = tonumber(affinity.road) or 0
+    local preferred = tonumber(affinity.preferred) or 0
+    local maxBlockedMul = math.floor(((tonumber(NPCRoadNavBridge.Config.roadCorridorMaxBlockedRatio) or 0.18) * 10000) + 0.5)
+    local minRoadMul = math.floor(((tonumber(NPCRoadNavBridge.Config.roadCorridorMinRoadRatio) or 0.34) * 10000) + 0.5)
+    local minPreferredMul = math.floor(((tonumber(NPCRoadNavBridge.Config.roadCorridorMinPreferredRatio) or 0.58) * 10000) + 0.5)
+    if blocked * 10000 > total * maxBlockedMul then return false, affinity end
+    if road * 10000 >= total * minRoadMul then return true, affinity end
+    if preferred * 10000 >= total * minPreferredMul then return true, affinity end
+    return false, affinity
+end
+
+function NPCRoadNavBridge.IsSafeRoadStep(x, y, tx, ty)
+    local score, class = NPCRoadNavBridge.ScorePoint(tx, ty)
+    if class ~= "road" or score < NPCRoadNavBridge.Config.roadScore then return false end
+    if NPCRoadNavBridge.Config.roadCorridorRequired == false then
+        return not NPCRoadNavBridge.IsBlockedSegment(x, y, tx, ty, 8)
+    end
+    local ok = NPCRoadNavBridge.IsRoadCorridorSegment(x, y, tx, ty, NPCRoadNavBridge.Config.roadCorridorSamples)
+    return ok == true
 end
 
 function NPCRoadNavBridge.IsSquareUsable(square, mover)
@@ -151,14 +325,21 @@ function NPCRoadNavBridge.IsSquareUsable(square, mover)
 end
 
 function NPCRoadNavBridge.FindLoadedPreferredAround(x, y, z, radius, roadOnly)
+    x, y = brn_toXY(x, y)
+    z = brn_toNumber(z) or 0
+    radius = brn_toNumber(radius) or (roadOnly and NPCRoadNavBridge.Config.loadedRoadSearchRadius or NPCRoadNavBridge.Config.loadedTownSearchRadius)
+    if not (x and y and radius) or radius < 1 then return nil end
     local cell = getCell and getCell() or nil
     if not cell then return nil end
     local bx = math.floor(x)
     local by = math.floor(y)
-    local bz = math.floor(z or 0)
-    radius = radius or (roadOnly and NPCRoadNavBridge.Config.loadedRoadSearchRadius or NPCRoadNavBridge.Config.loadedTownSearchRadius)
+    local bz = math.floor(z)
+    local missKey = brn_loadedMissKey(bx, by, bz, radius, roadOnly)
+    if brn_loadedMissActive(missKey) then return nil end
     local best = nil
     local bestScore = -1000000
+    local scanned = 0
+    local maxScans = roadOnly and (tonumber(NPCRoadNavBridge.Config.loadedRoadSearchMaxSquares) or 1350) or (tonumber(NPCRoadNavBridge.Config.loadedPreferredSearchMaxSquares) or 1900)
     for r=0, radius do
         for dx=-r, r do
             for dy=-r, r do
@@ -166,6 +347,7 @@ function NPCRoadNavBridge.FindLoadedPreferredAround(x, y, z, radius, roadOnly)
                     local sx = bx + dx
                     local sy = by + dy
                     local square = cell:getGridSquare(sx, sy, bz)
+                    scanned = scanned + 1
                     if square and NPCRoadNavBridge.IsSquareUsable(square, nil) then
                         local score, class = NPCRoadNavBridge.ScorePoint(sx, sy)
                         local allowed = false
@@ -186,7 +368,12 @@ function NPCRoadNavBridge.FindLoadedPreferredAround(x, y, z, radius, roadOnly)
             end
         end
         if best and r >= 6 then return best end
+        if maxScans > 0 and scanned >= maxScans then
+            if not best then brn_loadedMissPut(missKey) end
+            return best
+        end
     end
+    if not best then brn_loadedMissPut(missKey) end
     return best
 end
 
@@ -199,7 +386,10 @@ function NPCRoadNavBridge.FindLoadedTownOrRoadAround(x, y, z, radius)
 end
 
 function NPCRoadNavBridge.FindWorldRoadPoint(minX, minY, maxX, maxY, attempts, avoidPlayersRadius)
-    attempts = attempts or 1400
+    minX = brn_toNumber(minX); minY = brn_toNumber(minY); maxX = brn_toNumber(maxX); maxY = brn_toNumber(maxY)
+    if not (minX and minY and maxX and maxY) then return nil end
+    attempts = math.max(1, math.floor(brn_toNumber(attempts) or 1400))
+    if maxX <= minX or maxY <= minY then return nil end
     local best = nil
     local bestScore = -1000000
     for i=1, attempts do
@@ -225,15 +415,17 @@ function NPCRoadNavBridge.FindWorldRoadPoint(minX, minY, maxX, maxY, attempts, a
 end
 
 function NPCRoadNavBridge.FindNearbyWorldRoadPoint(x, y, radius, attempts)
-    radius = radius or 420
-    attempts = attempts or 240
+    x, y = brn_toXY(x, y)
+    radius = math.max(1, math.floor(brn_toNumber(radius) or 420))
+    attempts = math.max(1, math.floor(brn_toNumber(attempts) or 240))
+    if not (x and y) then return nil end
     local best = nil
     local bestScore = -1000000
     for i=1, attempts do
         local tx = x + ZombRand(-radius, radius + 1)
         local ty = y + ZombRand(-radius, radius + 1)
         local score, class = NPCRoadNavBridge.ScorePoint(tx, ty)
-        if class == "road" then
+        if class == "road" and NPCRoadNavBridge.IsSafeRoadStep(x, y, tx, ty) then
             local candidateScore = score - (brn_dist2(x, y, tx, ty) * 0.0005)
             if candidateScore > bestScore then
                 bestScore = candidateScore
@@ -249,8 +441,10 @@ end
 
 
 function NPCRoadNavBridge.FindNearbyWorldRoadStepToward(x, y, targetX, targetY, radius, attempts)
-    radius = radius or NPCRoadNavBridge.Config.virtualStepRadius
-    attempts = attempts or NPCRoadNavBridge.Config.virtualStepAttempts
+    x, y = brn_toXY(x, y)
+    targetX, targetY = brn_toXY(targetX, targetY)
+    radius = math.max(1, math.floor(brn_toNumber(radius) or NPCRoadNavBridge.Config.virtualStepRadius))
+    attempts = math.max(1, math.floor(brn_toNumber(attempts) or NPCRoadNavBridge.Config.virtualStepAttempts))
     if not x or not y or not targetX or not targetY then return nil end
 
     local vx = targetX - x
@@ -264,22 +458,31 @@ function NPCRoadNavBridge.FindNearbyWorldRoadStepToward(x, y, targetX, targetY, 
 
     local best = nil
     local bestScore = -1000000
+    local startDistToTarget = brn_dist(x, y, targetX, targetY)
+    local minProgress = tonumber(NPCRoadNavBridge.Config.roadStepMinProgress) or 18
+    local maxOvershoot = tonumber(NPCRoadNavBridge.Config.roadStepMaxOvershoot) or 48
     for i=1, attempts do
         local tx = x + ZombRand(-radius, radius + 1)
         local ty = y + ZombRand(-radius, radius + 1)
         local score, class = NPCRoadNavBridge.ScorePoint(tx, ty)
-        if class == "road" then
+        if class == "road" and NPCRoadNavBridge.IsSafeRoadStep(x, y, tx, ty) then
             local dx = tx - x
             local dy = ty - y
             local dist = math.sqrt(dx * dx + dy * dy)
-            if dist > 12 then
-                local forward = ((dx / dist) * vx + (dy / dist) * vy) * 180
-                local targetPull = -brn_dist2(tx, ty, targetX, targetY) * 0.0007
-                local stepPenalty = -math.abs(dist - radius * 0.65) * 0.45
-                local candidateScore = score + forward + targetPull + stepPenalty
-                if candidateScore > bestScore then
-                    bestScore = candidateScore
-                    best = {x=tx, y=ty, z=0, spawnClass="road", zoneScore=score}
+            local candidateDistToTarget = brn_dist(tx, ty, targetX, targetY)
+            if dist > 12 and candidateDistToTarget <= startDistToTarget - minProgress + maxOvershoot then
+                local corridorOk, affinity = NPCRoadNavBridge.IsRoadCorridorSegment(x, y, tx, ty, NPCRoadNavBridge.Config.roadCorridorSamples)
+                if corridorOk then
+                    local forward = ((dx / dist) * vx + (dy / dist) * vy) * 180
+                    local targetPull = -candidateDistToTarget * candidateDistToTarget * 0.0007
+                    local stepPenalty = -math.abs(dist - radius * 0.55) * 0.45
+                    local roadBonus = ((affinity and affinity.roadRatio) or 0) * 90
+                    local preferredBonus = ((affinity and affinity.preferredRatio) or 0) * 24
+                    local candidateScore = score + forward + targetPull + stepPenalty + roadBonus + preferredBonus
+                    if candidateScore > bestScore then
+                        bestScore = candidateScore
+                        best = {x=tx, y=ty, z=0, spawnClass="road", zoneScore=score, roadRatio=affinity and affinity.roadRatio or nil, preferredRatio=affinity and affinity.preferredRatio or nil}
+                    end
                 end
             end
         end
@@ -358,6 +561,10 @@ function NPCRoadNavBridge.GetChainedMoveTarget(bandit, brain, state, reason, x, 
     brain.fsm = brain.fsm or {}
     local chain = brain.fsm.roadChain or {}
     local now = brn_worldAgeHours()
+    local miss = brain.fsm.roadChainMiss
+    if miss and (tonumber(miss.untilHour) or 0) > now and miss.finalX and brn_dist2(miss.finalX, miss.finalY, x, y) <= 64 then
+        return x, y, z, false
+    end
     local finalChanged = not chain.finalX or brn_dist2(chain.finalX, chain.finalY, x, y) > 64
     local reachedStep = not chain.x or brn_dist2(bx, by, chain.x, chain.y) < 7
     local expired = chain.expire and now > chain.expire
@@ -377,8 +584,12 @@ function NPCRoadNavBridge.GetChainedMoveTarget(bandit, brain, state, reason, x, 
         step = NPCRoadNavBridge.FindLoadedTownOrRoadAround(bx, by, z, NPCRoadNavBridge.Config.returnToRoadRadius)
     end
 
-    if not step then return x, y, z, false end
+    if not step then
+        brain.fsm.roadChainMiss = {finalX=x, finalY=y, untilHour=now + (tonumber(NPCRoadNavBridge.Config.chainMissHours) or 0.018)}
+        return x, y, z, false
+    end
 
+    brain.fsm.roadChainMiss = nil
     brain.fsm.roadChain = {
         finalX = x,
         finalY = y,
@@ -404,8 +615,14 @@ function NPCRoadNavBridge.FindPatrolPoint(bandit, brain, radius)
     local px = bandit:getX()
     local py = bandit:getY()
     local pz = bandit:getZ()
+    local now = brn_worldAgeHours()
+    if brain.fsm.roadPatrol.noRoadUntilHour and brain.fsm.roadPatrol.noRoadUntilHour > now then return nil end
     local road = NPCRoadNavBridge.FindLoadedRoadAround(px, py, pz, NPCRoadNavBridge.Config.returnToRoadRadius)
-    if not road then return NPCRoadNavBridge.FindLoadedTownOrRoadAround(px, py, pz, NPCRoadNavBridge.Config.returnToRoadRadius) end
+    if not road then
+        local fallback = NPCRoadNavBridge.FindLoadedTownOrRoadAround(px, py, pz, NPCRoadNavBridge.Config.returnToRoadRadius)
+        if not fallback then brain.fsm.roadPatrol.noRoadUntilHour = now + (tonumber(NPCRoadNavBridge.Config.chainMissHours) or 0.018) end
+        return fallback
+    end
     local dir = brain.fsm.roadPatrol.dir
     if not dir or ZombRand(8) == 0 then
         local dirs = {{x=1,y=0},{x=-1,y=0},{x=0,y=1},{x=0,y=-1},{x=1,y=1},{x=-1,y=1},{x=1,y=-1},{x=-1,y=-1}}

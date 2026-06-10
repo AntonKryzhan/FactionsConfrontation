@@ -145,32 +145,61 @@ function Entity.ForceSyncPart(zombie, syncData)
     sendClientCommand(getPlayer(), 'NPCCommands', NPC_ENTITY_LEGACY_KEYS.commandUpdatePart, syncData)
 end
 
+local function entityRouteTask(zombie, task, source)
+    if not task then return nil end
+    if NPCActionRouterBridge and NPCActionRouterBridge.FilterAddTask then
+        local ok, routed = pcall(function()
+            return NPCActionRouterBridge.FilterAddTask(zombie, task, source)
+        end)
+        if ok then return routed end
+    end
+    return task
+end
+
 function Entity.AddTask(zombie, task)
     local brain = NPCBrainDataBridge.Get(zombie)
     if brain then
+        task = entityRouteTask(zombie, task, "entity_add")
+        if not task then return false end
 
         if #brain.tasks > 9 then
             print ("[WARN] Task queue too big, flushing!")
+            if NPCActionRouterBridge and NPCActionRouterBridge.OnTasksCleared then
+                pcall(function() NPCActionRouterBridge.OnTasksCleared(zombie, brain, brain.tasks, "queue_overflow") end)
+            end
             brain.tasks = {}
         end
     
-        table.insert(brain.tasks, task)
+        if NPCActionRouterBridge and NPCActionRouterBridge.ShouldPrependTask and NPCActionRouterBridge.ShouldPrependTask(task) then
+            table.insert(brain.tasks, 1, task)
+        else
+            table.insert(brain.tasks, task)
+        end
         -- NPCBrainDataBridge.Update(zombie, brain)
+        return true
     end
+    return false
 end
 
 function Entity.AddTaskFirst(zombie, task)
     local brain = NPCBrainDataBridge.Get(zombie)
     if brain then
+        task = entityRouteTask(zombie, task, "entity_add_first")
+        if not task then return false end
 
         if #brain.tasks > 9 then
             print ("[WARN] Task queue too big, flushing!")
+            if NPCActionRouterBridge and NPCActionRouterBridge.OnTasksCleared then
+                pcall(function() NPCActionRouterBridge.OnTasksCleared(zombie, brain, brain.tasks, "queue_overflow") end)
+            end
             brain.tasks = {}
         end
 
         table.insert(brain.tasks, 1, task)
         -- NPCBrainDataBridge.Update(zombie, brain)
+        return true
     end
+    return false
 end
 
 function Entity.GetTask(zombie)
@@ -230,8 +259,13 @@ end
 function Entity.UpdateTask(zombie, task)
     local brain = NPCBrainDataBridge.Get(zombie)
     if brain then
+        local removed = brain.tasks and brain.tasks[1] or nil
         table.remove(brain.tasks, 1)
-        table.insert(brain.tasks, 1, task)
+        if NPCActionRouterBridge and NPCActionRouterBridge.OnTaskRemoved then
+            pcall(function() NPCActionRouterBridge.OnTaskRemoved(zombie, brain, removed, "update_task") end)
+        end
+        task = entityRouteTask(zombie, task, "entity_update")
+        if task then table.insert(brain.tasks, 1, task) end
         --NPCBrainDataBridge.Update(zombie, brain)
     end
 end
@@ -239,7 +273,11 @@ end
 function Entity.RemoveTask(zombie)
     local brain = NPCBrainDataBridge.Get(zombie)
     if brain then
+        local removed = brain.tasks and brain.tasks[1] or nil
         table.remove(brain.tasks, 1)
+        if NPCActionRouterBridge and NPCActionRouterBridge.OnTaskRemoved then
+            pcall(function() NPCActionRouterBridge.OnTaskRemoved(zombie, brain, removed, "remove_task") end)
+        end
         -- NPCBrainDataBridge.Update(zombie, brain)
     end
 end
@@ -247,6 +285,7 @@ end
 function Entity.ClearTasks(zombie)
     local brain = NPCBrainDataBridge.Get(zombie)
     if brain then
+        local oldTasks = brain.tasks
         local newtasks = {}
         for _, task in pairs(brain.tasks) do
             if task.lock == true then
@@ -255,6 +294,9 @@ function Entity.ClearTasks(zombie)
         end
 
         brain.tasks = newtasks
+        if NPCActionRouterBridge and NPCActionRouterBridge.OnTasksCleared then
+            pcall(function() NPCActionRouterBridge.OnTasksCleared(zombie, brain, oldTasks, "clear_tasks") end)
+        end
         -- NPCBrainDataBridge.Update(zombie, brain)
     end
 
@@ -271,6 +313,7 @@ end
 function Entity.ClearMoveTasks(zombie)
     local brain = NPCBrainDataBridge.Get(zombie)
     if brain then
+        local oldTasks = brain.tasks
         local newtasks = {}
         for _, task in pairs(brain.tasks) do
             if task.action ~= "Move" and task.action ~= "GoTo" then
@@ -279,6 +322,9 @@ function Entity.ClearMoveTasks(zombie)
         end
 
         brain.tasks = newtasks
+        if NPCActionRouterBridge and NPCActionRouterBridge.OnTasksCleared then
+            pcall(function() NPCActionRouterBridge.OnTasksCleared(zombie, brain, oldTasks, "clear_move_tasks") end)
+        end
         -- NPCBrainDataBridge.Update(zombie, brain)
     end
 end
@@ -621,20 +667,70 @@ function Entity.UpdateItemsToSpawnAtDeath(zombie)
         NPCCompatibilityBridge.AddId(zombie, brain.fullname)
     end
 
+    local deathDropSeen = {}
+    local function addDeathItem(item)
+        if not item then return false end
+        local key = tostring(item)
+        if item.getID then
+            local ok, id = pcall(function() return item:getID() end)
+            if ok and id ~= nil then key = "id:" .. tostring(id) end
+        elseif item.getFullType then
+            local ok, fullType = pcall(function() return item:getFullType() end)
+            if ok and fullType then key = "type:" .. tostring(fullType) .. ":" .. tostring(item) end
+        end
+        if deathDropSeen[key] then return false end
+        deathDropSeen[key] = true
+        zombie:addItemToSpawnAtDeath(item)
+        return true
+    end
+
     -- update inventory
     local inventory = zombie:getInventory()
     local items = ArrayList.new()
     inventory:getAllEvalRecurse(predicateAll, items)
     for i=0, items:size()-1 do
-        local item = items:get(i)
-        zombie:addItemToSpawnAtDeath(item)
+        addDeathItem(items:get(i))
+    end
+
+    -- Stage 396: preserve the actual live weapon items as death loot. Some
+    -- materialized NPCs shoot with hand/attached items that are not present in
+    -- the inventory recursion, and the old code skipped recreated primary guns
+    -- when it detected an attached model. Add real hand/attached objects first,
+    -- then keep the existing fallback reconstruction below.
+    if zombie.getPrimaryHandItem then
+        local ok, item = pcall(function() return zombie:getPrimaryHandItem() end)
+        if ok then addDeathItem(item) end
+    end
+    if zombie.getSecondaryHandItem then
+        local ok, item = pcall(function() return zombie:getSecondaryHandItem() end)
+        if ok then addDeathItem(item) end
+    end
+    local function getAttachedItemSafe(location)
+        if not zombie.getAttachedItem or not location then return nil end
+        -- Stage 398: never query non-vanilla/invalid attachment names here.
+        -- PZ 41 throws a Java RuntimeException for unknown locations such as
+        -- "Back" before Lua can handle it cleanly, which spammed console errors
+        -- every time death loot was refreshed for checkpoint guards.
+        local ok, item = pcall(function() return zombie:getAttachedItem(location) end)
+        if ok then return item end
+        return nil
+    end
+
+    if zombie.getAttachedItem then
+        for _, location in ipairs({"Rifle On Back", "Holster Right", "Holster Left", "Belt Right", "Belt Left"}) do
+            addDeathItem(getAttachedItemSafe(location))
+        end
     end
 
     -- update weapons that the NPC has
     if weapons.melee and weapons.melee ~= "Base.BareHands" then 
         local item = NPCCompatibilityBridge.InstanceItem(weapons.melee)
-        item:setCondition(1+ZombRand(10))
-        zombie:addItemToSpawnAtDeath(item)
+        if item then
+            if item.setCondition then
+                pcall(function() item:setCondition(1+ZombRand(10)) end)
+            end
+            addDeathItem(item)
+        end
     end
 
     if weapons.primary then
@@ -644,16 +740,16 @@ function Entity.UpdateItemsToSpawnAtDeath(zombie)
                 local mag = NPCCompatibilityBridge.InstanceItem(weapons.primary.magName)
                 if mag then
                     npcSetMagazineAmmo(mag, weapons.primary.bulletsLeft, weapons.primary.magSize)
-                    zombie:addItemToSpawnAtDeath(mag)
+                    addDeathItem(mag)
                 end
 
-                local attachedBack = zombie:getAttachedItem("Rifle On Back")
+                local attachedBack = getAttachedItemSafe("Rifle On Back")
                 if not attachedBack then
                     local gun = NPCCompatibilityBridge.InstanceItem(weapons.primary.name)
                     if gun then
                         gun:setCondition(3+ZombRand(15))
                         -- gun:setClip(nil)
-                        zombie:addItemToSpawnAtDeath(gun)
+                        addDeathItem(gun)
                     end
                 end
 
@@ -661,7 +757,7 @@ function Entity.UpdateItemsToSpawnAtDeath(zombie)
                     local mag = NPCCompatibilityBridge.InstanceItem(weapons.primary.magName)
                     if mag then
                         npcSetMagazineAmmo(mag, weapons.primary.magSize, weapons.primary.magSize)
-                        zombie:addItemToSpawnAtDeath(mag)
+                        addDeathItem(mag)
                     end
                 end
             end
@@ -675,16 +771,16 @@ function Entity.UpdateItemsToSpawnAtDeath(zombie)
                 local mag = NPCCompatibilityBridge.InstanceItem(weapons.secondary.magName)
                 if mag then
                     npcSetMagazineAmmo(mag, weapons.secondary.bulletsLeft, weapons.secondary.magSize)
-                    zombie:addItemToSpawnAtDeath(mag)
+                    addDeathItem(mag)
                 end
 
-                local attachedHolster = zombie:getAttachedItem("Holster Right")
+                local attachedHolster = getAttachedItemSafe("Holster Right")
                 if not attachedHolster then
                     local gun = NPCCompatibilityBridge.InstanceItem(weapons.secondary.name)
                     if gun then
                         -- gun:setClip(nil)
                         gun:setCondition(3+ZombRand(22))
-                        zombie:addItemToSpawnAtDeath(gun)
+                        addDeathItem(gun)
                     end
                 end
 
@@ -692,7 +788,7 @@ function Entity.UpdateItemsToSpawnAtDeath(zombie)
                     local mag = NPCCompatibilityBridge.InstanceItem(weapons.secondary.magName)
                     if mag then
                         npcSetMagazineAmmo(mag, weapons.secondary.magSize, weapons.secondary.magSize)
-                        zombie:addItemToSpawnAtDeath(mag)
+                        addDeathItem(mag)
                     end
                 end
             end
@@ -710,7 +806,7 @@ function Entity.UpdateItemsToSpawnAtDeath(zombie)
                 elseif item:IsWeapon() then
                     item:setCondition(1+ZombRand(3))
                 end
-                zombie:addItemToSpawnAtDeath(item)
+                addDeathItem(item)
             end
         end
     end
@@ -808,6 +904,13 @@ end
 function Entity.AddVisualDamage(bandit, handWeapon)
     
     if handWeapon then
+        -- Stage 448: live human NPCs should not accumulate vanilla zombie damage
+        -- body visuals. In long NPC-vs-NPC firefights those visuals can overwrite the
+        -- human outfit presentation and make actors look like they lost their clothes.
+        local brain = NPCBrainData and NPCBrainData.Get and NPCBrainData.Get(bandit) or nil
+        if brain and (brain.humanNPC == true or brain.forceHumanAnimation == true or brain.noZombieAnimation == true or brain.worldDirector == true or brain.mercenaryHired == true) then
+            return
+        end
         local itemVisual
         local weaponType = WeaponType.getWeaponType(handWeapon)
         if weaponType == WeaponType.firearm or weaponType == WeaponType.handgun then

@@ -4,7 +4,7 @@
 -- call a heavy full mod-data transmit. It stores the exact donated item types
 -- on the base and gradually assigns them to base squads / nearby convoys.
 
-if not isServer() then return end
+if isClient and isClient() then return end
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCCompatibilityBridge"
@@ -1096,8 +1096,15 @@ end
 
 local function bbs_onTick()
     NPCBaseSupplyServerBridge._tick = (NPCBaseSupplyServerBridge._tick or 0) + 1
-    if NPCBaseSupplyServerBridge._tick % 240 == 0 then
-        bbs_updateAll()
+    if NPCBaseSupplyServerBridge._tick % 1200 == 420 then
+        local level = 0
+        if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.GetLoadLevel then
+            local okLevel, gotLevel = pcall(function() return NPCWorkSchedulerBridge.GetLoadLevel(false) end)
+            if okLevel then level = tonumber(gotLevel) or 0 end
+        end
+        if level < 2 then
+            bbs_updateAll()
+        end
     end
 end
 

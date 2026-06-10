@@ -51,6 +51,7 @@ end
 local function bff_isFriendlyLiveNPC(attackerBrain, targetBrain, target)
     if not IsLiveNPC(target) then return false end
     if not attackerBrain then return true end
+    if NPCFactionBridge and NPCFactionBridge.IsBrainRogueBreakdown and NPCFactionBridge.IsBrainRogueBreakdown(attackerBrain) then return false end
     if not targetBrain then return true end
     if bff_sameSquad(attackerBrain, targetBrain) then return true end
     if NPCFactionBridge and NPCFactionBridge.IsEnabled and NPCFactionBridge.IsEnabled() and NPCFactionBridge.AreBrainsEnemies then
@@ -60,6 +61,15 @@ local function bff_isFriendlyLiveNPC(attackerBrain, targetBrain, target)
     if attackerBrain.clan ~= nil and targetBrain.clan ~= nil and attackerBrain.clan == targetBrain.clan then return true end
     if attackerBrain.hostile ~= nil and targetBrain.hostile ~= nil and attackerBrain.hostile == targetBrain.hostile then return true end
     return false
+end
+
+
+local function IsTargetInShoveRange(attacker, target)
+    if not (attacker and target and target.getX and target.getY and attacker.getX and attacker.getY) then return false end
+    if target.getZ and attacker.getZ and math.floor(target:getZ() or 0) ~= math.floor(attacker:getZ() or 0) then return false end
+    local dx = (target:getX() or 0) - (attacker:getX() or 0)
+    local dy = (target:getY() or 0) - (attacker:getY() or 0)
+    return dx * dx + dy * dy <= 0.72 * 0.72
 end
 
 local function CanShoveTarget(attackerBrain, targetBrain, target)
@@ -118,14 +128,36 @@ end
 
 local function GetEnemy(task)
     if not task then return nil end
-    if NPCZombieCacheBridge and NPCZombieCacheBridge.Cache and task.eid then
-        local enemy = NPCZombieCacheBridge.Cache[task.eid]
+    local targetId = task.targetId or task.eid
+    if NPCZombieCacheBridge and NPCZombieCacheBridge.Cache and targetId then
+        local enemy = NPCZombieCacheBridge.Cache[targetId] or NPCZombieCacheBridge.Cache[tostring(targetId)]
         if enemy then return enemy end
     end
-    if NPCPlayerClient and NPCPlayerClient.GetPlayerById and task.eid then
-        return NPCPlayerClient.GetPlayerById(task.eid)
+    if NPCPlayerClient and NPCPlayerClient.GetPlayerById and targetId then
+        local ok, player = pcall(function() return NPCPlayerClient.GetPlayerById(targetId) end)
+        if ok then return player end
     end
     return nil
+end
+
+local function RefreshEnemyTask(character, task)
+    local enemy = GetEnemy(task)
+    if not enemy then return nil end
+    if enemy.isAlive then
+        local okAlive, alive = pcall(function() return enemy:isAlive() end)
+        if okAlive and alive == false then return nil end
+    end
+    if enemy.getX and enemy.getY then
+        task.x = enemy:getX()
+        task.y = enemy:getY()
+        task.z = enemy.getZ and enemy:getZ() or task.z
+    end
+    if character and character.getX and character.getY and task.x and task.y then
+        local dx = character:getX() - task.x
+        local dy = character:getY() - task.y
+        if dx * dx + dy * dy > 2.25 then return nil end
+    end
+    return enemy
 end
 
 local function GetBrain(character)
@@ -149,6 +181,7 @@ function NPCActionShoveBridge.OnStart(character, task)
         local brainActor = GetBrain(character)
         local brainEnemy = GetBrain(enemy)
         if not CanShoveTarget(brainActor, brainEnemy, enemy) then return true end
+        if not IsTargetInShoveRange(character, enemy) then return true end
     end
 
     local anim = "Shove"
@@ -162,9 +195,14 @@ end
 function NPCActionShoveBridge.OnWorking(character, task)
     if not character or not task then return true end
 
+    local currentEnemy = RefreshEnemyTask(character, task)
+    if not currentEnemy then return true end
+
     if task.x and task.y then
         character:faceLocation(task.x, task.y)
     end
+
+    if not IsTargetInShoveRange(character, currentEnemy) then return true end
 
     local bumpType = character:getBumpType()
     if bumpType ~= task.anim then return false end
@@ -177,8 +215,8 @@ function NPCActionShoveBridge.OnWorking(character, task)
                  or asn == "staggerback" or asn == "staggerback-knockeddown" or asn == "falldown" then return false end
 
         local brainActor = GetBrain(character)
-        local enemy = NPCZombieCacheBridge and NPCZombieCacheBridge.Cache and task.eid and NPCZombieCacheBridge.Cache[task.eid] or nil
-        if enemy then
+        local enemy = GetEnemy(task)
+        if enemy and instanceof(enemy, "IsoZombie") then
             local brainEnemy = GetBrain(enemy)
             if CanShoveTarget(brainActor, brainEnemy, enemy) then
                 ShoveZombie(character, enemy)
@@ -192,7 +230,7 @@ function NPCActionShoveBridge.OnWorking(character, task)
                     local player = playerList:get(i)
                     if player then
                         local eid = NPCUtils.GetCharacterID(player)
-                        if player:isAlive() and eid == task.eid and CanShoveTarget(brainActor, nil, player) then
+                        if player:isAlive() and tostring(eid) == tostring(task.targetId or task.eid) and CanShoveTarget(brainActor, nil, player) then
                             ShovePlayer(character, player)
                         end
                     end

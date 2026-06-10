@@ -1,7 +1,7 @@
 local legacyPersistentNPC = NPCPersistentNPCBridge
 NPCPersistentNPCBridge = NPCPersistentNPCBridge or legacyPersistentNPC or {}
 
-NPCPersistentNPCBridge.Version = 4
+NPCPersistentNPCBridge.Version = 7
 NPCPersistentNPCBridge.Enabled = NPCPersistentNPCBridge.Enabled ~= false
 NPCPersistentNPCBridge.MaxInventoryLite = NPCPersistentNPCBridge.MaxInventoryLite or 36
 NPCPersistentNPCBridge.MaxProfiles = NPCPersistentNPCBridge.MaxProfiles or 500
@@ -91,17 +91,98 @@ local function bpnpc_applyFields(dst, src, fields)
     return dst
 end
 
+local function bpnpc_isKnownHumanSkinTextureName(name)
+    name = tostring(name or "")
+    return string.match(name, "^MaleBody0[1-5]$") ~= nil
+        or string.match(name, "^FemaleBody0[1-5]$") ~= nil
+end
+
+local function bpnpc_isBadSkinTextureName(name)
+    name = tostring(name or "")
+    if name == "" then return true end
+    local lower = string.lower(name)
+    if string.find(lower, "zombie", 1, true)
+        or string.find(lower, "zed", 1, true)
+        or string.find(lower, "rot", 1, true)
+        or string.find(lower, "skeleton", 1, true)
+        or string.find(lower, "burnt", 1, true) then
+        return true
+    end
+    return not bpnpc_isKnownHumanSkinTextureName(name)
+end
+
+local function bpnpc_isBadSkinColor(color)
+    if type(color) ~= "table" then return true end
+    local r = tonumber(color.r)
+    local g = tonumber(color.g)
+    local b = tonumber(color.b)
+    if not r or not g or not b then return true end
+    if r < 0.18 or g < 0.12 or b < 0.08 or r > 1.0 or g > 1.0 or b > 1.0 then return true end
+    if g > r + 0.08 and g > b + 0.06 then return true end
+    if b > r + 0.12 then return true end
+    local maxc = math.max(r, math.max(g, b))
+    local minc = math.min(r, math.min(g, b))
+    if maxc < 0.55 and (maxc - minc) < 0.055 then return true end
+    return false
+end
+
+local function bpnpc_fallbackSkinTexture(profile, zombie)
+    local id = tonumber(profile and (profile.appearanceSeed or profile.id or profile.runtimeId)) or 0
+    local female = profile and profile.female == true
+    if zombie and zombie.isFemale then
+        local ok, value = pcall(function() return zombie:isFemale() == true end)
+        if ok then female = value == true end
+    end
+    id = math.abs(math.floor(id))
+    if female then return "FemaleBody0" .. tostring(1 + id % 5) end
+    return "MaleBody0" .. tostring(1 + id % 5)
+end
+
+local function bpnpc_visualSignature(profile)
+    if type(profile) ~= "table" then return "" end
+    local function colorSig(color)
+        if type(color) ~= "table" then return "" end
+        return tostring(color.r or "") .. "," .. tostring(color.g or "") .. "," .. tostring(color.b or "")
+    end
+    return tostring(profile.persistentId or profile.uid or "") .. "|" .. tostring(profile.appearanceSeed or "") .. "|" .. tostring(profile.faceProfile or "") .. "|" .. tostring(profile.skinTexture or "") .. "|" .. colorSig(profile.skinColor) .. "|" .. tostring(profile.hairStyle or "") .. "|" .. colorSig(profile.hairColor) .. "|" .. tostring(profile.beardStyle or "") .. "|" .. colorSig(profile.beardColor)
+end
+
+local function bpnpc_normalizeHumanVisualProfile(profile, zombie)
+    if type(profile) ~= "table" then return profile, false end
+    local changed = false
+    if bpnpc_isBadSkinTextureName(profile.skinTexture) then
+        profile.skinTexture = bpnpc_fallbackSkinTexture(profile, zombie)
+        profile.humanVisualNormalized = true
+        changed = true
+    end
+    if bpnpc_isBadSkinColor(profile.skinColor) then
+        profile.skinColor = {r = 0.86, g = 0.66, b = 0.52}
+        profile.humanVisualNormalized = true
+        changed = true
+    end
+    if profile.infection ~= 0 then
+        profile.infection = 0
+        changed = true
+    end
+    profile.humanVisualLocked = true
+    profile.humanVisualSignature = bpnpc_visualSignature(profile)
+    if changed then profile.humanVisualNormalizedAt = bpnpc_now() end
+    return profile, changed
+end
+
 local BPNPC_MEMBER_FIELDS = {
     "female", "femaleChance", "voice", "outfit", "appearanceSeed", "faceProfile", "skinTexture", "skinColor", "hairStyle", "hairColor", "beardStyle", "beardColor",
-    "clan", "faction", "hostile", "relationship", "relationshipToPlayer", "master", "eatBody", "accuracyBoost",
+    "humanVisualLocked", "humanVisualSignature", "humanVisualNormalized", "humanVisualNormalizedAt",
+    "clan", "faction", "factionSide", "side", "factionState", "hostile", "friendly", "relationship", "relationshipToPlayer", "master", "isPlayerGuard", "followPlayer", "guardPlayer", "eatBody", "accuracyBoost",
     "professionArchetype", "professionCategory", "appearanceStyle", "cinematicAppearance", "behaviorTags",
-    "health", "maxHealth", "endurance", "infection", "weapons", "inventory", "inventoryLite", "loot", "key",
+    "health", "maxHealth", "endurance", "infection", "weapons", "inventory", "inventoryLite", "wornLite", "gearLite", "loot", "key",
     "baseGear", "baseGearWear", "baseGearWeaponKits", "baseGearWeaponParts", "baseGearMagazines", "baseGearBaseId",
     "currentWeapon", "ammo", "role", "tacticalRole", "homeBaseId", "homeBase", "homeBaseZoneId", "homeBaseZoneType",
     "homeBaseZone", "baseZoneId", "baseZoneType", "baseDuty", "baseDutyState", "baseDutyReason", "baseDutyGroupId", "baseDutyOwner",
     "guardPoint", "patrolPoint", "medicalPoint", "restPoint", "foodPoint", "ammoPoint", "storagePoint", "returnPoint", "lastTask", "order", "fireMode",
     "program", "programName", "programStage", "state", "fsm", "sim", "watchdog", "debug", "dna",
     "mercenary", "mercenaryElite", "mercenaryHired", "mercenaryHiredBy", "mercenaryHiredByName", "mercenarySquadLeader", "mercenarySquadLeaderName",
+    "wounded", "woundedDowned", "woundedState", "woundedReason", "woundedAt", "woundedExpiresAt", "woundedForPlayerId", "woundedForPlayerName", "woundedX", "woundedY", "woundedZ", "woundedStabilized", "woundedStabilizedAt", "woundedEvacuating", "woundedEvacuatedAt", "woundedEvacTarget", "woundedEvacBaseId", "woundedAbandoned", "woundedAbandonedAt", "woundedNoDespawn", "woundedKeepRuntime",
     "spy", "spyForPlayerId", "spyForPlayerName", "spyOriginalSide", "spyBribedAt", "spyState", "spyDefected", "spyDefectedAt", "spySabotage", "spyAlliedGroup", "spyPaymentKind", "spyDefectionReason",
     "needs", "stock", "skills", "xp", "morale", "fear", "aggression", "discipline", "lastKnownEnemyPosition",
     "roadPatrol", "roadBias", "preferRoads", "patrolColor", "encounterId", "inBattle", "virtualBattle", "battleId", "enemyGroupId", "battleEnemyGroupId"
@@ -278,7 +359,9 @@ end
 
 
 function NPCPersistentNPCBridge.BuildInventoryLite(zombie, brain)
-    if brain and type(brain.inventoryLite) == "table" and bpnpc_tableCount(brain.inventoryLite) > 0 then
+    -- Prefer the live runtime inventory when a materialized NPC is available.
+    -- Falling back to the stored lite snapshot is only safe for virtual/offline profiles.
+    if not zombie and brain and type(brain.inventoryLite) == "table" and bpnpc_tableCount(brain.inventoryLite) > 0 then
         return bpnpc_copy(brain.inventoryLite)
     end
 
@@ -325,11 +408,52 @@ function NPCPersistentNPCBridge.BuildInventoryLite(zombie, brain)
     end
 
     if #lite > 0 then return lite end
+    if brain and type(brain.inventoryLite) == "table" and bpnpc_tableCount(brain.inventoryLite) > 0 then
+        return bpnpc_copy(brain.inventoryLite)
+    end
     return bpnpc_copy(brain and brain.inventory or {})
 end
 
+function NPCPersistentNPCBridge.BuildWornLite(zombie, brain)
+    if not zombie and brain and type(brain.wornLite) == "table" and bpnpc_tableCount(brain.wornLite) > 0 then
+        return bpnpc_copy(brain.wornLite)
+    end
+
+    local worn = {}
+    if zombie and zombie.getWornItems then
+        local okWorn, wornItems = pcall(function() return zombie:getWornItems() end)
+        if okWorn and wornItems then
+            local okSize, size = pcall(function() return wornItems:size() end)
+            size = okSize and tonumber(size) or 0
+            for i = 0, math.min(size, 32) - 1 do
+                local record = nil
+                pcall(function() record = wornItems:get(i) end)
+                local item = nil
+                local location = nil
+                if record then
+                    if record.getItem then pcall(function() item = record:getItem() end) end
+                    if record.getLocation then pcall(function() location = record:getLocation() end) end
+                end
+                if not item and record and record.getFullType then item = record end
+                if item then
+                    local entry = {location = location}
+                    pcall(function() entry.fullType = item:getFullType() end)
+                    pcall(function() entry.condition = item:getCondition() end)
+                    pcall(function() entry.maxCondition = item:getConditionMax() end)
+                    if item.getBodyLocation and not entry.location then pcall(function() entry.location = item:getBodyLocation() end) end
+                    if entry.fullType then worn[#worn + 1] = entry end
+                end
+            end
+        end
+    end
+
+    if #worn > 0 then return worn end
+    return bpnpc_copy(brain and (brain.wornLite or brain.gearLite) or {})
+end
+
 function NPCPersistentNPCBridge.BuildAmmoLite(zombie, brain)
-    if brain and type(brain.ammo) == "table" and bpnpc_tableCount(brain.ammo) > 0 then return bpnpc_copy(brain.ammo) end
+    -- Prefer a fresh ammo snapshot from the live inventory when possible.
+    if not zombie and brain and type(brain.ammo) == "table" and bpnpc_tableCount(brain.ammo) > 0 then return bpnpc_copy(brain.ammo) end
     local ammo = {}
     local invLite = NPCPersistentNPCBridge.BuildInventoryLite(zombie, brain)
     if type(invLite) == "table" then
@@ -348,7 +472,7 @@ end
 
 function NPCPersistentNPCBridge.BuildCurrentWeapon(zombie, brain)
     local src = brain and brain.currentWeapon or nil
-    if type(src) == "table" and src.fullType then return bpnpc_copy(src) end
+    if not zombie and type(src) == "table" and src.fullType then return bpnpc_copy(src) end
     local item = nil
     if zombie and zombie.getPrimaryHandItem then
         pcall(function() item = zombie:getPrimaryHandItem() end)
@@ -380,6 +504,10 @@ local function bpnpc_readVisual(zombie, brain)
         out.hairColor = bpnpc_copy(brain.hairColor)
         out.beardStyle = brain.beardStyle
         out.beardColor = bpnpc_copy(brain.beardColor)
+        out.humanVisualLocked = brain.humanVisualLocked
+        out.humanVisualSignature = brain.humanVisualSignature
+        out.humanVisualNormalized = brain.humanVisualNormalized
+        out.humanVisualNormalizedAt = brain.humanVisualNormalizedAt
     end
     if zombie then
         pcall(function() out.female = zombie:isFemale() end)
@@ -425,6 +553,8 @@ local function bpnpc_enrich(profile, brain, zombie)
         profile.weapons = bpnpc_copy(bpnpc_first(brain.weapons, profile.weapons))
         profile.inventory = bpnpc_copy(bpnpc_first(brain.inventory, profile.inventory))
         profile.inventoryLite = bpnpc_copy(bpnpc_first(brain.inventoryLite, profile.inventoryLite))
+        profile.wornLite = bpnpc_copy(bpnpc_first(brain.wornLite, brain.gearLite, profile.wornLite, profile.gearLite))
+        profile.gearLite = bpnpc_copy(bpnpc_first(brain.gearLite, brain.wornLite, profile.gearLite, profile.wornLite))
         profile.loot = bpnpc_copy(bpnpc_first(brain.loot, profile.loot))
         profile.key = bpnpc_copy(bpnpc_first(brain.key, profile.key))
         profile.currentWeapon = bpnpc_copy(bpnpc_first(brain.currentWeapon, profile.currentWeapon))
@@ -486,7 +616,15 @@ local function bpnpc_enrich(profile, brain, zombie)
     end
 
     local visual = bpnpc_readVisual(zombie, brain)
-    bpnpc_applyFields(profile, visual, {"female", "voice", "outfit", "appearanceSeed", "faceProfile", "skinTexture", "skinColor", "hairStyle", "hairColor", "beardStyle", "beardColor"})
+    bpnpc_applyFields(profile, visual, {"female", "voice", "outfit", "appearanceSeed", "faceProfile", "skinTexture", "skinColor", "hairStyle", "hairColor", "beardStyle", "beardColor", "humanVisualLocked", "humanVisualSignature", "humanVisualNormalized", "humanVisualNormalizedAt"})
+
+    local needsPreset = profile.humanVisualLocked ~= true
+        or bpnpc_isBadSkinTextureName(profile.skinTexture)
+        or bpnpc_isBadSkinColor(profile.skinColor)
+    if needsPreset and NPCCreatorBridge and NPCCreatorBridge.ApplyHumanFacePresetToBrain then
+        pcall(function() NPCCreatorBridge.ApplyHumanFacePresetToBrain(profile, zombie, profile, false) end)
+    end
+    bpnpc_normalizeHumanVisualProfile(profile, zombie)
 
     return profile
 end
@@ -499,6 +637,7 @@ local function bpnpc_commitProfile(gmd, profile)
     profile.persistentId = profile.persistentId or uid
     profile.updated = profile.updated or bpnpc_now()
     profile.version = NPCPersistentNPCBridge.Version
+    bpnpc_normalizeHumanVisualProfile(profile, nil)
     gmd.PersistentNPCs[uid] = profile
     gmd.Registry[uid] = bpnpc_copy(profile)
     if profile.runtimeId then
@@ -550,6 +689,8 @@ function NPCPersistentNPCBridge.TouchFromSnapshot(gmd, snapshot, brain, zombie)
         profile.currentWeapon = NPCPersistentNPCBridge.BuildCurrentWeapon(zombie, brain) or profile.currentWeapon
         profile.ammo = NPCPersistentNPCBridge.BuildAmmoLite(zombie, brain)
         profile.inventoryLite = NPCPersistentNPCBridge.BuildInventoryLite(zombie, brain)
+        profile.wornLite = NPCPersistentNPCBridge.BuildWornLite(zombie, brain)
+        profile.gearLite = bpnpc_copy(profile.wornLite)
     end
 
     if old.dead and not snapshot.dead then
@@ -781,6 +922,7 @@ function NPCPersistentNPCBridge.ApplyProfileToMember(gmd, member)
     member.homeBaseId = profile.homeBaseId or member.homeBaseId
     member.homeBase = bpnpc_copy(profile.homeBase or member.homeBase)
     member.lastTask = bpnpc_copy(profile.lastTask or member.lastTask)
+    bpnpc_normalizeHumanVisualProfile(member, nil)
     return member
 end
 
@@ -800,6 +942,13 @@ function NPCPersistentNPCBridge.ApplyProfileToBrain(gmd, brain, zombie, member)
     brain.clan = profile.clan or profile.faction or brain.clan
     brain.relationshipToPlayer = profile.relationshipToPlayer or brain.relationshipToPlayer
     brain.relationship = profile.relationshipToPlayer or brain.relationship
+    brain.isPlayerGuard = profile.isPlayerGuard or brain.isPlayerGuard
+    brain.followPlayer = profile.followPlayer or brain.followPlayer
+    brain.guardPlayer = profile.guardPlayer
+    brain.friendly = profile.friendly or brain.friendly
+    brain.factionState = profile.factionState or brain.factionState
+    brain.factionSide = profile.factionSide or brain.factionSide
+    brain.side = profile.side or brain.side
     brain.health = profile.health or brain.health
     brain.maxHealth = profile.maxHealth or brain.maxHealth or brain.health
     brain.worldGroupId = profile.worldGroupId or profile.groupId or brain.worldGroupId
@@ -856,9 +1005,49 @@ function NPCPersistentNPCBridge.BuildRuntimeUpdate(zombie, brain)
         hairColor = bpnpc_copy(brain.hairColor),
         beardStyle = brain.beardStyle,
         beardColor = bpnpc_copy(brain.beardColor),
+        humanVisualLocked = brain.humanVisualLocked,
+        humanVisualSignature = brain.humanVisualSignature,
+        humanVisualNormalized = brain.humanVisualNormalized,
+        humanVisualNormalizedAt = brain.humanVisualNormalizedAt,
         clan = brain.clan,
+        faction = brain.faction,
+        factionSide = brain.factionSide,
+        side = brain.side,
+        factionState = brain.factionState,
         hostile = brain.hostile,
+        friendly = brain.friendly,
         master = brain.master,
+        isPlayerGuard = brain.isPlayerGuard,
+        followPlayer = brain.followPlayer,
+        guardPlayer = brain.guardPlayer,
+        mercenary = brain.mercenary,
+        mercenaryElite = brain.mercenaryElite,
+        mercenaryHired = brain.mercenaryHired,
+        mercenaryHiredBy = brain.mercenaryHiredBy,
+        mercenaryHiredByName = brain.mercenaryHiredByName,
+        mercenarySquadLeader = brain.mercenarySquadLeader,
+        mercenarySquadLeaderName = brain.mercenarySquadLeaderName,
+        wounded = brain.wounded,
+        woundedDowned = brain.woundedDowned,
+        woundedState = brain.woundedState,
+        woundedReason = brain.woundedReason,
+        woundedAt = brain.woundedAt,
+        woundedExpiresAt = brain.woundedExpiresAt,
+        woundedForPlayerId = brain.woundedForPlayerId,
+        woundedForPlayerName = brain.woundedForPlayerName,
+        woundedX = brain.woundedX,
+        woundedY = brain.woundedY,
+        woundedZ = brain.woundedZ,
+        woundedStabilized = brain.woundedStabilized,
+        woundedStabilizedAt = brain.woundedStabilizedAt,
+        woundedEvacuating = brain.woundedEvacuating,
+        woundedEvacuatedAt = brain.woundedEvacuatedAt,
+        woundedEvacTarget = bpnpc_copy(brain.woundedEvacTarget),
+        woundedEvacBaseId = brain.woundedEvacBaseId,
+        woundedAbandoned = brain.woundedAbandoned,
+        woundedAbandonedAt = brain.woundedAbandonedAt,
+        woundedNoDespawn = brain.woundedNoDespawn,
+        woundedKeepRuntime = brain.woundedKeepRuntime,
         permanent = brain.permanent,
         maxHealth = brain.maxHealth,
         endurance = brain.endurance,
@@ -889,6 +1078,8 @@ function NPCPersistentNPCBridge.BuildRuntimeUpdate(zombie, brain)
         currentWeapon = NPCPersistentNPCBridge.BuildCurrentWeapon(zombie, brain),
         ammo = NPCPersistentNPCBridge.BuildAmmoLite(zombie, brain),
         inventoryLite = NPCPersistentNPCBridge.BuildInventoryLite(zombie, brain),
+        wornLite = NPCPersistentNPCBridge.BuildWornLite(zombie, brain),
+        gearLite = NPCPersistentNPCBridge.BuildWornLite(zombie, brain),
         weapons = bpnpc_copy(brain.weapons),
         inventory = bpnpc_copy(brain.inventory),
         loot = bpnpc_copy(brain.loot),
@@ -932,6 +1123,16 @@ function NPCPersistentNPCBridge.MarkDead(gmd, uidOrBrain)
     local uid = bpnpc_uidOf(uidOrBrain)
     if not uid then return end
     uid = tostring(uid)
+    if type(uidOrBrain) == "table" and uidOrBrain.wounded == true and uidOrBrain.forceDead ~= true then
+        local woundedProfile = bpnpc_getProfileRaw(gmd, uid) or {uid = uid, persistentId = uid}
+        bpnpc_enrich(woundedProfile, uidOrBrain)
+        woundedProfile.dead = false
+        woundedProfile.virtual = false
+        woundedProfile.updated = bpnpc_now()
+        woundedProfile.version = NPCPersistentNPCBridge.Version
+        bpnpc_commitProfile(gmd, woundedProfile)
+        return
+    end
     local now = bpnpc_now()
     local profile = bpnpc_getProfileRaw(gmd, uid) or {uid = uid, persistentId = uid}
     if type(uidOrBrain) == "table" then profile = bpnpc_enrich(profile, uidOrBrain) end
@@ -942,6 +1143,7 @@ function NPCPersistentNPCBridge.MarkDead(gmd, uidOrBrain)
     profile.deathAt = profile.deathAt or now
     profile.updated = now
     profile.version = NPCPersistentNPCBridge.Version
+    bpnpc_normalizeHumanVisualProfile(profile, nil)
     gmd.PersistentNPCs[uid] = profile
     gmd.Registry[uid] = bpnpc_copy(profile)
     gmd.DeadRegistry[uid] = {uid = uid, deathAt = profile.deathAt, groupId = profile.groupId or profile.worldGroupId}

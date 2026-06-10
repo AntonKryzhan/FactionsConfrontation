@@ -1,0 +1,32 @@
+Factions Confrontation — Stage459 Optimized Defaults for SP + COOP
+
+Цель:
+- привести sandbox-options.txt и внутренние fallback defaults к текущей архитектуре Stage455-458;
+- убрать IntegerConfigOption spam при старых/оптимизированных значениях;
+- сделать новые SP/COOP миры менее burst-heavy без отключения геймплея.
+
+Изменено:
+- FactionsConfrontation/media/sandbox-options.txt;
+- FactionsConfrontation/media/lua/shared/NPCCore/NPCLegacySettingsBridge.lua.
+
+Что именно:
+- снижены дефолтные размеры стартового виртуального мира: initial/max virtual groups, road patrols, encounter pairs;
+- снижены дефолтные лимиты BaseCamp/bootstrap: max bases, search attempts, group/home radii, rebalance interval;
+- снижены burst-бюджеты task/marker/spawn/network/influence;
+- сетевые marker/snapshot/player/state update defaults сделаны мягче для COOP;
+- streaming thresholds сделаны чуть чувствительнее, чтобы hard quarantine включался раньше;
+- sandbox min для Base_MinDistance/Base_SearchAttempts/Base_GroupTargetRadius/Base_HomeAssignRadius/SpawnQueue_MaxPending понижен, чтобы старые серверные cfg со значениями 1/2/4/6/18/22/42/64 больше не давали IntegerConfigOption errors.
+
+Что НЕ трогалось:
+- наёмники;
+- Follow / Guard / Hold / Patrol;
+- боёвка;
+- физические NPC рядом с игроком;
+- Black Market;
+- контракты;
+- save/network/ModData schema;
+- Java/class files.
+
+Важно:
+- patch меняет дефолты для новых миров/серверов и fallback defaults.
+- для уже существующего servertest1111.ini / servertest1111_SandboxVars.lua старые значения могут остаться, пока их не пересохранить через Sandbox Options или вручную не обновить.

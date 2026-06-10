@@ -187,5 +187,9 @@ function NPCConvoysClientBridge.Install()
     NPCConvoysClientBridge._installed = true
     Events.OnFillWorldObjectContextMenu.Add(NPCConvoysClientBridge.OnFillWorldObjectContextMenu)
     Events.OnServerCommand.Add(NPCConvoysClientBridge.OnServerCommand)
-    Events.OnTick.Add(bcvcl_onTick)
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.RegisterTickJob then
+        NPCWorkSchedulerBridge.RegisterTickJob("NPCConvoysClientBridge.SyncBootstrap", bcvcl_onTick, "ui", 30, 1)
+    elseif Events and Events.OnTick then
+        Events.OnTick.Add(bcvcl_onTick)
+    end
 end

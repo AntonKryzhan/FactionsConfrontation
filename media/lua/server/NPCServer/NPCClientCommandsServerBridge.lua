@@ -36,6 +36,38 @@ local NPC_SERVER_LEGACY_PREFIX = NPCLegacyContractBridge.Token
 local NPC_SERVER_LEGACY_KEYS = NPCLegacyContractBridge.Keys
 local NPC_SERVER_LEGACY_COMMANDS = NPCLegacyContractBridge.Commands
 
+local function bsc_stage448BoostWeaponAmmoSlot(slot, slotName, inBattle)
+    if type(slot) ~= "table" or not slot.name or slot.name == false then return false end
+    local magSize = math.floor(tonumber(slot.magSize) or 0)
+    if magSize <= 0 then
+        magSize = slotName == "secondary" and 15 or 30
+        slot.magSize = magSize
+    end
+    local minMags = slotName == "secondary" and 10 or 14
+    if inBattle == true then minMags = minMags + 8 end
+    local currentMags = math.floor(tonumber(slot.magCount) or 0)
+    if currentMags < minMags then slot.magCount = minMags end
+    local bulletsLeft = math.floor(tonumber(slot.bulletsLeft) or 0)
+    if bulletsLeft < math.max(1, math.floor(magSize * 0.75)) then slot.bulletsLeft = magSize end
+    slot.stage448AmmoBoost = true
+    return true
+end
+
+local function bsc_stage448BoostBrainAmmo(brain, event)
+    if type(brain) ~= "table" then return false end
+    if brain.blackMarket == true or brain.blackMarketNPC == true or brain.special == "BlackMarket" then return false end
+    if type(brain.weapons) ~= "table" then return false end
+    local inBattle = brain.inBattle == true or brain.virtualBattle == true or (event and (event.inBattle == true or event.virtualBattle == true))
+    local changed = false
+    if bsc_stage448BoostWeaponAmmoSlot(brain.weapons.primary, "primary", inBattle) then changed = true end
+    if bsc_stage448BoostWeaponAmmoSlot(brain.weapons.secondary, "secondary", inBattle) then changed = true end
+    if changed then
+        brain.stage448AmmoBoosted = true
+        brain.stage448AmmoBoostedAt = getGameTime and getGameTime():getWorldAgeHours() or 0
+    end
+    return changed
+end
+
 require "NPCServer/NPCServerCommandBridge"
 require "NPCServer/NPCWorldObjectCommandBridge"
 
@@ -49,6 +81,47 @@ local NPCServerRefreshWorldGroupMarker
 local bsc_updateMercenaryMarker
 local bsc_updateRuntimeDebugMarker
 local bsc_refreshPhysicalGroupMarkerThrottled
+
+local function bsc_cleanGroupDisplayName(name, groupId)
+    if name == nil then return nil end
+    local text = tostring(name or "")
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" or text == "nil" or text == "false" then return nil end
+    local gid = tostring(groupId or "")
+    if gid ~= "" and text == gid then return nil end
+    if string.match(text, "^P%d+%s+BBC%d+$") or string.match(text, "^BBC%d+$") or string.match(text, "^WG%d+$") or string.match(text, "^CP%d+$") or string.match(text, "^SG%d+$") then return nil end
+    text = string.gsub(text, "%s+P%d+%s+BBC%d+$", "")
+    text = string.gsub(text, "%s+BBC%d+$", "")
+    text = string.gsub(text, "%s+WG%d+$", "")
+    text = string.gsub(text, "%s+CP%d+$", "")
+    text = string.gsub(text, "%s+SG%d+$", "")
+    if gid ~= "" then text = string.gsub(text, "%s+" .. gid .. "$", "") end
+    text = string.gsub(text, "^%s+", "")
+    text = string.gsub(text, "%s+$", "")
+    if text == "" or string.match(text, "^NPC Group%s*") then return nil end
+    return text
+end
+
+local function bsc_groupDisplayName(groupId, group, preferred)
+    if NPCWorldDirectorBridge and NPCWorldDirectorBridge.GetVirtualGroupDisplayName then
+        local ok, name = pcall(function() return NPCWorldDirectorBridge.GetVirtualGroupDisplayName(groupId, group, preferred) end)
+        if ok and name and tostring(name) ~= "" then return name end
+    end
+    local cleaned = bsc_cleanGroupDisplayName(preferred or (group and group.name), groupId)
+    if cleaned then return cleaned end
+    local side = tostring(group and (group.factionSide or group.side or group.faction or group.patrolColor) or "")
+    side = string.lower(side)
+    local sideLabel = side == "red" and "Red" or side == "blue" and "Blue" or "Green"
+    if group and (group.mercenary or group.mercenaryElite or sideLabel == "Blue") then
+        if group.mercenaryHired then return "Hired blue mercenaries" end
+        return "Blue mercenaries"
+    end
+    if group and (group.checkpointId or group.targetClass == "checkpoint_road_patrol" or group.state == "checkpoint_patrol") then return sideLabel .. " checkpoint patrol" end
+    if group and group.roadPatrol then return sideLabel .. " road patrol" end
+    if group and (group.homeBaseId or group.state == "base_patrol" or group.targetClass == "base_guard") then return sideLabel .. " base patrol" end
+    return sideLabel .. " patrol"
+end
 
 local function bsc_playerId(player)
     return NPCServerCommandBridge.PlayerId(player)
@@ -105,6 +178,9 @@ NPCServerRuntime.Commands.RequestSafeSync = function(player, args)
     if NPCWorldDirector and NPCWorldDirector.RevirtualizePersistedRuntimeState then
         NPCWorldDirector.RevirtualizePersistedRuntimeState()
     end
+    if NPCWorldDirectorBridge and NPCWorldDirectorBridge.CleanupLoadedPersistedRuntimeObjects and NPCWorldDirector then
+        pcall(function() NPCWorldDirectorBridge.CleanupLoadedPersistedRuntimeObjects(NPCWorldDirector, "safe_sync_persistent_runtime_cleanup") end)
+    end
     if TransmitNPCModData then
         TransmitNPCModData()
     end
@@ -114,6 +190,22 @@ NPCServerRuntime.NetGuard = NPCServerRuntime.NetGuard or {last={}, dropped=0, la
 
 local function bsc_nowMs()
     return NPCServerCommandBridge.NowMs()
+end
+
+local function bsc_mercenaryTelemetryText(args, serverReceiveMs)
+    if type(args) ~= "table" then return "" end
+    local parts = {}
+    if args.clientTraceId ~= nil then parts[#parts + 1] = "trace=" .. tostring(args.clientTraceId) end
+    if args.clientEvent ~= nil then parts[#parts + 1] = "event=" .. tostring(args.clientEvent) end
+    local clientSendMs = tonumber(args.clientSendMs)
+    if clientSendMs then
+        parts[#parts + 1] = "clientSendMs=" .. tostring(clientSendMs)
+        local recv = tonumber(serverReceiveMs)
+        if recv and recv > 0 then parts[#parts + 1] = "clientToServerMs=" .. tostring(math.floor(recv - clientSendMs)) end
+    end
+    if args.clientOrderSeq ~= nil then parts[#parts + 1] = "clientSeq=" .. tostring(args.clientOrderSeq) end
+    if #parts == 0 then return "" end
+    return " " .. table.concat(parts, " ")
 end
 
 local function bsc_worldAgeHours()
@@ -487,6 +579,123 @@ local function bsc_brainSide(brain)
     return brain and (brain.factionSide or brain.faction or brain.side or brain.patrolColor)
 end
 
+local function bsc_distanceSqFromPlayerToCoords(player, x, y, z)
+    if not (player and player.getX and player.getY and x and y) then return nil end
+    local px = tonumber(player:getX())
+    local py = tonumber(player:getY())
+    local pz = player.getZ and tonumber(player:getZ()) or 0
+    x = tonumber(x)
+    y = tonumber(y)
+    z = tonumber(z) or 0
+    if not (px and py and x and y) then return nil end
+    if math.abs((pz or 0) - (z or 0)) > 2.0 then return nil end
+    local dx = x - px
+    local dy = y - py
+    return dx * dx + dy * dy
+end
+
+local function bsc_brainCoords(brain)
+    if type(brain) ~= "table" then return nil, nil, nil end
+    local x = tonumber(brain.x) or (brain.debugCoords and tonumber(brain.debugCoords.x)) or (brain.bornCoords and tonumber(brain.bornCoords.x))
+    local y = tonumber(brain.y) or (brain.debugCoords and tonumber(brain.debugCoords.y)) or (brain.bornCoords and tonumber(brain.bornCoords.y))
+    local z = tonumber(brain.z) or (brain.debugCoords and tonumber(brain.debugCoords.z)) or (brain.bornCoords and tonumber(brain.bornCoords.z)) or 0
+    return x, y, z
+end
+
+local function bsc_groupCoords(group)
+    if type(group) ~= "table" then return nil, nil, nil end
+    local x = tonumber(group.x) or tonumber(group.cx) or tonumber(group.targetX) or tonumber(group.homeX)
+    local y = tonumber(group.y) or tonumber(group.cy) or tonumber(group.targetY) or tonumber(group.homeY)
+    local z = tonumber(group.z) or tonumber(group.cz) or tonumber(group.targetZ) or tonumber(group.homeZ) or 0
+    return x, y, z
+end
+
+local function bsc_zombieCoords(zombie)
+    if not (zombie and zombie.getX and zombie.getY) then return nil, nil, nil end
+    local ok, x, y, z = pcall(function()
+        return tonumber(zombie:getX()), tonumber(zombie:getY()), zombie.getZ and tonumber(zombie:getZ()) or 0
+    end)
+    if ok then return x, y, z end
+    return nil, nil, nil
+end
+
+local function bsc_hireTargetNearPlayer(player, targetBrain, targetZombie, group)
+    local physicalMax = 18
+    local groupMax = 32
+
+    local zx, zy, zz = bsc_zombieCoords(targetZombie)
+    local dist = bsc_distanceSqFromPlayerToCoords(player, zx, zy, zz)
+    if dist and dist <= physicalMax * physicalMax then return true end
+
+    local bx, by, bz = bsc_brainCoords(targetBrain)
+    dist = bsc_distanceSqFromPlayerToCoords(player, bx, by, bz)
+    if dist and dist <= physicalMax * physicalMax then return true end
+
+    local gx, gy, gz = bsc_groupCoords(group)
+    dist = bsc_distanceSqFromPlayerToCoords(player, gx, gy, gz)
+    if dist and dist <= groupMax * groupMax then return true end
+
+    return false
+end
+
+local function bsc_mercenaryPointAnchorNearPlayer(player, anchor)
+    if not (player and type(anchor) == "table") then return false end
+    local maxDist = 220
+    local maxZDelta = 4
+    local ax = tonumber(anchor.x)
+    local ay = tonumber(anchor.y)
+    local az = tonumber(anchor.z) or 0
+    if not ax or not ay then return false end
+
+    local dist = bsc_distanceSqFromPlayerToCoords(player, ax, ay, az)
+    if not dist or dist > maxDist * maxDist then return false end
+
+    if player.getZ then
+        local ok, pz = pcall(function() return tonumber(player:getZ()) or 0 end)
+        if ok and pz and math.abs(az - pz) > maxZDelta then return false end
+    end
+
+    return true
+end
+
+
+local function bsc_anchorSquareIsInsideBuilding(anchor)
+    if not (type(anchor) == "table" and anchor.x and anchor.y) then return false end
+    if not getCell then return false end
+    local cell = getCell()
+    if not (cell and cell.getGridSquare) then return false end
+    local okSquare, square = pcall(function() return cell:getGridSquare(math.floor(tonumber(anchor.x) or 0), math.floor(tonumber(anchor.y) or 0), math.floor(tonumber(anchor.z) or 0)) end)
+    if not (okSquare and square) then return false end
+    if square.getRoom then
+        local okRoom, room = pcall(function() return square:getRoom() end)
+        if okRoom and room ~= nil then return true end
+    end
+    if square.getBuilding then
+        local okBuilding, building = pcall(function() return square:getBuilding() end)
+        if okBuilding and building ~= nil then return true end
+    end
+    return false
+end
+
+local function bsc_serverAllowsMercenaryHire(targetBrain, group, pid)
+    local owner = pid and tostring(pid) or nil
+    if owner then
+        if targetBrain and targetBrain.mercenaryHiredBy and tostring(targetBrain.mercenaryHiredBy) == owner then return true end
+        if group and group.mercenaryHiredBy and tostring(group.mercenaryHiredBy) == owner then return true end
+    end
+
+    local brainSide = bsc_brainSide(targetBrain)
+    local groupSide = group and (group.factionSide or group.faction or group.side or group.patrolColor) or nil
+    local side = string.lower(tostring(brainSide or groupSide or ""))
+
+    if side == "blue" then return true end
+    if targetBrain and (targetBrain.mercenary == true or targetBrain.mercenaryElite == true) then return true end
+    if group and (group.mercenary == true or group.mercenaryElite == true or group.hireable == true or group.recruitable == true) then return true end
+
+    return false
+end
+
+
 local function bsc_syncProgramBrain(id, brain)
     if not (id and brain) then return end
     sendServerCommand('NPCCommands', NPC_SERVER_LEGACY_COMMANDS.updatePart, {
@@ -667,10 +876,19 @@ local function bsc_syncMercenaryBrain(id, brain)
 end
 
 
+local function bsc_isOrderInterruptActiveForPayload(brain)
+    local order = type(brain) == "table" and brain.order or nil
+    if type(order) ~= "table" or order.interrupt ~= true then return false end
+    local now = bsc_worldAgeHours()
+    local untilHour = tonumber(order.interruptUntil or order.forceUntil)
+    if untilHour and untilHour > now then return true end
+    local issued = tonumber(order.interruptIssued or order.issued)
+    return issued ~= nil and now >= issued and now - issued < (8 / 3600)
+end
+
 local function bsc_makeMercenaryOrderPayload(id, brain)
     if not (id and brain) then return nil end
-    local clearCombat = false
-    if brain.order and brain.order.interrupt == true then clearCombat = true end
+    local clearCombat = bsc_isOrderInterruptActiveForPayload(brain)
     local targetId = brain.targetId
     local targetKind = brain.targetKind
     local currentThreat = brain.currentThreat
@@ -684,6 +902,10 @@ local function bsc_makeMercenaryOrderPayload(id, brain)
     local runtimeId = brain.runtimeId or brain[NPC_SERVER_LEGACY_KEYS.runtimeId]
     local persistentId = brain.persistentId or brain[NPC_SERVER_LEGACY_KEYS.persistentId]
     local worldGroupId = brain.worldGroupId or brain.groupId or brain[NPC_SERVER_LEGACY_KEYS.worldGroupId]
+    local order = type(brain.order) == "table" and brain.order or nil
+    local playerCommand = brain.commandAuthority == "player" or brain.playerCommandAuthority == true
+        or (order and (order.commandAuthority == "player" or order.playerCommand == true or order.source == "player"))
+    local urgentOrder = clearCombat == true or playerCommand == true
     local px = tonumber(brain.x) or (brain.debugCoords and tonumber(brain.debugCoords.x)) or (brain.bornCoords and tonumber(brain.bornCoords.x))
     local py = tonumber(brain.y) or (brain.debugCoords and tonumber(brain.debugCoords.y)) or (brain.bornCoords and tonumber(brain.bornCoords.y))
     local pz = tonumber(brain.z) or (brain.debugCoords and tonumber(brain.debugCoords.z)) or (brain.bornCoords and tonumber(brain.bornCoords.z))
@@ -693,6 +915,9 @@ local function bsc_makeMercenaryOrderPayload(id, brain)
         runtimeId = runtimeId,
         persistentId = persistentId,
         uid = brain.uid,
+        memberIndex = brain.memberIndex,
+        slotIndex = brain.slotIndex,
+        formationIndex = brain.formationIndex,
         worldGroupId = worldGroupId,
         groupId = worldGroupId,
         x = px,
@@ -723,7 +948,19 @@ local function bsc_makeMercenaryOrderPayload(id, brain)
         factionState = brain.factionState,
         mercenarySquadLeader = brain.mercenarySquadLeader,
         mercenarySquadLeaderName = brain.mercenarySquadLeaderName,
-        mercenaryOrderAsync = true
+        orderRevision = brain.orderRevision or brain.mercenaryOrderRevision or brain.groupOrderRevision or (order and (order.orderRevision or order.groupOrderRevision)),
+        mercenaryOrderRevision = brain.mercenaryOrderRevision or brain.orderRevision or brain.groupOrderRevision or (order and (order.orderRevision or order.groupOrderRevision)),
+        groupOrderRevision = brain.groupOrderRevision or brain.orderRevision or brain.mercenaryOrderRevision or (order and (order.groupOrderRevision or order.orderRevision)),
+        orderBatchId = brain.orderBatchId or brain.mercenaryOrderBatchId or brain.groupOrderBatchId or (order and (order.orderBatchId or order.groupOrderBatchId)),
+        groupOrderBatchId = brain.groupOrderBatchId or brain.orderBatchId or brain.mercenaryOrderBatchId or (order and (order.groupOrderBatchId or order.orderBatchId)),
+        orderIssuedMs = brain.mercenaryOrderIssuedMs,
+        forceImmediateOrder = true,
+        directMercenaryOrder = true,
+        mercenaryDirect = true,
+        orderSystem = "mercenary_direct",
+        clearCombat = clearCombat == true,
+        urgentMercenaryOrder = true,
+        mercenaryOrderAsync = false
     }
 end
 
@@ -734,12 +971,53 @@ end
 
 local function bsc_queueMercenaryOrderPayload(batch, id, brain)
     local payload = bsc_makeMercenaryOrderPayload(id, brain)
+    if payload and type(batch) == "table" and type(batch._mercenaryTelemetry) == "table" then
+        local mt = batch._mercenaryTelemetry
+        payload.clientTraceId = mt.clientTraceId
+        payload.clientSendMs = mt.clientSendMs
+        payload.clientOrderSeq = mt.clientOrderSeq
+        payload.clientEvent = mt.clientEvent
+        payload.serverReceiveMs = mt.serverReceiveMs
+        payload.orderAcceptedMs = mt.orderAcceptedMs
+    end
     if payload then batch[#batch + 1] = payload end
 end
 
 local function bsc_flushMercenaryOrderBatch(batch)
     if type(batch) ~= "table" or #batch == 0 then return end
-    sendServerCommand('NPCCommands', 'MercenaryOrderBatch', {entries=batch})
+    local flushMs = bsc_nowMs and bsc_nowMs() or 0
+    local revision = nil
+    local batchId = nil
+    for _, payload in ipairs(batch) do
+        if type(payload) == "table" then
+            revision = revision or payload.groupOrderRevision or payload.orderRevision or payload.mercenaryOrderRevision
+            batchId = batchId or payload.groupOrderBatchId or payload.orderBatchId
+            payload.urgentMercenaryOrder = true
+            payload.mercenaryOrderAsync = false
+            payload.forceImmediateOrder = true
+            payload.applyTogether = true
+            payload.serverFlushMs = flushMs
+        end
+    end
+    local mt = type(batch._mercenaryTelemetry) == "table" and batch._mercenaryTelemetry or {}
+    sendServerCommand('NPCCommands', 'MercenaryDirectOrderBatch', {
+        entries = batch,
+        clientTraceId = mt.clientTraceId,
+        clientSendMs = mt.clientSendMs,
+        clientOrderSeq = mt.clientOrderSeq,
+        clientEvent = mt.clientEvent,
+        serverReceiveMs = mt.serverReceiveMs,
+        orderAcceptedMs = mt.orderAcceptedMs,
+        serverFlushMs = flushMs,
+        orderRevision = revision,
+        groupOrderRevision = revision,
+        orderBatchId = batchId,
+        groupOrderBatchId = batchId,
+        applyTogether = true,
+        urgentMercenaryOrder = true,
+        directMercenaryOrder = true,
+        orderSystem = "mercenary_direct"
+    })
 end
 
 local function bsc_mercenaryMemberSeenKey(id, brain)
@@ -797,6 +1075,45 @@ local function bsc_existingQueueKeyForBrain(gmd, brain, fallback)
     return candidates[1]
 end
 
+local function bsc_isMercenaryInterruptActive(brain)
+    local order = type(brain) == "table" and brain.order or nil
+    if type(order) ~= "table" or order.interrupt ~= true then return false end
+    local now = bsc_worldAgeHours()
+    local untilHour = tonumber(order.interruptUntil or order.forceUntil)
+    if untilHour and untilHour > now then return true end
+    local issued = tonumber(order.interruptIssued or order.issued)
+    return issued ~= nil and now >= issued and now - issued < (8 / 3600)
+end
+
+local function bsc_interruptPhysicalMercenaryOrder(zombie, brain)
+    if not (zombie and type(brain) == "table" and bsc_isMercenaryInterruptActive(brain)) then return end
+    brain.tasks = {}
+    brain.targetId = nil
+    brain.targetKind = nil
+    brain.currentThreat = nil
+    brain.lastThreat = nil
+    brain.target = nil
+    brain.enemy = nil
+    brain.combatTarget = nil
+    brain.radioThreat = nil
+    brain._threatCache = nil
+    brain._combatTargetCache = nil
+    if brain.fsm then
+        brain.fsm.targetId = nil
+        brain.fsm.targetKind = nil
+        brain.fsm.currentThreat = nil
+        brain.fsm.lastThreat = nil
+        brain.fsm.target = nil
+    end
+    if NPCEntity and NPCEntity.ClearTasks then pcall(function() NPCEntity.ClearTasks(zombie) end) end
+    if NPCEntity and NPCEntity.SetAim then pcall(function() NPCEntity.SetAim(zombie, false) end) end
+    if NPCEntity and NPCEntity.SetMoving then pcall(function() NPCEntity.SetMoving(zombie, false) end) end
+    if zombie.setBumpDone then pcall(function() zombie:setBumpDone(true) end) end
+    if zombie.clearAggroList then pcall(function() zombie:clearAggroList() end) end
+    if zombie.setTarget then pcall(function() zombie:setTarget(nil) end) end
+    if zombie.setAttackedBy then pcall(function() zombie:setAttackedBy(nil) end) end
+end
+
 local function bsc_applyOrderToStoredGroupMembers(gmd, group, player, pid, groupId, data, foundMembers, foundSeen, orderBatch)
     if not (gmd and type(group) == "table" and type(group.members) == "table" and NPCMercenaryContract and NPCMercenaryContract.ApplyOrderToBrain) then return 0 end
     local changed = 0
@@ -843,12 +1160,17 @@ local function bsc_applyOrderToPhysicalMercenaries(gmd, player, pid, groupId, da
                 local hiredByPlayer = brain.mercenaryHiredBy and tostring(brain.mercenaryHiredBy) == tostring(pid)
                 local sameGroup = (not groupId) or (bsc_groupIdOf(brain) and tostring(bsc_groupIdOf(brain)) == tostring(groupId))
                 if hiredByPlayer and sameGroup then
-                    NPCMercenaryContract.ApplyOrderToBrain(brain, player, data)
-                    NPCBrainData.Update(zombie, brain)
-                    bsc_writeNPCServiceIds(zombie, brain, groupId or bsc_groupIdOf(brain))
-
                     local qid = bsc_existingQueueKeyForBrain(gmd, brain, bsc_safeZombieId(zombie))
-                    if qid then
+                    local seenKey = bsc_mercenaryMemberSeenKey(qid or bsc_safeZombieId(zombie), brain)
+                    local alreadyQueued = foundSeen and seenKey and foundSeen[seenKey] == true
+                    if not alreadyQueued then
+                        NPCMercenaryContract.ApplyOrderToBrain(brain, player, data)
+                        bsc_interruptPhysicalMercenaryOrder(zombie, brain)
+                        NPCBrainData.Update(zombie, brain)
+                        bsc_writeNPCServiceIds(zombie, brain, groupId or bsc_groupIdOf(brain))
+                    end
+
+                    if qid and not alreadyQueued then
                         if gmd.Queue then gmd.Queue[qid] = brain end
                         if bsc_rememberMercenaryOrderMember(foundMembers, foundSeen, qid, brain) then
                             bsc_queueMercenaryOrderPayload(orderBatch, qid, brain)
@@ -984,12 +1306,246 @@ local function bsc_getActiveMercenaryMemberIds(gmd, pid)
     return nil
 end
 
+local function bsc_isMercenaryGroupOwnedByPlayer(gmd, groupId, pid)
+    if not (gmd and groupId and pid) then return false end
+    local sid = tostring(groupId)
+    local key = tostring(pid)
+
+    if gmd.VirtualGroups then
+        local group = gmd.VirtualGroups[sid] or gmd.VirtualGroups[tonumber(sid)]
+        if group and group.mercenaryHiredBy and tostring(group.mercenaryHiredBy) == key then return true end
+        if group and group.mercenaryHired == true and group.mercenaryHiredBy == nil then return false end
+    end
+
+    if gmd.Queue then
+        for _, brain in pairs(gmd.Queue) do
+            if type(brain) == "table" and bsc_groupIdOf(brain) == sid then
+                if brain.mercenaryHiredBy and tostring(brain.mercenaryHiredBy) == key then return true end
+            end
+        end
+    end
+
+    return false
+end
+
 local function bsc_orderSig(args, groupId)
     if type(args) ~= "table" then return tostring(groupId or "") end
     local x = args.x and tostring(math.floor((tonumber(args.x) or 0) * 10 + 0.5)) or ""
     local y = args.y and tostring(math.floor((tonumber(args.y) or 0) * 10 + 0.5)) or ""
     local z = args.z and tostring(math.floor((tonumber(args.z) or 0) * 10 + 0.5)) or ""
     return table.concat({tostring(groupId or args.groupId or ""), tostring(args.orderName or ""), tostring(args.fireMode or ""), tostring(args.formation or ""), tostring(args.followDistance or ""), x, y, z}, "|")
+end
+
+local function bsc_groupOnlyOrderData(data)
+    local out = {}
+    if type(data) == "table" then
+        for k, v in pairs(data) do out[k] = v end
+    end
+    out._groupOnly = true
+    return out
+end
+
+local function bsc_mercenaryOrderLabel(data)
+    if type(data) ~= "table" then return "updated" end
+    if data.orderName and tostring(data.orderName) ~= "" then return tostring(data.orderName) end
+    if data.fireMode and tostring(data.fireMode) ~= "" then return "fire " .. tostring(data.fireMode) end
+    if data.formation and tostring(data.formation) ~= "" then return "formation " .. tostring(data.formation) end
+    if data.followDistance ~= nil then return "follow distance " .. tostring(data.followDistance) end
+    return "updated"
+end
+
+local function bsc_normalizeMercenaryOrderName(name)
+    name = tostring(name or "")
+    if name == "" or name == "nil" then return nil end
+    if name == "Follow" or name == "follow" or name == "FollowPlayer" then return "Follow" end
+    if name == "Hold" or name == "hold" or name == "HoldPosition" then return "Hold" end
+    if name == "Guard" or name == "guard" or name == "GuardArea" or name == "GuardPlayer" then return "Guard" end
+    if name == "Patrol" or name == "patrol" or name == "PatrolArea" then return "Patrol" end
+    if name == "Loot" or name == "loot" or name == "LootArea" then return "Loot" end
+    if name == "LootHouse" or name == "loot_house" or name == "search_house" then return "LootHouse" end
+    if name == "LootBodies" or name == "LootBodiesGear" or name == "LootBodiesClothing" or name == "LootBodiesWeapons" or name == "LootBodiesAmmo" or name == "LootBodiesMedical" or name == "LootBodiesSupplies" then return name end
+    if name == "RearmHere" or name == "rearm" or name == "rearm_here" then return "RearmHere" end
+    if name == "Flank" or name == "flank" or name == "flank_point" then return "Flank" end
+    if name == "Encircle" or name == "encircle" or name == "surround" then return "Encircle" end
+    if name == "BackToBack" or name == "back_to_back" or name == "all_around_defense" then return "BackToBack" end
+    if name == "TakeCover" or name == "take_cover" then return "TakeCover" end
+    if name == "Advance" or name == "advance" then return "Advance" end
+    if name == "FallBack" or name == "fall_back" or name == "fallback" then return "FallBack" end
+    if name == "WatchSector" or name == "watch_sector" then return "WatchSector" end
+    if name == "Return" or name == "ReturnToBase" or name == "return" then return "Return" end
+    return name
+end
+
+local function bsc_isMercenaryPointOrderName(name)
+    name = bsc_normalizeMercenaryOrderName(name)
+    return name == "Hold" or name == "Guard" or name == "Patrol" or name == "Loot" or name == "LootHouse"
+        or name == "LootBodies" or name == "LootBodiesGear" or name == "LootBodiesClothing" or name == "LootBodiesWeapons"
+        or name == "LootBodiesAmmo" or name == "LootBodiesMedical" or name == "LootBodiesSupplies" or name == "RearmHere"
+        or name == "Return" or name == "Flank" or name == "Encircle" or name == "BackToBack" or name == "TakeCover"
+        or name == "Advance" or name == "FallBack" or name == "WatchSector"
+end
+
+local function bsc_normalizeMercenaryFireMode(mode)
+    if mode == nil then return nil end
+    mode = tostring(mode or "")
+    if mode == "" or mode == "nil" then return nil end
+    local key = string.lower(mode)
+    if key == "fireatwill" or key == "fire_at_will" or key == "aggressive" then return "FireAtWill" end
+    if key == "defensive" or key == "defense" then return "Defensive" end
+    if key == "holdfire" or key == "hold_fire" then return "HoldFire" end
+    if key == "meleeonly" or key == "melee_only" then return "MeleeOnly" end
+    if key == "returnfire" or key == "return_fire" then return "ReturnFire" end
+    if key == "dangerclose" or key == "danger_close" then return "DangerClose" end
+    if key == "suppress" or key == "suppression" then return "Suppress" end
+    return nil
+end
+
+local function bsc_normalizeMercenaryFormation(formation)
+    if formation == nil then return nil end
+    formation = tostring(formation or "")
+    if formation == "" or formation == "nil" then return nil end
+    local key = string.lower(formation)
+    if key == "close" then return "close" end
+    if key == "ring" or key == "bodyguard" then return "ring" end
+    if key == "wide" then return "wide" end
+    if key == "line" then return "line" end
+    if key == "wedge" then return "wedge" end
+    return nil
+end
+
+local function bsc_clampMercenaryFollowDistance(value)
+    if value == nil then return nil end
+    local distance = tonumber(value)
+    if not distance then return nil end
+    if distance < 0.75 then distance = 0.75 end
+    if distance > 8.0 then distance = 8.0 end
+    return distance
+end
+
+local function bsc_mercenaryOrderFeedback(data, memberCount, changed, groupId)
+    local label = bsc_mercenaryOrderLabel(data)
+    local members = tonumber(memberCount) or 0
+    local total = tonumber(changed) or members
+    local parts = {"Mercenary order accepted: " .. label}
+    if groupId then parts[#parts + 1] = "group " .. tostring(groupId) end
+    if members > 0 then
+        parts[#parts + 1] = tostring(members) .. (members == 1 and " member" or " members")
+    elseif total > 0 then
+        parts[#parts + 1] = "squad synced"
+    end
+    if type(data) == "table" then
+        if data.fireMode and tostring(data.fireMode) ~= "" then parts[#parts + 1] = "fire " .. tostring(data.fireMode) end
+        if data.formation and tostring(data.formation) ~= "" then parts[#parts + 1] = "formation " .. tostring(data.formation) end
+    end
+    return table.concat(parts, "; ") .. "."
+end
+
+local function bsc_statusSameGroup(brain, groupId)
+    if not groupId then return true end
+    local brainGroup = bsc_groupIdOf(brain)
+    return brainGroup ~= nil and tostring(brainGroup) == tostring(groupId)
+end
+
+local function bsc_statusTaskName(brain)
+    if type(brain) ~= "table" then return nil end
+    local task = type(brain.tasks) == "table" and brain.tasks[1] or nil
+    if type(task) == "table" then return task.action or task.type or task.name end
+    if type(brain.program) == "table" then return brain.program.name end
+    return brain.state or brain.programName
+end
+
+local function bsc_statusHealthRatio(brain)
+    if type(brain) ~= "table" then return nil end
+    local value = tonumber(brain.health or brain.hp or brain.Health or brain.hitpoints or brain.hitPoints)
+    if value == nil then return nil end
+    if value > 1.0 then value = value / 100.0 end
+    if value < 0 then value = 0 end
+    if value > 1 then value = 1 end
+    return value
+end
+
+local function bsc_statusAddBrain(status, seen, id, brain, player)
+    if type(status) ~= "table" or type(brain) ~= "table" then return end
+    local key = bsc_mercenaryMemberSeenKey(id, brain) or bsc_nonEmptyId(id)
+    if key and seen[key] then return end
+    if key then seen[key] = true end
+
+    status.count = status.count + 1
+    status.groupId = status.groupId or bsc_groupIdOf(brain)
+    local order = type(brain.order) == "table" and brain.order or nil
+    if order then
+        status.orderName = status.orderName or order.name
+        status.fireMode = status.fireMode or order.fireMode or brain.fireMode or brain.rbFireMode
+        status.formation = status.formation or order.formation or brain.formation
+        status.followDistance = status.followDistance or order.followDistance
+    else
+        status.fireMode = status.fireMode or brain.fireMode or brain.rbFireMode
+        status.formation = status.formation or brain.formation
+    end
+    if brain.strictPlayerOrder == true or brain.manualOrder == true or (order and (order.strictPlayerOrder == true or order.manualOrder == true)) then
+        status.strict = status.strict + 1
+    end
+    local taskName = bsc_statusTaskName(brain)
+    if taskName then
+        taskName = tostring(taskName)
+        status.currentTask = status.currentTask or taskName
+        if taskName == "SearchEnemy" or taskName == "Attack" or taskName == "MeleeFallback" or taskName == "SuppressEnemy" or taskName == "TacticalCover" then
+            status.combat = status.combat + 1
+        elseif taskName == "FollowPlayer" or taskName == "CompanionFollow" or taskName == "Move" or taskName == "Walk" then
+            status.moving = status.moving + 1
+        elseif taskName == "HoldPosition" or taskName == "CompanionGuard" or taskName == "GuardPlayer" then
+            status.holding = status.holding + 1
+        end
+    end
+    local health = bsc_statusHealthRatio(brain)
+    if health ~= nil and health < 0.62 then status.wounded = status.wounded + 1 end
+
+    if player and player.getX and player.getY then
+        local px = tonumber(player:getX())
+        local py = tonumber(player:getY())
+        local bx = tonumber(brain.x) or (brain.debugCoords and tonumber(brain.debugCoords.x)) or (brain.bornCoords and tonumber(brain.bornCoords.x))
+        local by = tonumber(brain.y) or (brain.debugCoords and tonumber(brain.debugCoords.y)) or (brain.bornCoords and tonumber(brain.bornCoords.y))
+        if px and py and bx and by then
+            local dx = bx - px
+            local dy = by - py
+            if (dx * dx + dy * dy) > (24 * 24) then status.far = status.far + 1 end
+        end
+    end
+end
+
+local function bsc_collectMercenaryStatus(gmd, player, pid, groupId)
+    local status = {count=0, strict=0, combat=0, moving=0, holding=0, wounded=0, far=0, groupId=groupId}
+    local seen = {}
+    local key = tostring(pid or "")
+    if gmd and gmd.Queue then
+        for qid, brain in pairs(gmd.Queue) do
+            if type(brain) == "table" and brain.mercenaryHiredBy and tostring(brain.mercenaryHiredBy) == key and bsc_statusSameGroup(brain, groupId) then
+                bsc_statusAddBrain(status, seen, qid, brain, player)
+            end
+        end
+    end
+    return status
+end
+
+local function bsc_formatMercenaryStatus(status)
+    if type(status) ~= "table" or (tonumber(status.count) or 0) <= 0 then return "No hired mercenaries found." end
+    local orderName = status.orderName or "none"
+    local fireMode = status.fireMode or "default"
+    local formation = status.formation or "default"
+    local parts = {
+        "Mercenary status: " .. tostring(status.count) .. (status.count == 1 and " member" or " members"),
+        "order " .. tostring(orderName),
+        "fire " .. tostring(fireMode),
+        "formation " .. tostring(formation)
+    }
+    if status.groupId then parts[#parts + 1] = "group " .. tostring(status.groupId) end
+    if status.strict and status.strict > 0 then parts[#parts + 1] = tostring(status.strict) .. " strict" end
+    if status.combat and status.combat > 0 then parts[#parts + 1] = tostring(status.combat) .. " in combat" end
+    if status.moving and status.moving > 0 then parts[#parts + 1] = tostring(status.moving) .. " moving" end
+    if status.holding and status.holding > 0 then parts[#parts + 1] = tostring(status.holding) .. " holding" end
+    if status.wounded and status.wounded > 0 then parts[#parts + 1] = tostring(status.wounded) .. " wounded" end
+    if status.far and status.far > 0 then parts[#parts + 1] = tostring(status.far) .. " far" end
+    return table.concat(parts, "; ") .. "."
 end
 
 local function bsc_throttleMercenaryOrder(gmd, pid, args, groupId)
@@ -1081,7 +1637,8 @@ local function bsc_updateMercenaryGroupMarker(gmd, groupId, group)
             NPCLeadersBridge.MarkerFields(marker, group)
         end
         if group then
-            marker.name = group.mercenaryHired and ("Hired Blue Mercenaries " .. tostring(groupId)) or ("Blue Mercenaries " .. tostring(groupId))
+            marker.name = bsc_groupDisplayName(groupId, group, marker.name)
+            marker.displayName = marker.name
         end
         marker.updatedAt = getGameTime():getWorldAgeHours()
         NPCServerSetDebugMarker(gmd, marker)
@@ -1403,6 +1960,19 @@ NPCServerGetQueueKey = function(gmd, id)
     local nid = tonumber(id)
     if nid and gmd.Queue[nid] then return nid end
 
+    for key, brain in pairs(gmd.Queue) do
+        if type(brain) == "table" then
+            if tostring(brain.id or "") == sid
+                    or tostring(brain.runtimeId or "") == sid
+                    or tostring(brain.zombieId or "") == sid
+                    or tostring(brain.characterId or "") == sid
+                    or tostring(brain.uid or "") == sid
+                    or tostring(brain.persistentId or "") == sid then
+                return key
+            end
+        end
+    end
+
     return id
 end
 
@@ -1559,6 +2129,7 @@ local function bsc_revirtualizePersistentGroup(gmd, groupId, reason)
     end
 
     if type(group.members) ~= "table" or #group.members <= 0 then return false end
+    if group.blackMarketDefenseQuestGroup == true or group.blackMarketDefenseQuestId ~= nil or group.spawnClass == "black_market_defense_enemy" then return false end
 
     group.count = #group.members
     group.activated = false
@@ -1667,7 +2238,8 @@ NPCServerRefreshWorldGroupMarker = function(gmd, groupId)
     marker.x = group and group.x or math.floor(sumX / aliveCount)
     marker.y = group and group.y or math.floor(sumY / aliveCount)
     marker.z = group and group.z or math.floor(sumZ / aliveCount)
-    marker.name = marker.name or ("NPC Group " .. tostring(groupId))
+    marker.name = bsc_groupDisplayName(groupId, group, marker.name)
+    marker.displayName = marker.name
     marker.count = aliveCount
     marker.hostile = group and group.hostile or marker.hostile
     marker.friendly = group and (not group.hostile) or marker.friendly
@@ -1747,6 +2319,9 @@ NPCServerRuntime.Commands[NPC_SERVER_LEGACY_COMMANDS.remove]  = function(player,
 
     if groupId then
         NPCServerRefreshWorldGroupMarker(gmd, groupId)
+    end
+    if NPCBlackMarketDefenseQuestServerBridge and NPCBlackMarketDefenseQuestServerBridge.OnNPCRemoved then
+        pcall(function() NPCBlackMarketDefenseQuestServerBridge.OnNPCRemoved(player, args) end)
     end
 end
 
@@ -2193,6 +2768,7 @@ end
 NPCServerRuntime.Commands.HireMercenaryGroup = function(player, args)
     if not (NPCMercenaryContract and NPCMercenaryContract.IsHireEnabled and NPCMercenaryContract.IsHireEnabled()) then return end
     if type(args) ~= "table" then return end
+    local serverReceiveMs = bsc_nowMs and bsc_nowMs() or 0
 
     local gmd = GetNPCModData()
     NPCServerEnsureWorldTables(gmd)
@@ -2201,11 +2777,20 @@ NPCServerRuntime.Commands.HireMercenaryGroup = function(player, args)
     local targetZombie = nil
     if not targetBrain then
         key, targetBrain, targetZombie = bsc_findPhysicalBrainFromCommand(gmd, args)
+    elseif not targetZombie then
+        local physicalKey, physicalBrain, physicalZombie = bsc_findPhysicalBrainFromCommand(gmd, args)
+        if physicalBrain and (physicalBrain == targetBrain
+            or bsc_brainMatchesIds(physicalBrain, physicalKey, bsc_hireIdCandidates(args))
+            or (bsc_groupIdOf(physicalBrain) and bsc_groupIdOf(targetBrain) and bsc_groupIdOf(physicalBrain) == bsc_groupIdOf(targetBrain)))
+        then
+            targetZombie = physicalZombie
+            key = key or physicalKey
+        end
     end
 
     local groupId, group = bsc_groupFromCommand(gmd, args, targetBrain)
 
-    bsc_logMercenary("hire request id=" .. tostring(args.id) .. " runtime=" .. tostring(args.runtimeId) .. " pid=" .. tostring(args.persistentId) .. " group=" .. tostring(args.groupId) .. " key=" .. tostring(key) .. " found=" .. tostring(targetBrain ~= nil) .. " groupFound=" .. tostring(group ~= nil))
+    bsc_logMercenary("hire request id=" .. tostring(args.id) .. " runtime=" .. tostring(args.runtimeId) .. " pid=" .. tostring(args.persistentId) .. " group=" .. tostring(args.groupId) .. " key=" .. tostring(key) .. " found=" .. tostring(targetBrain ~= nil) .. " groupFound=" .. tostring(group ~= nil) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
 
     if not targetBrain and not group then
         bsc_sendMercenaryHireResult(player, false, "Mercenary target lost. Step closer and reopen the menu.", args)
@@ -2217,16 +2802,26 @@ NPCServerRuntime.Commands.HireMercenaryGroup = function(player, args)
         return
     end
 
-    local targetSide = bsc_brainSide(targetBrain) or (group and (group.factionSide or group.faction or group.side or group.patrolColor)) or args.brainSide
-    if targetSide ~= "blue" and not (targetBrain and targetBrain.mercenary) and not (group and group.mercenary) and args.mercenary ~= true then
+    local pid = bsc_playerId(player)
+    if not pid then return end
+
+    if not bsc_serverAllowsMercenaryHire(targetBrain, group, pid) then
+        bsc_logMercenary("hire rejected: server-side target is not a blue mercenary pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " argsMercenary=" .. tostring(args.mercenary) .. " argsSide=" .. tostring(args.brainSide))
         bsc_sendMercenaryHireResult(player, false, "Only blue mercenary squads can be hired.", args)
         return
     end
 
-    local pid = bsc_playerId(player)
-    if not pid then return end
+    if not bsc_hireTargetNearPlayer(player, targetBrain, targetZombie, group) then
+        bsc_logMercenary("hire rejected: target too far from player pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " key=" .. tostring(key))
+        bsc_sendMercenaryHireResult(player, false, "Mercenary target lost. Step closer and reopen the menu.", args)
+        return
+    end
 
     if group and group.mercenaryHiredBy and tostring(group.mercenaryHiredBy) ~= tostring(pid) then
+        bsc_sendMercenaryHireResult(player, false, "This mercenary squad is already hired.", args)
+        return
+    end
+    if targetBrain and targetBrain.mercenaryHiredBy and tostring(targetBrain.mercenaryHiredBy) ~= tostring(pid) then
         bsc_sendMercenaryHireResult(player, false, "This mercenary squad is already hired.", args)
         return
     end
@@ -2322,7 +2917,13 @@ NPCServerRuntime.Commands.HireMercenaryGroup = function(player, args)
             z = args.z,
             mercenaryHiredBy = pid,
             paymentKind = paymentKind,
-            takeClientPayment = takeClientPayment == true
+            takeClientPayment = takeClientPayment == true,
+            clientTraceId = args.clientTraceId,
+            clientSendMs = tonumber(args.clientSendMs),
+            clientOrderSeq = args.clientOrderSeq,
+            clientEvent = args.clientEvent,
+            serverReceiveMs = serverReceiveMs,
+            serverAcceptMs = bsc_nowMs and bsc_nowMs() or serverReceiveMs
         }
         local okMessage = "Mercenary squad hired."
         if alreadyHired then
@@ -2340,6 +2941,7 @@ end
 NPCServerRuntime.Commands.MercenaryGroupOrder = function(player, args)
     if not (NPCMercenaryContract and NPCMercenaryContract.IsHireEnabled and NPCMercenaryContract.IsHireEnabled()) then return end
     if type(args) ~= "table" then return end
+    local serverReceiveMs = bsc_nowMs and bsc_nowMs() or 0
 
     local gmd = GetNPCModData()
     NPCServerEnsureWorldTables(gmd)
@@ -2347,38 +2949,213 @@ NPCServerRuntime.Commands.MercenaryGroupOrder = function(player, args)
     local pid = bsc_playerId(player)
     if not pid then return end
 
-    local groupId = args.groupId and tostring(args.groupId) or nil
+    local requestedGroupId = args.groupId and tostring(args.groupId) or nil
+    local groupId = requestedGroupId
     if not groupId then groupId = bsc_getActiveMercenarySquad(gmd, pid) end
+    if requestedGroupId and not bsc_isMercenaryGroupOwnedByPlayer(gmd, requestedGroupId, pid) then
+        bsc_logMercenary("order rejected: group not hired by player pid=" .. tostring(pid) .. " group=" .. tostring(requestedGroupId) .. " order=" .. tostring(args.orderName) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        bsc_say(player, "This mercenary squad is not under your command.")
+        return
+    end
+    if groupId and not bsc_isMercenaryGroupOwnedByPlayer(gmd, groupId, pid) then
+        bsc_logMercenary("order ignored stale active group pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " order=" .. tostring(args.orderName) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        if requestedGroupId then
+            bsc_say(player, "This mercenary squad is not under your command.")
+            return
+        end
+        groupId = nil
+    end
+
+    local normalizedOrderName = bsc_normalizeMercenaryOrderName(args.orderName)
+    local normalizedFireMode = bsc_normalizeMercenaryFireMode(args.fireMode)
+    local normalizedFormation = bsc_normalizeMercenaryFormation(args.formation)
+    local normalizedFollowDistance = bsc_clampMercenaryFollowDistance(args.followDistance)
+    local rawFireMode = tostring(args.fireMode or "")
+    local rawFormation = tostring(args.formation or "")
+    local rawFollowDistance = tostring(args.followDistance or "")
+    if rawFireMode ~= "" and rawFireMode ~= "nil" and not normalizedFireMode then
+        bsc_logMercenary("order rejected: invalid fire mode pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " fire=" .. tostring(args.fireMode) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        bsc_say(player, "Unsupported mercenary fire mode.")
+        return
+    end
+    if rawFormation ~= "" and rawFormation ~= "nil" and not normalizedFormation then
+        bsc_logMercenary("order rejected: invalid formation pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " formation=" .. tostring(args.formation) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        bsc_say(player, "Unsupported mercenary formation.")
+        return
+    end
+    if rawFollowDistance ~= "" and rawFollowDistance ~= "nil" and not normalizedFollowDistance then
+        bsc_logMercenary("order rejected: invalid follow distance pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " distance=" .. tostring(args.followDistance) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        bsc_say(player, "Unsupported mercenary follow distance.")
+        return
+    end
+    args.orderName = normalizedOrderName
+    args.fireMode = normalizedFireMode
+    args.formation = normalizedFormation
+    args.followDistance = normalizedFollowDistance
+    local hasOrderOverlay = normalizedFireMode ~= nil or normalizedFormation ~= nil or normalizedFollowDistance ~= nil
+    if not normalizedOrderName and not hasOrderOverlay then
+        bsc_logMercenary("order rejected: empty mercenary command pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        return
+    end
+    local pointOrder = bsc_isMercenaryPointOrderName(normalizedOrderName)
+    local followOrder = normalizedOrderName == "Follow"
+
+    bsc_logMercenary("order request pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " order=" .. tostring(args.orderName) .. " fire=" .. tostring(args.fireMode) .. " formation=" .. tostring(args.formation) .. " x=" .. tostring(args.x) .. " y=" .. tostring(args.y) .. " target=" .. tostring(args.targetType or args.anchorMode) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+
+    local anchor = nil
+    if pointOrder and args.x and args.y then
+        local ax = tonumber(args.x)
+        local ay = tonumber(args.y)
+        if ax and ay then
+            anchor = {x=ax, y=ay, z=tonumber(args.z) or 0, facingAngle=tonumber(args.facingAngle)}
+        end
+    end
+    if pointOrder and not anchor then
+        bsc_logMercenary("order rejected: point order without cursor anchor pid=" .. tostring(pid) .. " order=" .. tostring(args.orderName) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        bsc_say(player, "Mercenary order needs a world point. Right-click the target point and try again.")
+        return
+    end
+    if pointOrder and not bsc_mercenaryPointAnchorNearPlayer(player, anchor) then
+        bsc_logMercenary("order rejected: point anchor too far pid=" .. tostring(pid) .. " order=" .. tostring(args.orderName) .. " x=" .. tostring(anchor and anchor.x) .. " y=" .. tostring(anchor and anchor.y) .. " z=" .. tostring(anchor and anchor.z) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        bsc_say(player, "Mercenary order target is too far away. Step closer and try again.")
+        return
+    end
+    if normalizedOrderName == "LootHouse" and not bsc_anchorSquareIsInsideBuilding(anchor) then
+        bsc_logMercenary("order rejected: LootHouse outside building pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " x=" .. tostring(anchor and anchor.x) .. " y=" .. tostring(anchor and anchor.y) .. " z=" .. tostring(anchor and anchor.z) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+        bsc_say(player, "Search house works only when you click inside a building.")
+        return
+    end
     if bsc_throttleMercenaryOrder(gmd, pid, args, groupId) then
-        bsc_logMercenary("order throttled pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " order=" .. tostring(args.orderName) .. " fire=" .. tostring(args.fireMode) .. " formation=" .. tostring(args.formation))
+        bsc_logMercenary("order throttled pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " order=" .. tostring(args.orderName) .. " fire=" .. tostring(args.fireMode) .. " formation=" .. tostring(args.formation) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
         return
     end
 
-    bsc_logMercenary("order request pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " order=" .. tostring(args.orderName) .. " fire=" .. tostring(args.fireMode) .. " formation=" .. tostring(args.formation) .. " x=" .. tostring(args.x) .. " y=" .. tostring(args.y))
-
-    local anchor = nil
-    if args.orderName and args.x and args.y then
-        anchor = {x=tonumber(args.x), y=tonumber(args.y), z=tonumber(args.z) or 0, facingAngle=tonumber(args.facingAngle)}
-    end
+    gmd.MercenaryOrderRevision = (tonumber(gmd.MercenaryOrderRevision) or 0) + 1
+    local orderRevision = gmd.MercenaryOrderRevision
+    local orderBatchId = tostring(pid) .. ":" .. tostring(orderRevision)
 
     local data = {
-        orderName = args.orderName,
+        orderName = normalizedOrderName,
         anchor = anchor,
-        fireMode = args.fireMode,
-        formation = args.formation,
-        followDistance = tonumber(args.followDistance)
+        targetType = pointOrder and "point" or (followOrder and "player" or nil),
+        anchorMode = pointOrder and (args.anchorMode or "cursor") or (followOrder and "player" or nil),
+        cursorAnchor = pointOrder == true or nil,
+        fireMode = normalizedFireMode,
+        formation = normalizedFormation,
+        followDistance = normalizedFollowDistance,
+        master = pid,
+        groupId = groupId,
+        orderRevision = orderRevision,
+        groupOrderRevision = orderRevision,
+        orderBatchId = orderBatchId,
+        groupOrderBatchId = orderBatchId,
+        orderIssuedMs = bsc_nowMs and bsc_nowMs() or nil,
+        clientTraceId = args.clientTraceId,
+        clientSendMs = tonumber(args.clientSendMs),
+        clientOrderSeq = args.clientOrderSeq,
+        clientEvent = args.clientEvent,
+        serverReceiveMs = serverReceiveMs,
+        forceImmediate = true,
+        directMercenaryOrder = true,
+        orderSystem = "mercenary_direct",
+        interruptSeconds = normalizedOrderName == "Follow" and 10 or 7
     }
+
+    local lootOrderName = tostring(args.orderName or "")
+    local isLootOrder = lootOrderName == "Loot" or lootOrderName == "LootHouse"
+        or lootOrderName == "LootBodies" or lootOrderName == "LootBodiesGear"
+        or lootOrderName == "LootBodiesClothing" or lootOrderName == "LootBodiesWeapons"
+        or lootOrderName == "LootBodiesAmmo" or lootOrderName == "LootBodiesMedical"
+        or lootOrderName == "LootBodiesSupplies" or lootOrderName == "RearmHere"
+
+    if isLootOrder then
+        data.manualLoot = true
+        data.manualSupplyLoot = true
+        data.lootEquipUpgrades = true
+        data.lootTakeWeapons = true
+        data.lootTakeAmmo = true
+        data.lootTakeArmor = true
+        data.lootTakeClothing = true
+        data.lootTakeMedical = true
+        data.lootTakeFood = true
+        data.lootBodiesOnly = lootOrderName == "LootBodies"
+            or lootOrderName == "LootBodiesGear"
+            or lootOrderName == "LootBodiesClothing"
+            or lootOrderName == "LootBodiesWeapons"
+            or lootOrderName == "LootBodiesAmmo"
+            or lootOrderName == "LootBodiesMedical"
+            or lootOrderName == "LootBodiesSupplies"
+
+        if lootOrderName == "LootHouse" then
+            data.lootRadius = 14
+            data.lootMaxItems = 10
+        elseif data.lootBodiesOnly then
+            data.lootRadius = 18
+            data.lootMaxItems = 10
+            data.lootMaxContainers = 3
+        else
+            data.lootRadius = 18
+            data.lootMaxItems = 8
+        end
+
+        if lootOrderName == "LootBodiesGear" then
+            data.lootTakeMedical = false
+            data.lootTakeFood = false
+        elseif lootOrderName == "LootBodiesClothing" then
+            data.lootTakeWeapons = false
+            data.lootTakeAmmo = false
+            data.lootTakeMedical = false
+            data.lootTakeFood = false
+        elseif lootOrderName == "LootBodiesWeapons" then
+            data.lootTakeArmor = false
+            data.lootTakeClothing = false
+            data.lootTakeMedical = false
+            data.lootTakeFood = false
+        elseif lootOrderName == "LootBodiesAmmo" then
+            data.lootEquipUpgrades = false
+            data.lootTakeWeapons = false
+            data.lootTakeArmor = false
+            data.lootTakeClothing = false
+            data.lootTakeMedical = false
+            data.lootTakeFood = false
+            data.lootMaxItems = 14
+        elseif lootOrderName == "LootBodiesMedical" then
+            data.lootEquipUpgrades = false
+            data.lootTakeWeapons = false
+            data.lootTakeAmmo = false
+            data.lootTakeArmor = false
+            data.lootTakeClothing = false
+            data.lootTakeFood = false
+            data.lootMaxItems = 12
+        elseif lootOrderName == "LootBodiesSupplies" then
+            data.lootEquipUpgrades = false
+            data.lootTakeWeapons = false
+            data.lootTakeArmor = false
+            data.lootTakeClothing = false
+            data.lootMaxItems = 12
+        elseif lootOrderName == "RearmHere" then
+            data.lootTakeFood = false
+            data.lootRadius = 14
+            data.lootMaxItems = 9
+        end
+    end
 
     local changed = 0
     local touchedGroup = false
     local touchedGroupRef = nil
-    local cachedMembers = groupId and bsc_getActiveMercenaryMemberIds(gmd, pid) or nil
+    local cachedMembers = nil
+    if groupId then
+        local activeGroupId = bsc_getActiveMercenarySquad(gmd, pid)
+        if not requestedGroupId or tostring(activeGroupId or "") == tostring(groupId) then
+            cachedMembers = bsc_getActiveMercenaryMemberIds(gmd, pid)
+        end
+    end
 
     if groupId and gmd.VirtualGroups and (gmd.VirtualGroups[groupId] or gmd.VirtualGroups[tonumber(groupId)]) then
         local vgid = gmd.VirtualGroups[groupId] and groupId or tonumber(groupId)
         local group = gmd.VirtualGroups[vgid]
         if group and group.mercenaryHiredBy and tostring(group.mercenaryHiredBy) == tostring(pid) then
-            NPCMercenaryContract.ApplyOrderToGroup(group, player, data)
+            NPCMercenaryContract.ApplyOrderToGroup(group, player, bsc_groupOnlyOrderData(data))
             gmd.VirtualGroups[vgid] = group
             bsc_updateMercenaryGroupMarker(gmd, vgid, group)
             touchedGroup = true
@@ -2389,7 +3166,7 @@ NPCServerRuntime.Commands.MercenaryGroupOrder = function(player, args)
         for gid, group in pairs(gmd.VirtualGroups) do
             if group and group.mercenaryHiredBy and tostring(group.mercenaryHiredBy) == tostring(pid) then
                 groupId = tostring(gid)
-                NPCMercenaryContract.ApplyOrderToGroup(group, player, data)
+                NPCMercenaryContract.ApplyOrderToGroup(group, player, bsc_groupOnlyOrderData(data))
                 gmd.VirtualGroups[gid] = group
                 bsc_updateMercenaryGroupMarker(gmd, gid, group)
                 touchedGroup = true
@@ -2402,7 +3179,16 @@ NPCServerRuntime.Commands.MercenaryGroupOrder = function(player, args)
 
     local foundMembers = {}
     local foundMemberSeen = {}
-    local orderBatch = {}
+    local orderBatch = {
+        _mercenaryTelemetry = {
+            clientTraceId = args.clientTraceId,
+            clientSendMs = tonumber(args.clientSendMs),
+            clientOrderSeq = args.clientOrderSeq,
+            clientEvent = args.clientEvent,
+            serverReceiveMs = serverReceiveMs,
+            orderAcceptedMs = bsc_nowMs and bsc_nowMs() or serverReceiveMs
+        }
+    }
     if cachedMembers and gmd.Queue then
         for _, qid in ipairs(cachedMembers) do
             local brain = gmd.Queue[qid] or gmd.Queue[tostring(qid)]
@@ -2435,7 +3221,7 @@ NPCServerRuntime.Commands.MercenaryGroupOrder = function(player, args)
         end
     end
 
-    if #foundMembers == 0 and groupId and gmd.Queue then
+    if #foundMembers == 0 and groupId and gmd.Queue and not requestedGroupId then
         local fallbackGroupId = nil
         for qid, brain in pairs(gmd.Queue) do
             local hiredByPlayer = brain and brain.mercenaryHiredBy and tostring(brain.mercenaryHiredBy) == tostring(pid)
@@ -2460,7 +3246,7 @@ NPCServerRuntime.Commands.MercenaryGroupOrder = function(player, args)
     end
 
     local physicalChanged = bsc_applyOrderToPhysicalMercenaries(gmd, player, pid, groupId, data, foundMembers, foundMemberSeen, orderBatch)
-    if physicalChanged == 0 and groupId and #foundMembers == 0 then
+    if physicalChanged == 0 and groupId and #foundMembers == 0 and not requestedGroupId then
         physicalChanged = bsc_applyOrderToPhysicalMercenaries(gmd, player, pid, nil, data, foundMembers, foundMemberSeen, orderBatch)
     end
     changed = changed + physicalChanged
@@ -2471,13 +3257,40 @@ NPCServerRuntime.Commands.MercenaryGroupOrder = function(player, args)
         bsc_setActiveMercenarySquad(gmd, pid, groupId)
     end
 
-    bsc_logMercenary("order result pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " changed=" .. tostring(changed) .. " members=" .. tostring(#foundMembers) .. " touchedGroup=" .. tostring(touchedGroup))
+    bsc_logMercenary("order result pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. " changed=" .. tostring(changed) .. " members=" .. tostring(#foundMembers) .. " touchedGroup=" .. tostring(touchedGroup) .. " revision=" .. tostring(orderRevision) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
 
     if changed > 0 then
-        bsc_say(player, "Mercenary order: " .. tostring(data.orderName or data.fireMode or data.formation or "updated"))
+        bsc_say(player, bsc_mercenaryOrderFeedback(data, #foundMembers, changed, groupId))
     else
-        bsc_say(player, "No hired mercenaries found.")
+        bsc_say(player, "No hired mercenaries found for this order.")
     end
+end
+
+NPCServerRuntime.Commands.MercenaryOrderStatus = function(player, args)
+    if not (NPCMercenaryContract and NPCMercenaryContract.IsHireEnabled and NPCMercenaryContract.IsHireEnabled()) then return end
+    args = type(args) == "table" and args or {}
+    local serverReceiveMs = bsc_nowMs and bsc_nowMs() or 0
+
+    local gmd = GetNPCModData()
+    NPCServerEnsureWorldTables(gmd)
+
+    local pid = bsc_playerId(player)
+    if not pid then return end
+
+    local requestedGroupId = args.groupId and tostring(args.groupId) or nil
+    local groupId = requestedGroupId
+    if requestedGroupId and not bsc_isMercenaryGroupOwnedByPlayer(gmd, requestedGroupId, pid) then
+        bsc_say(player, "This mercenary squad is not under your command.")
+        return
+    end
+    if not groupId then groupId = bsc_getActiveMercenarySquad(gmd, pid) end
+
+    bsc_logMercenary("status request pid=" .. tostring(pid) .. " group=" .. tostring(groupId) .. bsc_mercenaryTelemetryText(args, serverReceiveMs))
+    local status = bsc_collectMercenaryStatus(gmd, player, pid, groupId)
+    if (tonumber(status.count) or 0) <= 0 and groupId and not requestedGroupId then
+        status = bsc_collectMercenaryStatus(gmd, player, pid, nil)
+    end
+    bsc_say(player, bsc_formatMercenaryStatus(status))
 end
 
 NPCServerRuntime.Commands.DebugMapRequest = function(player, args)
@@ -2491,6 +3304,11 @@ NPCServerRuntime.Commands.DebugMapRequest = function(player, args)
 
     if NPCWorldDirector and NPCWorldDirector.Bootstrap then
         NPCWorldDirector.Bootstrap()
+    end
+    if NPCWorldDirectorBridge and NPCWorldDirectorBridge.RefreshVirtualMapForSync and NPCWorldDirector then
+        pcall(function() NPCWorldDirectorBridge.RefreshVirtualMapForSync(NPCWorldDirector, "debug_map_request", nil) end)
+    elseif NPCWorldDirectorBridge and NPCWorldDirectorBridge.UpdateVirtualMapHeartbeat and NPCWorldDirector then
+        pcall(function() NPCWorldDirectorBridge.UpdateVirtualMapHeartbeat(NPCWorldDirector, "debug_map_request") end)
     end
 
     if NPCNetContract and NPCNetContract.SendDebugMapSync then
@@ -2612,6 +3430,54 @@ local function bsc_applyBlackMarketServiceBrain(brain)
     brain.factionShoot = false
     brain.relationshipToPlayer = "black_market"
     return brain
+end
+
+local function bsc_isHumanAnimationMember(bandit, brain)
+    return (bandit and (bandit.forceHumanAnimation == true or bandit.humanNPC == true or bandit.noZombieAnimation == true or bandit.isFactionLeader == true or bandit.leaderPhysical == true or bandit.checkpointGuard == true or bandit.checkpointPhysical == true))
+        or (brain and (brain.forceHumanAnimation == true or brain.humanNPC == true or brain.noZombieAnimation == true or brain.isFactionLeader == true or brain.leaderPhysical == true or brain.checkpointGuard == true or brain.checkpointPhysical == true))
+end
+
+local function bsc_applyHumanAnimationSanity(zombie, brain, bandit)
+    if not (zombie and bsc_isHumanAnimationMember(bandit, brain)) then return false end
+    local walkType = (bandit and (bandit.defaultWalkType or bandit.walkType)) or (brain and (brain.defaultWalkType or brain.walkType)) or "Walk"
+    if walkType ~= "Run" and walkType ~= "WalkAim" then walkType = "Walk" end
+    if brain then
+        brain.humanNPC = true
+        brain.forceHumanAnimation = true
+        brain.noZombieAnimation = true
+        brain.infection = 0
+        brain.sound = 0
+        brain.eatBody = false
+        brain.dna = brain.dna or {}
+        brain.dna.slow = false
+        brain.dna.blind = false
+        brain.dna.sneak = false
+        brain.dna.unfit = false
+        brain.dna.coward = false
+    end
+    local md = zombie.getModData and zombie:getModData() or nil
+    if md then
+        md.NPC_HUMAN_ANIMATION = true
+        md.NPC_NO_ZOMBIE_ANIMATION = true
+        md.NPC_IS_LIVE_HUMAN = true
+        md[NPC_SERVER_LEGACY_KEYS.formerNPCZombie] = false
+    end
+    pcall(function() zombie:setNoTeeth(false) end)
+    pcall(function() zombie:setReanim(false) end)
+    pcall(function() zombie:setVariable(NPC_SERVER_LEGACY_KEYS.formerNPCZombie, false) end)
+    pcall(function() zombie:setVariable(NPC_SERVER_LEGACY_KEYS.walkType, walkType) end)
+    -- `zombieWalkType` is read-only in B41 MP and logs a warning even inside pcall; setWalkType below preserves behavior.
+    pcall(function() zombie:setWalkType(walkType) end)
+    pcall(function() zombie:setBumpType(walkType == "Run" and "IdleToRun" or "IdleToWalk") end)
+    pcall(function() zombie:setCrawler(false) end)
+    pcall(function() zombie:setFakeDead(false) end)
+    pcall(function() zombie:setFallOnFront(false) end)
+    pcall(function() zombie:setKnockedDown(false) end)
+    pcall(function() zombie:setOnFloor(false) end)
+    pcall(function() zombie:setSitAgainstWall(false) end)
+    local emitter = zombie.getEmitter and zombie:getEmitter() or nil
+    if emitter and emitter.stopAll then pcall(function() emitter:stopAll() end) end
+    return true
 end
 
 NPCServerRuntime.Commands.SpawnGroup = function(player, event)
@@ -2742,10 +3608,17 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
             brain.inVehicle = false
 
             -- gender
-            brain.female = zombie:isFemale()
+            if bandit.female ~= nil then
+                brain.female = bandit.female == true
+            else
+                brain.female = zombie:isFemale()
+            end
 
             -- time of birth
             brain.born = getGameTime():getWorldAgeHours()
+            if event.worldDirector then
+                brain.entryWakeUntilAge = brain.born + (8 / 3600)
+            end
 
             -- place of birth
             brain.bornCoords = {}
@@ -2784,10 +3657,11 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
             brain.battleEnemyGroupId = event.battleEnemyGroupId or bandit.battleEnemyGroupId or bandit.enemyGroupId
 
             -- for keyring
-            brain.fullname = NPCNamesBridge.GenerateName(zombie:isFemale())
+            brain.fullname = bandit.fullname or bandit.name or NPCNamesBridge.GenerateName(zombie:isFemale())
+            brain.name = brain.fullname
 
             -- which voice to use
-            brain.voice = NPCEntity.PickVoice(zombie)
+            brain.voice = bandit.voice or NPCEntity.PickVoice(zombie)
 
             -- hostility towards human players
             brain.hostile = event.hostile
@@ -2797,7 +3671,9 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
             local beardColor = zombieVisuals:getBeardColor()
             local skinColor = zombieVisuals:getSkinColor()
 
-            brain.skinTexture = bandit.skinTexture and bandit.skinTexture or getSkinTexture(zombie:isFemale(), id)
+            brain.appearanceSeed = bandit.appearanceSeed
+            brain.faceProfile = bandit.faceProfile
+            brain.skinTexture = bandit.skinTexture and bandit.skinTexture or getSkinTexture(zombie:isFemale(), tonumber(bandit.appearanceSeed or id) or id)
             brain.skinColor = bandit.skinColor and bandit.skinColor or {r=skinColor:getRedFloat(), g=skinColor:getGreenFloat(), b=skinColor:getBlueFloat()}
             brain.hairStyle = bandit.hairStyle and bandit.hairStyle or zombieVisuals:getHairModel()
             brain.hairColor = bandit.hairColor and bandit.hairColor or {r=hairColor:getRedFloat(), g=hairColor:getGreenFloat(), b=hairColor:getBlueFloat()}
@@ -2817,13 +3693,23 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
             brain.program.stage = event.program.stage
 
             -- random DNA
-            local dna = {}
-            dna.slow = NPCUtils.CoinFlip()
-            dna.blind = NPCUtils.CoinFlip()
-            dna.sneak = NPCUtils.CoinFlip()
-            dna.unfit = NPCUtils.CoinFlip()
-            dna.coward = NPCUtils.CoinFlip()
+            local dna = bandit.dna
+            if type(dna) ~= "table" then
+                dna = {}
+                dna.slow = NPCUtils.CoinFlip()
+                dna.blind = NPCUtils.CoinFlip()
+                dna.sneak = NPCUtils.CoinFlip()
+                dna.unfit = NPCUtils.CoinFlip()
+                dna.coward = NPCUtils.CoinFlip()
+            end
             brain.dna = dna
+            if bsc_isHumanAnimationMember(bandit, brain) then
+                brain.dna.slow = false
+                brain.dna.blind = false
+                brain.dna.sneak = false
+                brain.dna.unfit = false
+                brain.dna.coward = false
+            end
 
             -- program specific capabilities independent from clan
             -- brain.capabilities = ZombiePrograms[event.program.name].GetCapabilities()
@@ -2867,7 +3753,33 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
             brain.leaderState = bandit.leaderState
             brain.leaderInfluence = bandit.leaderInfluence
             brain.leaderArchetype = bandit.leaderArchetype
+            brain.humanNPC = bandit.humanNPC == true
+            brain.forceHumanAnimation = bandit.forceHumanAnimation == true
+            brain.noZombieAnimation = bandit.noZombieAnimation == true
+            brain.leaderPhysical = bandit.leaderPhysical == true
+            brain.defaultWalkType = bandit.defaultWalkType
+            brain.walkType = bandit.walkType
             brain.relationshipToPlayer = bandit.relationshipToPlayer
+            if bandit.blackMarketQuestGuard == true then
+                brain.blackMarketQuestGuard = true
+                brain.blackMarketQuestId = bandit.blackMarketQuestId
+                brain.blackMarketQuestCacheId = bandit.blackMarketQuestCacheId
+                brain.holdPoint = bandit.holdPoint
+                brain.returnPoint = bandit.returnPoint
+                brain.blackMarketQuestGuardLeash = bandit.blackMarketQuestGuardLeash
+                brain.checkpointHoldRadius = bandit.checkpointHoldRadius
+                brain.order = bandit.order
+                brain.hostile = true
+                brain.factionSide = bandit.factionSide or "black"
+                brain.faction = bandit.faction or "black"
+                brain.side = bandit.side or "black"
+                brain.patrolColor = bandit.patrolColor or "black"
+                brain.humanNPC = true
+                brain.forceHumanAnimation = true
+                brain.noZombieAnimation = true
+                brain.defaultWalkType = bandit.defaultWalkType or brain.defaultWalkType or "Walk"
+                brain.walkType = bandit.walkType or brain.walkType or "Walk"
+            end
             if isBlackMarketService or bandit.blackMarket == true or bandit.blackMarketNPC == true or event.blackMarketContact == true then
                 brain.blackMarket = true
                 brain.blackMarketNPC = true
@@ -2930,11 +3842,71 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
             if (not isBlackMarketService) and NPCCreatorBridge and NPCCreatorBridge.ApplyHumanFacePresetToBrain then
                 brain = NPCCreatorBridge.ApplyHumanFacePresetToBrain(brain, zombie, bandit, false)
             end
+
+            if brain.fullname == nil and bandit.fullname then brain.fullname = bandit.fullname end
+            brain.name = brain.fullname or brain.name
+            bsc_stage448BoostBrainAmmo(brain, event)
+            bsc_applyHumanAnimationSanity(zombie, brain, bandit)
+            if bandit.blackMarketQuestGuard == true then
+                brain.blackMarketQuestGuard = true
+                brain.blackMarketQuestId = bandit.blackMarketQuestId
+                brain.blackMarketQuestCacheId = bandit.blackMarketQuestCacheId
+                brain.guardPoint = bandit.guardPoint or brain.guardPoint
+                brain.holdPoint = bandit.holdPoint or brain.holdPoint
+                brain.returnPoint = bandit.returnPoint or brain.returnPoint
+                brain.blackMarketQuestGuardLeash = bandit.blackMarketQuestGuardLeash or brain.blackMarketQuestGuardLeash
+                brain.checkpointHoldRadius = bandit.checkpointHoldRadius or brain.checkpointHoldRadius
+                brain.order = bandit.order or brain.order
+                brain.hostile = true
+                brain.factionSide = "black"
+                brain.faction = "black"
+                brain.side = "black"
+                brain.patrolColor = "black"
+                brain.humanNPC = true
+                brain.forceHumanAnimation = true
+                brain.noZombieAnimation = true
+                brain.defaultWalkType = brain.defaultWalkType or "Walk"
+                brain.walkType = brain.walkType or "Walk"
+            end
+            if bandit.blackMarketDefenseEnemy == true then
+                brain.blackMarketDefenseEnemy = true
+                brain.blackMarketDefenseGuard = true
+                brain.defenceGuard = true
+                brain.blackMarketDefenseQuestId = bandit.blackMarketDefenseQuestId or bandit.blackMarketQuestId
+                brain.blackMarketDefenseWave = bandit.blackMarketDefenseWave
+                brain.blackMarketDefenseZoneRadius = bandit.blackMarketDefenseZoneRadius
+                brain.blackMarketQuestGuard = true
+                brain.blackMarketQuestId = brain.blackMarketDefenseQuestId or brain.blackMarketQuestId
+                brain.blackMarketQuestGuardLeash = bandit.blackMarketQuestGuardLeash or brain.blackMarketQuestGuardLeash
+                brain.checkpointHoldRadius = bandit.checkpointHoldRadius or brain.checkpointHoldRadius
+                brain.guardPoint = bandit.guardPoint or brain.guardPoint
+                brain.holdPoint = bandit.holdPoint or brain.holdPoint
+                brain.returnPoint = bandit.returnPoint or brain.returnPoint
+                brain.order = bandit.order or brain.order
+                brain.role = bandit.role or "black_market_defense_guard"
+                brain.tacticalRole = bandit.tacticalRole or "assault"
+                brain.displayTitle = bandit.displayTitle or "DEFENCE GUARD"
+                brain.nameplateTitle = bandit.nameplateTitle or "DEFENCE GUARD"
+                brain.blackMarketDefenseMarkerColor = bandit.blackMarketDefenseMarkerColor or "black_market"
+                brain.alwaysShowWorldMarker = true
+                brain.xrayWorldMarker = true
+                brain.targetClass = bandit.targetClass or "black_market_defense_player"
+                brain.hostile = true
+                brain.factionSide = "black"
+                brain.faction = "black"
+                brain.side = "black"
+                brain.patrolColor = "black"
+                brain.humanNPC = true
+                brain.forceHumanAnimation = true
+                brain.noZombieAnimation = true
+                brain.defaultWalkType = brain.defaultWalkType or "Run"
+                brain.walkType = brain.walkType or "Run"
+            end
             
             -- empty task table, will be populated during bandit life
             brain.tasks = {}
 
-            if event.worldDirector and event.offscreenEntry and event.entryTargetX and event.entryTargetY then
+            if event.worldDirector and (event.offscreenEntry or event.debugTeleportEntry or event.mercenaryLeashEntry or event.checkpointAnchorEntry) and event.entryTargetX and event.entryTargetY then
                 local tx = tonumber(event.entryTargetX)
                 local ty = tonumber(event.entryTargetY)
                 local tz = tonumber(event.entryTargetZ) or gz
@@ -2944,13 +3916,21 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
                     tx = tx + spread
                     ty = ty + side
 
+                    local dx = tx - gx
+                    local dy = ty - gy
+                    local dist = math.sqrt(dx * dx + dy * dy)
+                    if dist < 1.0 then
+                        tx = gx + spread
+                        ty = gy + side
+                        dx = tx - gx
+                        dy = ty - gy
+                        dist = math.sqrt(dx * dx + dy * dy)
+                    end
+
                     local moveTask = nil
                     if NPCUtils and NPCUtils.GetMoveTask then
                         local okTask, taskOrError = pcall(function()
-                            local dx = tx - gx
-                            local dy = ty - gy
-                            local dist = math.sqrt(dx * dx + dy * dy)
-                            return NPCUtils.GetMoveTask(0.01, tx, ty, tz, "Run", dist, false)
+                            return NPCUtils.GetMoveTask(0.01, tx, ty, tz, "Run", math.max(2, dist), false)
                         end)
                         if okTask then moveTask = taskOrError end
                     end
@@ -2961,7 +3941,8 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
 
                     moveTask.director = true
                     moveTask.directorState = "Entry"
-                    moveTask.directorReason = "offscreen materialization"
+                    moveTask.directorReason = event.debugTeleportEntry and "teleport marker materialization" or (event.mercenaryLeashEntry and "mercenary leash materialization" or (event.checkpointAnchorEntry and "checkpoint anchor materialization" or "offscreen materialization"))
+                    moveTask.entryWake = event.debugTeleportEntry == true or event.checkpointAnchorEntry == true
                     table.insert(brain.tasks, moveTask)
                 end
             end
@@ -2979,6 +3960,9 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
                 end
                 if NPCIdentityBridge and NPCIdentityBridge.TouchRegistry then
                     NPCIdentityBridge.TouchRegistry(gmd, brain, id)
+                end
+                if NPCPersistentNPCBridge and NPCPersistentNPCBridge.TouchFromRuntime and not brain.disablePersistence then
+                    pcall(function() NPCPersistentNPCBridge.TouchFromRuntime(gmd, brain, id, zombie) end)
                 end
             end
 
@@ -3028,6 +4012,19 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
                     role = brain.role,
                     tacticalRole = brain.tacticalRole,
                     strategicRole = brain.strategicRole,
+                    blackMarketDefenseEnemy = brain.blackMarketDefenseEnemy == true or nil,
+                    blackMarketDefenseGuard = brain.blackMarketDefenseGuard == true or nil,
+                    defenceGuard = brain.defenceGuard == true or nil,
+                    blackMarketDefenseQuestId = brain.blackMarketDefenseQuestId,
+                    blackMarketDefenseWave = brain.blackMarketDefenseWave,
+                    blackMarketQuestId = brain.blackMarketQuestId,
+                    displayTitle = brain.displayTitle,
+                    nameplateTitle = brain.nameplateTitle,
+                    highContrastMapMarker = brain.blackMarketDefenseEnemy == true or nil,
+                    stashMarkerOverhead = brain.blackMarketDefenseEnemy == true or nil,
+                    alwaysShowWorldMarker = brain.blackMarketDefenseEnemy == true or nil,
+                    xrayWorldMarker = brain.blackMarketDefenseEnemy == true or nil,
+                    blackMarketDefenseMarkerColor = brain.blackMarketDefenseMarkerColor,
                     roadPatrol = brain.roadPatrol or false,
                     patrolColor = brain.patrolColor,
                     checkpointId = brain.checkpointId,
@@ -3051,6 +4048,7 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
             end
 
             bsc_writeNPCServiceIds(zombie, brain, event.worldGroupId)
+            bsc_applyHumanAnimationSanity(zombie, brain, bandit)
             spawnedCount = spawnedCount + 1
         end
     end
@@ -3082,7 +4080,8 @@ NPCServerRuntime.Commands.SpawnGroup = function(player, event)
                 marker.x = group.x or event.x
                 marker.y = group.y or event.y
                 marker.z = group.z or event.z or 0
-                marker.name = marker.name or (group.roadPatrol and ((group.hostile and "Red Road Patrol " or "Green Road Patrol ") .. groupId) or ("NPC Group " .. groupId))
+                marker.name = bsc_groupDisplayName(groupId, group, marker.name)
+                marker.displayName = marker.name
                 marker.count = group.count
                 marker.hostile = group.hostile
                 marker.friendly = not group.hostile
@@ -3153,6 +4152,10 @@ NPCServerRuntime.Commands.SpawnRestore = function(player, brain)
         if NPCIdentityBridge and NPCIdentityBridge.EnsureBrain then
             brain = NPCIdentityBridge.EnsureBrain(brain, gmd, id, true)
         end
+        if NPCCreatorBridge and NPCCreatorBridge.ApplyHumanFacePresetToBrain then
+            brain = NPCCreatorBridge.ApplyHumanFacePresetToBrain(brain, zombie, brain, false)
+        end
+        bsc_stage448BoostBrainAmmo(brain, nil)
 
         -- swap
         gmd.Queue[oldId] = nil
@@ -3160,6 +4163,9 @@ NPCServerRuntime.Commands.SpawnRestore = function(player, brain)
 
         if NPCIdentityBridge and NPCIdentityBridge.TouchRegistry then
             NPCIdentityBridge.TouchRegistry(gmd, brain, id)
+        end
+        if NPCPersistentNPCBridge and NPCPersistentNPCBridge.TouchFromRuntime and not brain.disablePersistence then
+            pcall(function() NPCPersistentNPCBridge.TouchFromRuntime(gmd, brain, id, zombie) end)
         end
 
         bsc_writeNPCServiceIds(zombie, brain, brain.worldGroupId or brain.groupId)
@@ -3241,6 +4247,12 @@ NPCServerRuntime.Commands.DestroyObject = function(player, args)
     local sq = NPCWorldObjectCommandBridge.GetSquare(args.x, args.y, args.z)
     local object = NPCServerGetDestroyableObject(sq, args.index)
     if object then
+        -- Stage447: a DestroyObject request against a usable door is interpreted as
+        -- a door-open request first. Barricaded/blocked doors still fall back to breach damage.
+        if NPCWorldObjectCommandBridge.CanOpenDoorLikePlayer(object) and not NPCWorldObjectCommandBridge.DoorIsOpen(object) then
+            NPCWorldObjectCommandBridge.OpenDoorObject(sq, object)
+            return
+        end
         NPCWorldObjectCommandBridge.DamageDestroyableObject(sq, object, player, args.damage)
     end
 end
@@ -3421,6 +4433,10 @@ local onClientCommand = function(module, command, player, args)
             TransmitNPCModDataPlayers()
         end
     end
+end
+
+function NPCClientCommandsServerBridge.DispatchClientCommand(module, command, player, args)
+    return onClientCommand(module, command, player, args or {})
 end
 
 

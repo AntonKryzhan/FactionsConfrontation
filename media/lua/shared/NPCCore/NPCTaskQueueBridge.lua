@@ -12,6 +12,8 @@ NPCTaskQueueBridge.Queues = NPCTaskQueueBridge.Queues or {high={}, normal={}, lo
 NPCTaskQueueBridge.Head = NPCTaskQueueBridge.Head or {high=1, normal=1, low=1}
 NPCTaskQueueBridge.Budget = NPCTaskQueueBridge.Budget or {high=6, normal=12, low=18}
 NPCTaskQueueBridge.Tick = NPCTaskQueueBridge.Tick or 0
+NPCTaskQueueBridge.Version = "2026-06-10-stage458-post-gate-optional-task-smoother-1"
+NPCTaskQueueBridge.Stats = NPCTaskQueueBridge.Stats or {postGateDeferred=0, processed=0}
 
 local function btq_settingBool(name, defaultValue)
     if NPCLegacySettingsBridge and NPCLegacySettingsBridge.GetBool then
@@ -58,6 +60,10 @@ end
 function NPCTaskQueueBridge.Enqueue(fn, priority, label)
     if type(fn) ~= "function" then return false end
     priority = btq_normalPriority(priority)
+    if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.ShouldDropRuntimeTask then
+        local ok, drop = pcall(function() return NPCStreamingRuntimeBridge.ShouldDropRuntimeTask(label or priority, priority) end)
+        if ok and drop == true then return false end
+    end
     table.insert(NPCTaskQueueBridge.Queues[priority], {fn=fn, label=label or priority})
     return true
 end
@@ -92,15 +98,29 @@ function NPCTaskQueueBridge.ProcessPriority(priority)
     local head = tonumber(NPCTaskQueueBridge.Head[priority]) or 1
     local processed = 0
 
-    while head <= #queue and processed < budget do
+    local scanned = 0
+    local maxScan = math.max(budget + 4, budget * 4)
+    while head <= #queue and processed < budget and scanned < maxScan do
         local task = queue[head]
         queue[head] = false
         head = head + 1
-        processed = processed + 1
+        scanned = scanned + 1
         if task and type(task.fn) == "function" then
-            local ok, err = pcall(task.fn)
-            if not ok then
-                print("[NPCTaskQueueBridge] task failed: " .. tostring(task.label or priority) .. " / " .. tostring(err))
+            local allow = true
+            if NPCStreamingRuntimeBridge and NPCStreamingRuntimeBridge.AllowRuntimeTaskNow then
+                local okAllow, gotAllow = pcall(function() return NPCStreamingRuntimeBridge.AllowRuntimeTaskNow(task.label or priority, priority) end)
+                if okAllow and gotAllow == false then allow = false end
+            end
+            if allow then
+                processed = processed + 1
+                NPCTaskQueueBridge.Stats.processed = (tonumber(NPCTaskQueueBridge.Stats.processed) or 0) + 1
+                local ok, err = pcall(task.fn)
+                if not ok then
+                    print("[NPCTaskQueueBridge] task failed: " .. tostring(task.label or priority) .. " / " .. tostring(err))
+                end
+            else
+                table.insert(queue, task)
+                NPCTaskQueueBridge.Stats.postGateDeferred = (tonumber(NPCTaskQueueBridge.Stats.postGateDeferred) or 0) + 1
             end
         end
     end
@@ -108,6 +128,19 @@ function NPCTaskQueueBridge.ProcessPriority(priority)
     NPCTaskQueueBridge.Head[priority] = head
     btq_compact(priority)
     return processed
+end
+
+function NPCTaskQueueBridge.GetDiagnostics(reset)
+    local stats = {}
+    for k, v in pairs(NPCTaskQueueBridge.Stats or {}) do stats[k] = v end
+    local out = {
+        pendingHigh = NPCTaskQueueBridge.PendingCount("high"),
+        pendingNormal = NPCTaskQueueBridge.PendingCount("normal"),
+        pendingLow = NPCTaskQueueBridge.PendingCount("low"),
+        stats = stats
+    }
+    if reset == true then NPCTaskQueueBridge.Stats = {postGateDeferred=0, processed=0} end
+    return out
 end
 
 function NPCTaskQueueBridge.ProcessTick()

@@ -22,14 +22,14 @@ NPCCrowdBudgetBridge.Config = NPCCrowdBudgetBridge.Config or {
     sampleTicks = 45,
     nearRadius = 180,
     zombieRadius = 140,
-    maxNPCNearPlayer = 42,
-    criticalNPCNearPlayer = 64,
-    maxZombiesNearPlayer = 220,
-    criticalZombiesNearPlayer = 360,
+    maxNPCNearPlayer = 12,
+    criticalNPCNearPlayer = 18,
+    maxZombiesNearPlayer = 70,
+    criticalZombiesNearPlayer = 120,
     retrySeconds = 12,
     criticalRetrySeconds = 24,
-    dripFeedMaxBatch = 4,
-    criticalDripFeedMaxBatch = 2,
+    dripFeedMaxBatch = 1,
+    criticalDripFeedMaxBatch = 1,
     urbanTightenPercent = 20,
     fastTravelTightenPercent = 35,
     preserveCombat = true
@@ -291,6 +291,14 @@ function NPCCrowdBudgetBridge.ApplySettings()
     c.urbanTightenPercent = bcb_number("CrowdBudget_UrbanTightenPercent", c.urbanTightenPercent or 20, 0, 90)
     c.fastTravelTightenPercent = bcb_number("CrowdBudget_FastTravelTightenPercent", c.fastTravelTightenPercent or 35, 0, 90)
     c.preserveCombat = bcb_bool("CrowdBudget_PreserveCombat", c.preserveCombat ~= false)
+    if not bcb_bool("Perf_AllowHighPhysicalPopulation", false) then
+        c.maxNPCNearPlayer = math.min(tonumber(c.maxNPCNearPlayer) or 12, 12)
+        c.criticalNPCNearPlayer = math.min(math.max(tonumber(c.criticalNPCNearPlayer) or 18, c.maxNPCNearPlayer), 18)
+        c.maxZombiesNearPlayer = math.min(tonumber(c.maxZombiesNearPlayer) or 70, 70)
+        c.criticalZombiesNearPlayer = math.min(math.max(tonumber(c.criticalZombiesNearPlayer) or 120, c.maxZombiesNearPlayer), 120)
+        c.dripFeedMaxBatch = math.min(tonumber(c.dripFeedMaxBatch) or 1, 1)
+        c.criticalDripFeedMaxBatch = math.min(tonumber(c.criticalDripFeedMaxBatch) or 1, 1)
+    end
 end
 
 local function bcb_effectiveCap(baseCap, urban, fastTravel)
@@ -522,7 +530,11 @@ end
 
 NPCCrowdBudgetBridge.ApplySettings()
 
-if Events and Events.OnTick and not NPCCrowdBudgetBridge._registered then
+if not NPCCrowdBudgetBridge._registered then
     NPCCrowdBudgetBridge._registered = true
-    Events.OnTick.Add(NPCCrowdBudgetBridge.OnTick)
+    if NPCWorkSchedulerBridge and NPCWorkSchedulerBridge.RegisterTickJob then
+        NPCWorkSchedulerBridge.RegisterTickJob("NPCCrowdBudgetBridge.Sample", NPCCrowdBudgetBridge.OnTick, "world", 15, 1)
+    elseif Events and Events.OnTick then
+        Events.OnTick.Add(NPCCrowdBudgetBridge.OnTick)
+    end
 end

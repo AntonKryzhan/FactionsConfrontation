@@ -1,5 +1,6 @@
 require "NPCCore/NPCEntityState"
 require "NPCCore/NPCLegacyGlobalsBridge"
+pcall(require, "NPCCore/NPCActionRouterBridge")
 
 NPCEntity = NPCLegacyGlobalsBridge.InstallAlias("Entity", NPCEntity, "NPCEntity")
 

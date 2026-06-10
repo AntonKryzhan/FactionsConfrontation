@@ -7,7 +7,7 @@ require "NPCCore/NPCEntityState"
 require "NPCCore/NPCFactionBridge"
 require "NPCCore/NPCLoyaltyBridge"
 require "NPCBehavior/NPCBrainDataBridge"
-require "NPCCommands/NPCOrderContract"
+-- Stage 372: hired mercenaries no longer depend on the shared NPCOrderContract dispatch path.
 
 -- Neutral mercenary contract backend.
 -- Compatibility entry point remains legacy mercenary API.
@@ -54,6 +54,307 @@ local function bm_copy(value)
     local out = {}
     for k, v in pairs(value) do out[k] = bm_copy(v) end
     return out
+end
+
+local function bm_nowMs()
+    if getTimestampMs then
+        local ok, value = pcall(function() return getTimestampMs() end)
+        if ok and tonumber(value) then return tonumber(value) end
+    end
+    if getGameTime then
+        local ok, value = pcall(function() return getGameTime():getWorldAgeHours() end)
+        if ok and tonumber(value) then return math.floor((tonumber(value) or 0) * 3600000) end
+    end
+    return 0
+end
+
+local function bm_normalizeOrderName(name)
+    name = tostring(name or "")
+    if name == "Follow" or name == "follow" or name == "FollowPlayer" then return "Follow" end
+    if name == "Hold" or name == "hold" or name == "HoldPosition" then return "Hold" end
+    if name == "Guard" or name == "guard" or name == "GuardArea" or name == "GuardPlayer" then return "Guard" end
+    if name == "Patrol" or name == "patrol" or name == "PatrolArea" then return "Patrol" end
+    if name == "Loot" or name == "loot" or name == "LootArea" then return "Loot" end
+    if name == "LootHouse" or name == "loot_house" or name == "search_house" then return "LootHouse" end
+    if name == "LootBodies" or name == "LootBodiesGear" or name == "LootBodiesClothing" or name == "LootBodiesWeapons" or name == "LootBodiesAmmo" or name == "LootBodiesMedical" or name == "LootBodiesSupplies" then return name end
+    if name == "RearmHere" or name == "rearm" or name == "rearm_here" then return "RearmHere" end
+    if name == "Flank" or name == "flank" or name == "flank_point" then return "Flank" end
+    if name == "Encircle" or name == "encircle" or name == "surround" then return "Encircle" end
+    if name == "BackToBack" or name == "back_to_back" or name == "all_around_defense" then return "BackToBack" end
+    if name == "TakeCover" or name == "take_cover" then return "TakeCover" end
+    if name == "Advance" or name == "advance" then return "Advance" end
+    if name == "FallBack" or name == "fall_back" or name == "fallback" then return "FallBack" end
+    if name == "WatchSector" or name == "watch_sector" then return "WatchSector" end
+    if name == "Return" or name == "ReturnToBase" or name == "return" then return "Return" end
+    return name
+end
+
+local function bm_isMovementOrder(name)
+    name = bm_normalizeOrderName(name)
+    return name == "Follow" or name == "Hold" or name == "Guard" or name == "Patrol" or name == "Loot"
+        or name == "LootHouse" or name == "Return" or name == "RearmHere"
+        or name == "Advance" or name == "FallBack" or name == "TakeCover" or name == "Flank"
+        or name == "Encircle" or name == "BackToBack" or name == "WatchSector"
+        or string.find(name, "LootBodies", 1, true) ~= nil
+end
+
+local function bm_normalizeFireMode(mode)
+    mode = tostring(mode or "")
+    if mode == "" or mode == "nil" then return nil end
+    if mode == "HoldFire" or mode == "hold" or mode == "hold_fire" then return "HoldFire" end
+    if mode == "MeleeOnly" or mode == "melee" or mode == "melee_only" then return "MeleeOnly" end
+    if mode == "Defensive" or mode == "defensive" or mode == "fire_if_attacked" then return "Defensive" end
+    if mode == "ReturnFire" or mode == "return_fire" then return "ReturnFire" end
+    if mode == "DangerClose" or mode == "danger_close" then return "DangerClose" end
+    if mode == "Suppress" or mode == "suppress" then return "Suppress" end
+    if mode == "FireAtWill" or mode == "free" or mode == "fire_at_will" then return "FireAtWill" end
+    return mode
+end
+
+local function bm_isStrictMercenaryOrderName(name)
+    name = bm_normalizeOrderName(name)
+    return name == "Follow" or name == "Hold" or name == "Guard" or name == "FallBack" or name == "Return"
+end
+
+local function bm_isPlayerMercenaryOrderName(name)
+    name = bm_normalizeOrderName(name)
+    return name == "Follow" or name == "Hold" or name == "Guard" or name == "Patrol" or name == "Loot" or name == "LootHouse"
+        or name == "LootBodies" or name == "LootBodiesGear" or name == "LootBodiesClothing" or name == "LootBodiesWeapons"
+        or name == "LootBodiesAmmo" or name == "LootBodiesMedical" or name == "LootBodiesSupplies" or name == "RearmHere"
+        or name == "Flank" or name == "Encircle" or name == "BackToBack" or name == "TakeCover" or name == "Advance"
+        or name == "FallBack" or name == "WatchSector" or name == "Return"
+end
+
+local function bm_isPointMercenaryOrderName(name)
+    name = bm_normalizeOrderName(name)
+    return name == "Hold" or name == "Guard" or name == "Patrol" or name == "Loot" or name == "LootHouse"
+        or name == "LootBodies" or name == "LootBodiesGear" or name == "LootBodiesClothing" or name == "LootBodiesWeapons"
+        or name == "LootBodiesAmmo" or name == "LootBodiesMedical" or name == "LootBodiesSupplies" or name == "RearmHere"
+        or name == "Return" or name == "Flank" or name == "Encircle" or name == "BackToBack" or name == "TakeCover"
+        or name == "Advance" or name == "FallBack" or name == "WatchSector"
+end
+
+local function bm_isPlayerCommandedMercenaryBrain(brain)
+    if type(brain) ~= "table" then return false end
+    if brain.commandAuthority == "player" or brain.playerCommandAuthority == true then return true end
+    return brain.mercenaryHired == true and brain.worldCommandDisabled == true
+end
+
+local function bm_isMercenaryTacticalOrderName(name)
+    name = bm_normalizeOrderName(name)
+    return name == "Flank" or name == "Encircle" or name == "BackToBack" or name == "TakeCover" or name == "Advance" or name == "FallBack" or name == "WatchSector"
+end
+
+local function bm_getMercenaryTacticalProfile(name)
+    name = bm_normalizeOrderName(name)
+    if name == "TakeCover" then return {mode="cover", stationary=true, allowCombat=true, combatRange=8.0, chaseRange=1.6, settle=1.35} end
+    if name == "WatchSector" then return {mode="watch", stationary=true, allowCombat=true, combatRange=16.0, chaseRange=1.25, settle=1.35} end
+    if name == "BackToBack" then return {mode="all_around", stationary=true, allowCombat=true, combatRange=10.0, chaseRange=1.25, settle=1.20} end
+    if name == "Flank" then return {mode="flank", stationary=false, allowCombat=true, combatRange=10.0, chaseRange=2.0, settle=1.55} end
+    if name == "Encircle" then return {mode="encircle", stationary=false, allowCombat=true, combatRange=10.0, chaseRange=1.75, settle=1.45} end
+    if name == "Advance" then return {mode="advance", stationary=false, allowCombat=true, combatRange=12.0, chaseRange=2.2, settle=1.55} end
+    if name == "FallBack" then return {mode="fallback", stationary=false, allowCombat=true, combatRange=5.0, chaseRange=1.4, settle=1.75} end
+    return nil
+end
+
+local function bm_nowHours()
+    if getGameTime then
+        local gt = getGameTime()
+        if gt and gt.getWorldAgeHours then
+            local ok, value = pcall(function() return gt:getWorldAgeHours() end)
+            if ok and tonumber(value) then return tonumber(value) end
+        end
+    end
+    return 0
+end
+
+local function bm_setMercenaryDirectOrder(brain, orderName, data, hardInterrupt, strictOrder, playerCommandOrder, interruptSeconds, orderFollowDistance)
+    if type(brain) ~= "table" then return nil end
+    data = data or {}
+    brain.ai = brain.ai or {}
+
+    orderName = bm_normalizeOrderName(orderName or (brain.order and brain.order.name) or "Follow")
+    strictOrder = strictOrder == true
+    playerCommandOrder = playerCommandOrder ~= false
+    local nowHour = bm_nowHours()
+    local order = type(brain.order) == "table" and bm_copy(brain.order) or {}
+
+    brain.ai.mercenaryDirectOrderSequence = (tonumber(brain.ai.mercenaryDirectOrderSequence) or 0) + 1
+    order.name = orderName
+    order.source = "mercenary_direct"
+    order.commandAuthority = "player"
+    order.playerCommand = true
+    order.playerCommandMode = "mercenary_direct"
+    order.mercenaryDirect = true
+    order.directMercenaryOrder = true
+    order.master = data.master or brain.master or brain.mercenaryHiredBy
+    order.issued = nowHour
+    order.sequence = brain.ai.mercenaryDirectOrderSequence
+    order.priority = tonumber(data.priority) or (strictOrder and 135 or 125)
+    order.note = data.note or "mercenary direct order"
+
+    if orderName == "Follow" then
+        order.anchor = nil
+        order.targetType = "player"
+        order.anchorMode = "player"
+        order.cursorAnchor = nil
+    elseif data.anchor then
+        local ax = tonumber(data.anchor.x)
+        local ay = tonumber(data.anchor.y)
+        if ax and ay then
+            order.anchor = {
+                x=ax,
+                y=ay,
+                z=tonumber(data.anchor.z) or 0,
+                facingAngle=tonumber(data.anchor.facingAngle or data.facingAngle)
+            }
+            order.targetType = "point"
+            order.anchorMode = data.anchorMode or data.targetType or "cursor"
+            order.cursorAnchor = true
+        end
+    elseif hardInterrupt == true and bm_isPointMercenaryOrderName(orderName) then
+        order.anchor = nil
+        order.targetType = "point"
+        order.anchorMode = data.anchorMode or data.targetType or "missing"
+        order.cursorAnchor = nil
+    end
+
+    if data.fireMode ~= nil then order.fireMode = bm_normalizeFireMode(data.fireMode) end
+    if not order.fireMode then order.fireMode = "FireAtWill" end
+    if data.formation ~= nil then order.formation = data.formation end
+    if not order.formation then order.formation = "close" end
+    if data.tactical ~= nil then order.tactical = data.tactical end
+    if orderName == "Follow" and orderFollowDistance == nil then orderFollowDistance = 0.95 end
+    if orderFollowDistance ~= nil then order.followDistance = tonumber(orderFollowDistance) or order.followDistance end
+
+    if hardInterrupt == true then
+        local seconds = tonumber(interruptSeconds) or 8
+        if seconds < 1 then seconds = 1 end
+        if seconds > 30 then seconds = 30 end
+        order.interrupt = true
+        order.interruptIssued = nowHour
+        order.interruptUntil = nowHour + (seconds / 3600)
+        order.interruptReason = "mercenary direct order"
+    else
+        order.interrupt = false
+        order.interruptUntil = nil
+        order.interruptReason = nil
+    end
+
+    if strictOrder then
+        order.strict = true
+        order.sticky = true
+        order.strictSequence = order.sequence
+        order.stickySequence = order.sequence
+        order.strictReason = "mercenary direct strict order"
+        order.stickyReason = "mercenary direct player order lock"
+        order.leash = (orderName == "Follow") and {follow=3.6, guard=10.0, hold=3.0, combat=4.0} or {follow=6.5, guard=10.0, hold=3.0, combat=6.5}
+        order.immediateReapply = true
+        order.immediateReapplySequence = order.sequence
+        order.immediateReapplyUntil = nowHour + (3.8 / 3600)
+        order.immediateReapplyReason = "mercenary direct immediate order"
+    elseif playerCommandOrder then
+        order.strict = nil
+        order.strictSequence = nil
+        order.strictReason = nil
+        order.sticky = nil
+        order.stickySequence = nil
+        order.stickyReason = nil
+        order.leash = nil
+        order.immediateReapply = true
+        order.immediateReapplySequence = order.sequence
+        order.immediateReapplyUntil = nowHour + (2.4 / 3600)
+        order.immediateReapplyReason = "mercenary direct immediate player order"
+    end
+
+    order.dispatchMode = "mercenary_direct"
+    order.forceImmediate = true
+    order.forceManualOrderNow = true
+    order.watchdogIntervalMs = tonumber(order.watchdogIntervalMs) or (orderName == "Follow" and 240 or 320)
+
+    brain.order = order
+    brain.commandAuthority = "player"
+    brain.playerCommandAuthority = true
+    brain.mercenaryDirectOrders = true
+    brain.orderSystem = "mercenary_direct"
+    brain.fireMode = order.fireMode or brain.fireMode
+    brain.rbFireMode = brain.fireMode or brain.rbFireMode
+    brain.sim = brain.sim or {}
+    brain.sim.order = order.name
+    brain.sim.fireMode = order.fireMode
+    brain.sim.formation = order.formation
+    brain.sim.orderUpdated = order.issued
+    brain.debug = brain.debug or {}
+    brain.debug.order = order.name
+    brain.debug.fireMode = order.fireMode
+    brain.debug.formation = order.formation
+    brain.ai.lastOrderAt = order.issued
+    brain.ai.lastManualOrder = order.name
+    brain.ai.mercenaryDirectOrderName = order.name
+    brain.ai.mercenaryDirectOrderAt = order.issued
+    brain.ai.mercenaryDirectDispatch = true
+    return order
+end
+
+local function bm_applyDispatchFields(brain, order, orderName, data, hardInterrupt, playerCommandOrder)
+    if type(brain) ~= "table" then return end
+    data = data or {}
+    orderName = bm_normalizeOrderName(orderName or (order and order.name))
+    brain.ai = brain.ai or {}
+
+    local revision = tonumber(data.orderRevision or data.groupOrderRevision or data.orderBatchRevision)
+    if not revision then
+        revision = (tonumber(brain.ai.mercenaryLocalOrderRevision) or 0) + 1
+        brain.ai.mercenaryLocalOrderRevision = revision
+    end
+    local batchId = data.orderBatchId or data.groupOrderBatchId or (data.master and (tostring(data.master) .. ":" .. tostring(revision))) or tostring(revision)
+    local nowMs = tonumber(data.orderIssuedMs) or bm_nowMs()
+
+    brain.mercenaryOrderRevision = revision
+    brain.mercenaryOrderBatchId = batchId
+    brain.mercenaryOrderIssuedMs = nowMs
+    brain.orderRevision = revision
+    brain.groupOrderRevision = revision
+    brain.groupOrderBatchId = batchId
+
+    brain.ai.mercenaryOrderRevision = revision
+    brain.ai.mercenaryOrderBatchId = batchId
+    brain.ai.mercenaryOrderName = orderName
+    brain.ai.mercenaryOrderIssuedMs = nowMs
+    brain.ai.forceManualOrderNow = true
+    brain.ai.lastGenerateTaskFrameTick = nil
+    brain.ai.manualOrderConsumedIssued = nil
+    brain.ai.manualOrderConsumedSequence = nil
+    brain.ai.manualOrderConsumedAtMs = nil
+    brain.ai.orderDispatchMode = "immediate_group"
+    brain.ai.orderDispatchReason = hardInterrupt and "hard_interrupt" or "soft_overlay"
+
+    if order then
+        order.orderRevision = revision
+        order.groupOrderRevision = revision
+        order.orderBatchId = batchId
+        order.groupOrderBatchId = batchId
+        order.dispatchMode = "immediate_group"
+        order.playerCommand = order.playerCommand or playerCommandOrder == true
+        order.commandAuthority = order.commandAuthority or "player"
+        order.source = order.source or "player"
+        order.forceImmediate = true
+        order.forceManualOrderNow = true
+        order.watchdogIntervalMs = tonumber(order.watchdogIntervalMs) or (orderName == "Follow" and 260 or 360)
+        if bm_isMovementOrder(orderName) then
+            order.interrupt = hardInterrupt ~= false
+            order.interruptIssued = order.interruptIssued or order.issued or (bm_nowHours())
+            order.interruptUntil = order.interruptUntil or ((order.interruptIssued or 0) + ((orderName == "Follow" and 10 or 6) / 3600))
+            order.interruptReason = order.interruptReason or "mercenary immediate dispatch"
+        end
+        if orderName == "Follow" then
+            order.immediateReapply = true
+            order.immediateReapplySeconds = math.max(tonumber(order.immediateReapplySeconds) or 0, 6)
+            order.immediateReapplyUntil = math.max(tonumber(order.immediateReapplyUntil) or 0, (bm_nowHours()) + (6 / 3600))
+            order.immediateReapplyReason = order.immediateReapplyReason or "bodyguard follow responsiveness"
+            order.followDistance = tonumber(order.followDistance) or 0.95
+        end
+    end
 end
 
 local function bm_playerId(player)
@@ -105,6 +406,15 @@ local function bm_bestWeapon(pool)
         end
     end
     return bm_copy(best)
+end
+
+local function bm_pickMercenaryWeapon(pool, slot)
+    if not pool or #pool == 0 then return nil end
+    if NPCCreatorBridge and NPCCreatorBridge.PickBalancedFirearm then
+        local wave = {eliteLoadout=true, mercenaryElite=true, hasRifleChance=88, rifleMagCount=4, hasPistolChance=70, pistolMagCount=3}
+        return bm_copy(NPCCreatorBridge.PickBalancedFirearm(pool, wave, slot))
+    end
+    return bm_bestWeapon(pool)
 end
 
 local function bm_ensureWeapons(member)
@@ -291,7 +601,7 @@ function NPCMercenaryContract.ApplyEliteToMember(member)
     if NPCWeaponsBridge and NPCWeaponsBridge.GetSpawnSecondary then secondaryPool = NPCWeaponsBridge.GetSpawnSecondary(nil) elseif NPCWeaponsBridge then secondaryPool = NPCWeaponsBridge.Secondary end
 
     if not (weapons.primary and weapons.primary.name) then
-        weapons.primary = bm_bestWeapon(primaryPool) or {name="Base.AssaultRifle", magName="Base.556Clip", magSize=30, bulletsLeft=30, magCount=0, shotDelay=12}
+        weapons.primary = bm_pickMercenaryWeapon(primaryPool, "primary") or {name="Base.AssaultRifle", magName="Base.556Clip", magSize=30, bulletsLeft=30, magCount=0, shotDelay=12}
     end
     if weapons.primary and weapons.primary.name then
         weapons.primary.magSize = tonumber(weapons.primary.magSize) or 30
@@ -300,7 +610,7 @@ function NPCMercenaryContract.ApplyEliteToMember(member)
     end
 
     if not (weapons.secondary and weapons.secondary.name) then
-        weapons.secondary = bm_bestWeapon(secondaryPool) or {name="Base.Pistol", magName="Base.9mmClip", magSize=15, bulletsLeft=15, magCount=0, shotDelay=35}
+        weapons.secondary = bm_pickMercenaryWeapon(secondaryPool, "secondary") or {name="Base.Pistol", magName="Base.9mmClip", magSize=15, bulletsLeft=15, magCount=0, shotDelay=35}
     end
     if weapons.secondary and weapons.secondary.name then
         weapons.secondary.magSize = tonumber(weapons.secondary.magSize) or 15
@@ -449,6 +759,97 @@ function NPCMercenaryContract.IsHiredBy(brain, player)
     return brain.mercenaryHired == true and tostring(brain.mercenaryHiredBy or brain.master) == tostring(pid)
 end
 
+function NPCMercenaryContract.ApplyPlayerCommandAuthorityToBrain(brain, pid, reason)
+    if type(brain) ~= "table" then return brain end
+    brain.commandAuthority = "player"
+    brain.playerCommandAuthority = true
+    brain.worldCommandDisabled = true
+    brain.worldDirectorDisabled = true
+    brain.livingWorldDisabled = true
+    brain.autonomousWorldDisabled = true
+    brain.commandAuthorityReason = reason or brain.commandAuthorityReason or "mercenary_direct"
+    brain.master = pid or brain.master or brain.mercenaryHiredBy
+    local currentOrderName = type(brain.order) == "table" and tostring(brain.order.name or "") or ""
+    brain.program = (currentOrderName == "Hold" or currentOrderName == "Guard") and {name="CompanionGuard", stage="Prepare"} or {name="Companion", stage="Prepare"}
+    brain.hostile = false
+    brain.friendly = true
+    brain.relationshipToPlayer = "hired_bodyguard"
+    brain.factionState = "hired_blue_bodyguard"
+    brain.roadPatrol = false
+    brain.checkpointGuard = false
+    brain.checkpointId = nil
+    brain.baseOwnedRole = nil
+    brain.homeBaseZoneType = nil
+    brain.baseZoneType = nil
+    brain.strategicActivityType = nil
+    brain.strategicActivityState = nil
+    brain.strategicActivityId = nil
+    brain.strategicActivityTargetBaseId = nil
+    brain.strategicActivityTargetGroupId = nil
+    brain.economyMissionId = nil
+    brain.targetBaseId = nil
+    brain.targetClass = nil
+    brain.battleEnemyGroupId = nil
+    brain.enemyGroupId = nil
+    brain.inBattle = false
+    brain.virtualBattle = false
+    brain.mercenary = true
+    brain.mercenaryHired = true
+    brain.mercenaryHiredBy = brain.mercenaryHiredBy or pid
+    brain.isPlayerGuard = true
+    brain.followPlayer = pid or brain.followPlayer
+    brain.guardPlayer = nil
+    return brain
+end
+
+function NPCMercenaryContract.ApplyPlayerCommandAuthorityToGroup(group, pid, reason)
+    if type(group) ~= "table" then return group end
+    group.commandAuthority = "player"
+    group.playerCommandAuthority = true
+    group.worldCommandDisabled = true
+    group.worldDirectorDisabled = true
+    group.livingWorldDisabled = true
+    group.autonomousWorldDisabled = true
+    group.commandAuthorityReason = reason or group.commandAuthorityReason or "mercenary_hired"
+    group.master = pid or group.master or group.mercenaryHiredBy
+    group.mercenary = true
+    group.mercenaryHired = true
+    group.mercenaryHiredBy = group.mercenaryHiredBy or pid
+    group.isPlayerGuard = true
+    group.followPlayer = pid or group.followPlayer
+    group.guardPlayer = nil
+    group.hostile = false
+    group.friendly = true
+    group.factionSide = "blue"
+    group.faction = "blue"
+    group.side = "blue"
+    group.patrolColor = "blue"
+    group.state = "player_commanded"
+    group.program = {name="Companion", stage="Prepare"}
+    group.roadPatrol = false
+    group.checkpointGuard = false
+    group.checkpointId = nil
+    group.baseOwnedRole = nil
+    group.strategicActivityType = nil
+    group.strategicActivityState = nil
+    group.strategicActivityId = nil
+    group.strategicActivityTargetBaseId = nil
+    group.strategicActivityTargetGroupId = nil
+    group.economyMissionId = nil
+    group.targetBaseId = nil
+    group.targetClass = nil
+    group.battleEnemyGroupId = nil
+    group.enemyGroupId = nil
+    group.inBattle = false
+    group.virtualBattle = false
+    if type(group.members) == "table" then
+        for _, member in pairs(group.members) do
+            NPCMercenaryContract.ApplyPlayerCommandAuthorityToBrain(member, pid, reason)
+        end
+    end
+    return group
+end
+
 function NPCMercenaryContract.ReleaseBrain(brain, player, data)
     if type(brain) ~= "table" then return brain end
     data = data or {}
@@ -460,6 +861,13 @@ function NPCMercenaryContract.ReleaseBrain(brain, player, data)
     brain.mercenaryHired = false
     brain.mercenaryHiredBy = false
     brain.mercenaryHiredByName = false
+    brain.commandAuthority = false
+    brain.playerCommandAuthority = false
+    brain.worldCommandDisabled = false
+    brain.worldDirectorDisabled = false
+    brain.livingWorldDisabled = false
+    brain.autonomousWorldDisabled = false
+    brain.commandAuthorityReason = false
     brain.isPlayerGuard = false
     brain.followPlayer = false
     brain.guardPlayer = false
@@ -504,6 +912,13 @@ function NPCMercenaryContract.ReleaseGroup(gmd, group, player, data)
     group.mercenaryHired = false
     group.mercenaryHiredBy = false
     group.mercenaryHiredByName = false
+    group.commandAuthority = false
+    group.playerCommandAuthority = false
+    group.worldCommandDisabled = false
+    group.worldDirectorDisabled = false
+    group.livingWorldDisabled = false
+    group.autonomousWorldDisabled = false
+    group.commandAuthorityReason = false
     group.isPlayerGuard = false
     group.followPlayer = false
     group.guardPlayer = false
@@ -561,27 +976,15 @@ function NPCMercenaryContract.HireBrain(brain, player, data)
     brain.patrolColor = "blue"
     brain.factionState = "hired_blue_bodyguard"
     brain.program = {name="Companion", stage="Prepare"}
+    NPCMercenaryContract.ApplyPlayerCommandAuthorityToBrain(brain, pid, "hire")
 
-    if NPCOrderContract and NPCOrderContract.Set then
-        NPCOrderContract.Set(brain, NPCOrderContract.Names.Follow, {
-            source="hire",
-            master=pid,
-            priority=100,
-            fireMode=NPCOrderContract.FireModes.Defensive,
-            formation=data.formation or "close",
-            followDistance=data.followDistance or 3.0,
-            note="hired mercenary bodyguard"
-        })
-    else
-        brain.order = brain.order or {}
-        brain.order.name = "Follow"
-        brain.order.master = pid
-        brain.order.fireMode = "Defensive"
-        brain.fireMode = "Defensive"
-        brain.rbFireMode = "Defensive"
-        brain.order.formation = data.formation or "close"
-        brain.order.followDistance = data.followDistance or 3.0
-    end
+    bm_setMercenaryDirectOrder(brain, "Follow", {
+        master=pid,
+        fireMode="Defensive",
+        formation=data.formation or "close",
+        followDistance=data.followDistance or 0.95,
+        note="hired mercenary direct follow"
+    }, true, true, true, 10, data.followDistance or 0.95)
 
     brain.fireMode = brain.order and brain.order.fireMode or brain.fireMode
     brain.rbFireMode = brain.fireMode or brain.rbFireMode
@@ -614,19 +1017,29 @@ function NPCMercenaryContract.HireGroup(gmd, group, player, data)
     group.patrolColor = "blue"
     group.state = "hired_blue_bodyguards"
     group.program = {name="Companion", stage="Prepare"}
+    NPCMercenaryContract.ApplyPlayerCommandAuthorityToGroup(group, pid, "hire")
     group.order = {
         name="Follow",
-        source="hire",
+        source="mercenary_direct",
         master=pid,
-        priority=100,
+        commandAuthority="player",
+        playerCommand=true,
+        playerCommandMode="mercenary_direct",
+        mercenaryDirect=true,
+        directMercenaryOrder=true,
+        priority=120,
         fireMode="Defensive",
         formation=data.formation or "close",
-        followDistance=data.followDistance or 3.0
+        followDistance=data.followDistance or 0.95,
+        sticky=true,
+        strict=true,
+        leash={follow=6.5, guard=10.0, hold=3.0, combat=6.5}
     }
     group.updatedAt = getGameTime and getGameTime():getWorldAgeHours() or group.updatedAt
 
     if type(group.members) == "table" then
-        for _, member in pairs(group.members) do
+        for index, member in pairs(group.members) do
+            if type(member) == "table" and member.memberIndex == nil then member.memberIndex = tonumber(index) or member.memberIndex end
             NPCMercenaryContract.HireBrain(member, player, data)
         end
     end
@@ -645,12 +1058,19 @@ function NPCMercenaryContract.ApplyOrderToBrain(brain, player, data)
     local pid = bm_playerId(player) or data.master
     local prevOrder = type(brain.order) == "table" and brain.order or {}
     local explicitOrder = data.orderName ~= nil or data.name ~= nil
-    local orderName = data.orderName or data.name or prevOrder.name or "Follow"
+    local orderName = bm_normalizeOrderName(data.orderName or data.name or prevOrder.name or "Follow")
     local softOnly = not explicitOrder
         and (data.fireMode ~= nil or data.formation ~= nil or data.followDistance ~= nil)
         and data.anchor == nil
         and data.tactical == nil
-    local hardInterrupt = explicitOrder or data.fireMode == "HoldFire" or data.fireMode == "MeleeOnly"
+    local normalizedFireMode = data.fireMode
+    if normalizedFireMode ~= nil then
+        normalizedFireMode = bm_normalizeFireMode(normalizedFireMode)
+        data.fireMode = normalizedFireMode
+    end
+    local fireModeCommand = normalizedFireMode ~= nil
+    local fireModeInterrupt = fireModeCommand and (normalizedFireMode == "HoldFire" or normalizedFireMode == "MeleeOnly")
+    local hardInterrupt = explicitOrder or fireModeInterrupt
 
     brain.master = pid or brain.master
     brain.mercenary = true
@@ -659,21 +1079,61 @@ function NPCMercenaryContract.ApplyOrderToBrain(brain, player, data)
     brain.hostile = false
     if hardInterrupt then
         brain.tasks = {}
+        brain.ai = brain.ai or {}
+        brain.ai.manualOrderConsumedIssued = nil
+        brain.ai.manualOrderConsumedAtMs = nil
+        brain.ai.lastGenerateTaskFrameTick = nil
+        brain.ai.forceManualOrderNow = true
         if brain.fsm then
             brain.fsm.targetId = nil
             brain.fsm.targetKind = nil
             brain.fsm.currentThreat = nil
             brain.fsm.lastThreat = nil
+            brain.fsm.target = nil
         end
         brain.currentThreat = nil
         brain.lastThreat = nil
         brain.targetId = nil
         brain.targetKind = nil
+        brain.target = nil
+        brain.enemy = nil
+        brain.combatTarget = nil
+        brain.radioThreat = nil
+        brain._threatCache = nil
+        brain._combatTargetCache = nil
+        brain.ai = brain.ai or {}
+        brain.ai.manualControlUntil = (bm_nowHours()) + ((tonumber(data.interruptSeconds) or 12) / 3600)
+        brain.ai.lastManualHardOrderAt = bm_nowHours()
     end
     brain.factionSide = "blue"
     brain.faction = "blue"
     brain.side = "blue"
     brain.patrolColor = "blue"
+    NPCMercenaryContract.ApplyPlayerCommandAuthorityToBrain(brain, pid, "player_order")
+
+    if explicitOrder and orderName == "Follow" then
+        brain.holdPoint = nil
+        brain.guardPoint = nil
+        brain.patrolPoint = nil
+        brain.returnPoint = nil
+    end
+
+    if bm_isPointMercenaryOrderName(orderName) and data.anchor and data.anchor.x and data.anchor.y then
+        local anchorCopy = bm_copy(data.anchor)
+        if orderName == "Hold" then
+            brain.holdPoint = anchorCopy
+        elseif orderName == "Guard" then
+            brain.guardPoint = anchorCopy
+        elseif orderName == "Patrol" then
+            brain.patrolPoint = anchorCopy
+        elseif orderName == "Return" then
+            brain.returnPoint = anchorCopy
+            brain.holdPoint = anchorCopy
+        elseif orderName == "Loot" or orderName == "LootHouse" or tostring(orderName or ""):find("LootBodies", 1, true) or orderName == "RearmHere" then
+            brain.lootPoint = anchorCopy
+            brain.storagePoint = brain.storagePoint or anchorCopy
+        end
+    end
 
     if orderName == "Loot" or orderName == "LootHouse" then
         NPCMercenaryContract.RestockAndHealBrain(brain)
@@ -685,45 +1145,117 @@ function NPCMercenaryContract.ApplyOrderToBrain(brain, player, data)
     elseif brain.program and brain.program.name ~= programName and not softOnly then
         brain.program = {name=programName, stage="Prepare"}
     end
-    local interruptSeconds = tonumber(data.interruptSeconds) or 8
+    local strictOrder = explicitOrder and bm_isStrictMercenaryOrderName(orderName)
+    local playerCommandOrder = explicitOrder and bm_isPlayerMercenaryOrderName(orderName)
+    if softOnly and bm_isPlayerCommandedMercenaryBrain(brain) then playerCommandOrder = true end
+    local stickyOrder = strictOrder == true
+    local interruptSeconds = tonumber(data.interruptSeconds) or (hardInterrupt and (stickyOrder and 30 or 18) or 8)
+    local orderFollowDistance = data.followDistance
+    if orderName == "Follow" and orderFollowDistance == nil then orderFollowDistance = 0.95 end
+    if softOnly and (data.formation ~= nil or data.followDistance ~= nil) then
+        brain.tasks = {}
+        brain.ai = brain.ai or {}
+        brain.ai.forceManualOrderNow = true
+        brain.ai.manualOrderConsumedIssued = nil
+        brain.ai.manualOrderConsumedSequence = nil
+        brain.ai.lastGenerateTaskFrameTick = nil
+    end
 
-    if NPCOrderContract and NPCOrderContract.Set then
-        NPCOrderContract.Set(brain, orderName, {
-            source="player",
-            master=pid,
-            priority=120,
-            anchor=data.anchor,
-            fireMode=data.fireMode,
-            formation=data.formation,
-            followDistance=data.followDistance,
-            tactical=data.tactical,
-            note="mercenary order",
-            interrupt=hardInterrupt,
-            interruptSeconds=interruptSeconds,
-            interruptReason="mercenary order"
-        })
+    do
+        local appliedOrder = bm_setMercenaryDirectOrder(brain, orderName, data, hardInterrupt, strictOrder, playerCommandOrder, interruptSeconds, orderFollowDistance)
+        if appliedOrder and playerCommandOrder then
+            appliedOrder.source = "mercenary_direct"
+            appliedOrder.commandAuthority = "player"
+            appliedOrder.playerCommand = true
+            appliedOrder.playerCommandMode = "mercenary_direct"
+            brain.commandAuthority = "player"
+            brain.playerCommandAuthority = true
+            brain.ai = brain.ai or {}
+            brain.ai.playerCommandOrderSequence = tonumber(appliedOrder.sequence) or brain.ai.playerCommandOrderSequence
+            brain.ai.playerCommandOrderName = appliedOrder.name
+            brain.ai.playerCommandOrderAt = bm_nowHours()
+            if bm_isMercenaryTacticalOrderName(appliedOrder.name) then
+                appliedOrder.playerTactical = true
+                appliedOrder.tacticalMode = appliedOrder.name
+                appliedOrder.tacticalSticky = true
+                appliedOrder.watchdogIntervalMs = 500
+                local profile = bm_getMercenaryTacticalProfile(appliedOrder.name)
+                if profile then
+                    appliedOrder.tacticalProfile = profile.mode
+                    appliedOrder.tacticalStationary = profile.stationary == true
+                    appliedOrder.tacticalCombatRange = tonumber(profile.combatRange)
+                    appliedOrder.tacticalChaseRange = tonumber(profile.chaseRange)
+                    appliedOrder.tacticalSettle = tonumber(profile.settle)
+                end
+                brain.ai.playerTacticalOrderSequence = tonumber(appliedOrder.sequence) or brain.ai.playerTacticalOrderSequence
+                brain.ai.playerTacticalOrderName = appliedOrder.name
+                brain.ai.playerTacticalOrderAt = bm_nowHours()
+                brain.ai.forceManualOrderNow = true
+                brain.ai.lastGenerateTaskFrameTick = nil
+            end
+        end
+        if appliedOrder then
+            bm_applyDispatchFields(brain, appliedOrder, orderName, data, hardInterrupt, playerCommandOrder)
+        end
+        if appliedOrder and data.manualLoot == true then
+            appliedOrder.manualLoot = true
+            appliedOrder.manualSupplyLoot = data.manualSupplyLoot == true
+            appliedOrder.lootBodiesOnly = data.lootBodiesOnly == true
+            appliedOrder.lootEquipUpgrades = data.lootEquipUpgrades == true
+            appliedOrder.lootTakeWeapons = data.lootTakeWeapons ~= false
+            appliedOrder.lootTakeAmmo = data.lootTakeAmmo ~= false
+            appliedOrder.lootTakeArmor = data.lootTakeArmor ~= false
+            appliedOrder.lootTakeClothing = data.lootTakeClothing ~= false
+            appliedOrder.lootTakeMedical = data.lootTakeMedical ~= false
+            appliedOrder.lootTakeFood = data.lootTakeFood ~= false
+            appliedOrder.lootMaxItems = tonumber(data.lootMaxItems)
+            appliedOrder.lootMaxContainers = tonumber(data.lootMaxContainers)
+            appliedOrder.lootRadius = tonumber(data.lootRadius)
+        elseif appliedOrder then
+            appliedOrder.manualLoot = nil
+            appliedOrder.manualSupplyLoot = nil
+            appliedOrder.lootBodiesOnly = nil
+            appliedOrder.lootEquipUpgrades = nil
+            appliedOrder.lootTakeWeapons = nil
+            appliedOrder.lootTakeAmmo = nil
+            appliedOrder.lootTakeArmor = nil
+            appliedOrder.lootTakeClothing = nil
+            appliedOrder.lootTakeMedical = nil
+            appliedOrder.lootTakeFood = nil
+            appliedOrder.lootMaxItems = nil
+            appliedOrder.lootMaxContainers = nil
+            appliedOrder.lootRadius = nil
+        end
+        if appliedOrder and strictOrder then
+            brain.ai = brain.ai or {}
+            brain.ai.strictPlayerOrderSequence = tonumber(appliedOrder.sequence) or brain.ai.strictPlayerOrderSequence
+            brain.ai.strictPlayerOrderName = appliedOrder.name
+            brain.ai.strictPlayerOrderAt = bm_nowHours()
+            brain.ai.strictOrderImmediateSequence = tonumber(appliedOrder.sequence) or brain.ai.strictOrderImmediateSequence
+            brain.ai.strictOrderImmediateName = appliedOrder.name
+            brain.ai.strictOrderImmediateUntil = tonumber(appliedOrder.immediateReapplyUntil) or (bm_nowHours() + (3.2 / 3600))
+            brain.ai.strictOrderImmediateReason = "mercenary direct immediate order"
+            brain.ai.forceManualOrderNow = true
+            brain.ai.lastGenerateTaskFrameTick = nil
+        elseif appliedOrder and explicitOrder and not strictOrder then
+            if not playerCommandOrder then
+                appliedOrder.immediateReapply = nil
+                appliedOrder.immediateReapplySequence = nil
+                appliedOrder.immediateReapplyUntil = nil
+                appliedOrder.immediateReapplyReason = nil
+            end
+            if brain.ai then
+                brain.ai.strictOrderImmediateSequence = nil
+                brain.ai.strictOrderImmediateName = nil
+                brain.ai.strictOrderImmediateUntil = nil
+                brain.ai.strictOrderImmediateReason = nil
+                if not playerCommandOrder then brain.ai.forceManualOrderNow = false end
+            end
+        end
         if not hardInterrupt and brain.order then
             brain.order.interrupt = false
             brain.order.interruptUntil = nil
             brain.order.interruptReason = nil
-        end
-    else
-        brain.order = brain.order or {}
-        brain.order.name = orderName
-        brain.order.master = pid
-        if data.anchor then brain.order.anchor = bm_copy(data.anchor) end
-        if data.fireMode then
-            brain.order.fireMode = data.fireMode
-            brain.fireMode = data.fireMode
-            brain.rbFireMode = data.fireMode
-        end
-        if data.formation then brain.order.formation = data.formation end
-        if data.followDistance then brain.order.followDistance = data.followDistance end
-        if hardInterrupt then
-            brain.order.interrupt = true
-            brain.order.interruptIssued = NPCOrderContract and NPCOrderContract.Now and NPCOrderContract.Now() or 0
-            brain.order.interruptUntil = brain.order.interruptIssued + (interruptSeconds / 3600)
-            brain.order.interruptReason = "mercenary order"
         end
     end
 
@@ -747,8 +1279,18 @@ function NPCMercenaryContract.ApplyOrderToGroup(group, player, data)
     group.isPlayerGuard = true
     local prevOrder = type(group.order) == "table" and group.order or {}
     local explicitOrder = data.orderName ~= nil or data.name ~= nil
-    local orderName = data.orderName or data.name or prevOrder.name or "Follow"
-    local hardInterrupt = explicitOrder or data.fireMode == "HoldFire" or data.fireMode == "MeleeOnly"
+    local orderName = bm_normalizeOrderName(data.orderName or data.name or prevOrder.name or "Follow")
+    local normalizedFireMode = data.fireMode
+    if normalizedFireMode ~= nil then
+        normalizedFireMode = bm_normalizeFireMode(normalizedFireMode)
+        data.fireMode = normalizedFireMode
+    end
+    local fireModeCommand = normalizedFireMode ~= nil
+    local fireModeInterrupt = fireModeCommand and (normalizedFireMode == "HoldFire" or normalizedFireMode == "MeleeOnly")
+    local hardInterrupt = explicitOrder or fireModeInterrupt
+    local strictOrder = explicitOrder and bm_isStrictMercenaryOrderName(orderName)
+    local playerCommandOrder = explicitOrder and bm_isPlayerMercenaryOrderName(orderName)
+    if not playerCommandOrder and (data._groupOnly == true or fireModeCommand) and NPCMercenaryContract.IsPlayerCommandedGroup and NPCMercenaryContract.IsPlayerCommandedGroup(group) then playerCommandOrder = true end
     local programName = (orderName == "Hold" or orderName == "Guard") and "CompanionGuard" or "Companion"
     if hardInterrupt or not group.program then
         group.program = {name=programName, stage="Prepare"}
@@ -758,21 +1300,79 @@ function NPCMercenaryContract.ApplyOrderToGroup(group, player, data)
     if orderName == "Follow" then
         group.followPlayer = pid
         group.guardPlayer = nil
+        group.holdPoint = nil
+        group.guardPoint = nil
+        group.patrolPoint = nil
+        group.returnPoint = nil
     elseif orderName == "Hold" or orderName == "Guard" then
         group.guardPlayer = pid
         group.followPlayer = nil
-    elseif NPCOrderContract and NPCOrderContract.IsTacticalPointOrder and NPCOrderContract.IsTacticalPointOrder(orderName) then
+    elseif bm_isMercenaryTacticalOrderName(orderName) then
         group.guardPlayer = pid
         group.followPlayer = nil
     end
     group.order = bm_copy(prevOrder)
     for k, v in pairs(data) do
-        if v ~= nil then group.order[k] = bm_copy(v) end
+        if v ~= nil and string.sub(tostring(k), 1, 1) ~= "_" then group.order[k] = bm_copy(v) end
     end
+    if orderName == "Follow" and data.followDistance == nil then group.order.followDistance = 0.95 end
     group.order.master = pid
     group.order.name = orderName
-    local interruptSeconds = tonumber(data.interruptSeconds) or 8
-    local orderIssued = NPCOrderContract and NPCOrderContract.Now and NPCOrderContract.Now() or (getGameTime and getGameTime():getWorldAgeHours() or 0)
+    if orderName == "Follow" then
+        group.order.anchor = nil
+        group.order.targetType = "player"
+        group.order.anchorMode = "player"
+        group.order.cursorAnchor = nil
+    elseif bm_isPointMercenaryOrderName(orderName) and data.anchor then
+        group.order.anchor = bm_copy(data.anchor)
+        group.order.targetType = "point"
+        group.order.anchorMode = data.anchorMode or data.targetType or "cursor"
+        group.order.cursorAnchor = true
+    end
+    if playerCommandOrder then
+        group.order.source = "mercenary_direct"
+        group.order.commandAuthority = "player"
+        group.order.playerCommand = true
+        group.order.playerCommandMode = "mercenary_direct"
+        group.order.mercenaryDirect = true
+        group.order.directMercenaryOrder = true
+        group.commandAuthority = "player"
+        group.playerCommandAuthority = true
+        group.worldCommandDisabled = true
+        group.worldDirectorDisabled = true
+        if bm_isMercenaryTacticalOrderName(orderName) then
+            group.order.playerTactical = true
+            group.order.tacticalMode = orderName
+            group.order.tacticalSticky = true
+            group.order.watchdogIntervalMs = 520
+            local profile = bm_getMercenaryTacticalProfile(orderName)
+            if profile then
+                group.order.tacticalProfile = profile.mode
+                group.order.tacticalStationary = profile.stationary == true
+                group.order.tacticalCombatRange = tonumber(profile.combatRange)
+                group.order.tacticalChaseRange = tonumber(profile.chaseRange)
+                group.order.tacticalSettle = tonumber(profile.settle)
+            end
+        end
+    end
+    if bm_isPointMercenaryOrderName(orderName) and data.anchor and data.anchor.x and data.anchor.y then
+        local anchorCopy = bm_copy(data.anchor)
+        if orderName == "Hold" then
+            group.holdPoint = anchorCopy
+        elseif orderName == "Guard" then
+            group.guardPoint = anchorCopy
+        elseif orderName == "Patrol" then
+            group.patrolPoint = anchorCopy
+        elseif orderName == "Return" then
+            group.returnPoint = anchorCopy
+            group.holdPoint = anchorCopy
+        elseif orderName == "Loot" or orderName == "LootHouse" or tostring(orderName or ""):find("LootBodies", 1, true) or orderName == "RearmHere" then
+            group.lootPoint = anchorCopy
+            group.storagePoint = group.storagePoint or anchorCopy
+        end
+    end
+    local interruptSeconds = tonumber(data.interruptSeconds) or (hardInterrupt and (strictOrder and 30 or 18) or 8)
+    local orderIssued = bm_nowHours()
     group.order.issued = orderIssued
     if hardInterrupt then
         group.order.interrupt = true
@@ -784,10 +1384,38 @@ function NPCMercenaryContract.ApplyOrderToGroup(group, player, data)
         group.order.interruptUntil = nil
         group.order.interruptReason = nil
     end
+    if strictOrder then
+        group.order.strict = true
+        group.order.sticky = true
+        group.order.strictReason = "mercenary strict player order"
+        group.order.stickyReason = "mercenary player order lock"
+        group.order.leash = (orderName == "Follow") and {follow=3.6, guard=9.5, hold=2.8, combat=4.0} or {follow=5.5, guard=9.5, hold=2.8, combat=12.0}
+    elseif explicitOrder then
+        group.order.strict = nil
+        group.order.sticky = nil
+        group.order.strictReason = nil
+        group.order.stickyReason = nil
+        group.order.leash = nil
+    end
+    local revision = tonumber(data.orderRevision or data.groupOrderRevision or data.orderBatchRevision)
+    if revision then
+        group.orderRevision = revision
+        group.groupOrderRevision = revision
+        group.groupOrderBatchId = data.orderBatchId or data.groupOrderBatchId or group.groupOrderBatchId
+        group.order.orderRevision = revision
+        group.order.groupOrderRevision = revision
+        group.order.orderBatchId = data.orderBatchId or data.groupOrderBatchId or group.order.orderBatchId
+        group.order.dispatchMode = "mercenary_direct"
+        group.order.mercenaryDirect = true
+        group.order.directMercenaryOrder = true
+        group.order.forceImmediate = true
+        group.order.watchdogIntervalMs = tonumber(group.order.watchdogIntervalMs) or (orderName == "Follow" and 240 or 320)
+    end
     group.updatedAt = getGameTime and getGameTime():getWorldAgeHours() or group.updatedAt
 
-    if type(group.members) == "table" then
-        for _, member in pairs(group.members) do
+    if data._groupOnly ~= true and type(group.members) == "table" then
+        for index, member in pairs(group.members) do
+            if type(member) == "table" and member.memberIndex == nil then member.memberIndex = tonumber(index) or member.memberIndex end
             NPCMercenaryContract.ApplyOrderToBrain(member, player, data)
         end
     end

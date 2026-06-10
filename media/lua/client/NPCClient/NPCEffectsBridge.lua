@@ -3,13 +3,48 @@
 
 require "NPCCore/NPCLegacyContractBridge"
 require "NPCCore/NPCLegacyGlobalsBridge"
+pcall(require, "NPCCore/NPCRenderReliefBridge")
 NPCEffectsBridge = NPCEffectsBridge or {}
 
 NPCEffectsBridge.tab = {}
 NPCEffectsBridge.tick = 0
+NPCEffectsBridge._compactTick = 0
+
+local function npc_effects_stat(name, amount)
+    if NPCUpdateBridge and NPCUpdateBridge.IncRuntimeOptimizationStat then
+        NPCUpdateBridge.IncRuntimeOptimizationStat(name, amount)
+    end
+end
+
+function NPCEffectsBridge.QueueCount()
+    local count = 0
+    for _, effect in pairs(NPCEffectsBridge.tab) do
+        if effect ~= nil then count = count + 1 end
+    end
+    return count
+end
+
+function NPCEffectsBridge.CompactQueue()
+    local compact = {}
+    for _, effect in pairs(NPCEffectsBridge.tab) do
+        if effect ~= nil then table.insert(compact, effect) end
+    end
+    NPCEffectsBridge.tab = compact
+    return #compact
+end
 
 NPCEffectsBridge.Add = function(effect)
 
+    local queued = #NPCEffectsBridge.tab
+    if NPCRenderReliefBridge and NPCRenderReliefBridge.ShouldCullClientEffect then
+        local okCull, cull = pcall(function() return NPCRenderReliefBridge.ShouldCullClientEffect(effect, queued) end)
+        if okCull and cull == true then
+            npc_effects_stat("effects_queue_culled")
+            return
+        end
+    end
+
+    npc_effects_stat("effects_queue_added")
     table.insert(NPCEffectsBridge.tab, effect)
 end
 
@@ -21,10 +56,38 @@ NPCEffectsBridge.Process = function()
         NPCEffectsBridge.tick = 0
     end
 
-    if NPCEffectsBridge.tick % 2 == 0 then return end
+    local queued = #NPCEffectsBridge.tab
+    local processBudget = 999999
+    local processInterval = 2
+    if NPCRenderReliefBridge and NPCRenderReliefBridge.GetClientEffectProcessBudget then
+        local okBudget, budget, interval = pcall(function() return NPCRenderReliefBridge.GetClientEffectProcessBudget(queued) end)
+        if okBudget then
+            processBudget = tonumber(budget) or processBudget
+            processInterval = math.max(1, tonumber(interval) or processInterval)
+        end
+    end
 
+    if NPCEffectsBridge.tick % processInterval ~= 1 then
+        npc_effects_stat("effects_process_deferred")
+        return
+    end
+
+    if queued > 120 then
+        NPCEffectsBridge._compactTick = (NPCEffectsBridge._compactTick or 0) + 1
+        if NPCEffectsBridge._compactTick >= 8 then
+            NPCEffectsBridge._compactTick = 0
+            queued = NPCEffectsBridge.CompactQueue()
+        end
+    end
+
+    local processed = 0
     local cell = getCell()
     for i, effect in pairs(NPCEffectsBridge.tab) do
+        processed = processed + 1
+        if processed > processBudget then
+            npc_effects_stat("effects_process_budget_stop")
+            break
+        end
 
         local square = cell:getGridSquare(effect.x, effect.y, effect.z)
         if square then
@@ -58,6 +121,7 @@ NPCEffectsBridge.Process = function()
             if effect.frame > effect.frameCnt and effect.rep >= effect.repCnt then
                 square:RemoveTileObject(effect.object)
                 NPCEffectsBridge.tab[i] = nil
+                npc_effects_stat("effects_completed")
             else
                 if effect.frame > effect.frameCnt then
                     effect.rep = effect.rep + 1
@@ -76,6 +140,7 @@ NPCEffectsBridge.Process = function()
             end
         else
             NPCEffectsBridge.tab[i] = nil
+            npc_effects_stat("effects_removed_missing_square")
         end
     end
 end
